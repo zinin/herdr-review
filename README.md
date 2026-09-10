@@ -38,7 +38,7 @@ ln -s /path/to/herdr-review/skills/auto-decide ~/.agents/skills/herdr-review-aut
 The Claude Code cache (`~/.claude/plugins/cache/zinin/herdr-review/<version>`) serves as the link target too, but its path carries the version and moves on every update.
 
 - **Codex** recognises the plugin manifest behind the link and namespaces the skills: `$herdr-review:review` and `$herdr-review:auto-decide` (`/skills` lists them). Its sandbox blocks the herdr server socket, so `herdr-review launch` runs only outside it: approve the escalation Codex asks for, or start Codex with `--sandbox danger-full-access`.
-- **OpenCode** lists them as `review` and `auto-decide` (`opencode debug skill`). Skills have no slash form there: ask in plain words («запусти herdr review с пресетом default»), and the agent loads the skill through its `skill` tool.
+- **OpenCode** lists them as `review` and `auto-decide` (`opencode debug skill`). Skills have no slash form there: ask in plain words ("run a herdr review with the default preset"), and the agent loads the skill through its `skill` tool.
 
 Any other host that reads Agent Skills takes the same links; the skill names come from the `SKILL.md` frontmatter.
 
@@ -113,7 +113,7 @@ Everything starts from a herdr pane: an agent session with the skills, or a shel
 |---|---|
 | Claude Code, Grok | `/herdr-review:review default` |
 | Codex | `$herdr-review:review default` |
-| OpenCode | «запусти herdr review default» |
+| OpenCode | "run a herdr review with the default preset" |
 
 Arguments, in any order:
 
@@ -139,7 +139,7 @@ The skill prints the run directory, the orchestrator's agent name and the two co
 
 ### `auto-decide` — stop answering
 
-`/herdr-review:auto-decide` (Grok: `/auto-decide`, Codex: `$herdr-review:auto-decide`) switches the current run of the repository you are in to automatic decisions and wakes the orchestrator. One-way; it also settles the drift question. Answering «авто» in the orchestrator's tab does the same.
+`/herdr-review:auto-decide` (Grok: `/auto-decide`, Codex: `$herdr-review:auto-decide`) switches the current run of the repository you are in to automatic decisions and wakes the orchestrator. One-way; it also settles the drift question. Answering "auto" in the orchestrator's tab does the same.
 
 ### The CLI
 
@@ -157,17 +157,17 @@ herdr-review profiles               # the validated config, secrets omitted
 
 - **Tabs:** `rv-<run_id>: orch` (the orchestrator), `rv-<run_id>: <profile>` per reviewer, `rv-<run_id>: fixer` once there is something to fix. Labels carry the state: ` ⏳` working, ` ✓` done, ` ✗` failed, ` ❓` stuck on a dialog or waiting for you.
 - **The orchestrator's tab** shows the progress, the classification of every finding (AUTO — fixed by the fixer; DISPUTED — decided one at a time; DISMISSED — false positive, with a reason), and the final report.
-- **A disputed issue without autodecide:** the tab turns ` ❓` and a herdr notification arrives. The orchestrator has written its analysis with variants and a recommendation; answer in that tab with a variant letter, a variant of your own, «не исправлять», «стоп» (defer the rest) or «авто» (the orchestrator decides the rest).
+- **A disputed issue without autodecide:** the tab turns ` ❓` and a herdr notification arrives. The orchestrator has written its analysis with variants and a recommendation; answer in that tab in free text: a variant letter, a variant of your own, "don't fix", "stop" (defers the rest) or "auto" (the orchestrator decides the rest).
 - **Fixes** land on your branch as commits `review: …` and `review(auto-decide): …`; the fixer commits only the files it changed, so your own uncommitted work in other files stays where it was.
-- **The end:** a «готово» notification and `report.md` in the run directory, `~/.local/state/herdr-review/runs/<project>/<timestamp>-<run_id>/` — next to `status.json`, `reviews/<profile>.md`, `issues.md`, `fix-*.md` and `runner.log`. `latest` there points at the newest run of that repository.
+- **The end:** a done notification and `report.md` in the run directory, `~/.local/state/herdr-review/runs/<project>/<timestamp>-<run_id>/` — next to `status.json`, `reviews/<profile>.md`, `issues.md`, `fix-*.md` and `runner.log`. `latest` there points at the newest run of that repository.
 
 ## Troubleshooting
 
-- «not inside herdr» — start the session in a herdr pane.
-- «config not found» — copy `config.example.yaml` from the plugin directory as shown in Configure; the message names the path the plugin looked at.
-- «Operation not permitted» from `herdr` in a Codex session — the Codex sandbox blocks the herdr socket. Approve the escalation, or start Codex with `--sandbox danger-full-access`.
-- «orchestrator failed to start … Tab … is left open» — open that tab; a login or dialog is waiting. Resolve it and run the printed `herdr agent prompt …`.
-- «no runs for this repository» from `status` — `latest` is per repository. Run it from the repository under review, or pass the run directory.
+- `not inside herdr` — start the session in a herdr pane.
+- `config not found` — copy `config.example.yaml` from the plugin directory as shown in Configure; the message names the path the plugin looked at.
+- `Operation not permitted` from `herdr` in a Codex session — the Codex sandbox blocks the herdr socket. Approve the escalation, or start Codex with `--sandbox danger-full-access`.
+- `orchestrator failed to start … Tab … is left open` — open that tab; a login or dialog is waiting. Resolve it and run the printed `herdr agent prompt …`.
+- `no runs for this repository` from `status` — `latest` is per repository. Run it from the repository under review, or pass the run directory.
 - A reviewer shows ` ✗` — `herdr-review status` gives the reason and `status.json` the last screen.
 - The orchestrator's tab shows ` ❓` — it is waiting for your answer in that tab.
 - A run died with the orchestrator — `status.json` stays at its phase; a new `launch` starts a new run.
