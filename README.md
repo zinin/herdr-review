@@ -62,16 +62,19 @@ Three sections: **profiles** (what an agent is), **presets** (which profiles mak
 profiles:                        # a profile = herdr agent kind + CLI args + env;
   claude-opus:                   # the same profile can be a reviewer, the orchestrator or the fixer
     kind: claude                 # a kind from `herdr agent start --help`; its executable must be in PATH
-    args: [--model, opus, --dangerously-skip-permissions]
+    args: [--model, opus, --permission-mode, auto, --add-dir, "~/.local/state/herdr-review/runs"]
+    # args: [--model, opus, --dangerously-skip-permissions]          # yolo: swap the comments
   codex:
     kind: codex
-    args: [-m, gpt-5.5, -c, model_reasoning_effort=high, --dangerously-bypass-approvals-and-sandbox]
+    args: [-m, gpt-5.5, -c, model_reasoning_effort=high, --approve-for-me, --add-dir, "~/.local/state/herdr-review/runs"]
+    # args: [-m, gpt-5.5, -c, model_reasoning_effort=high, --dangerously-bypass-approvals-and-sandbox]
   grok:
     kind: grok
-    args: [-m, grok-4.6, --always-approve]
+    args: [-m, grok-4.6, --permission-mode, auto]
+    # args: [-m, grok-4.6, --always-approve]
   glm:                           # an alt-provider model: the claude kind plus env
     kind: claude
-    args: [--model, glm-5, --dangerously-skip-permissions]
+    args: [--model, glm-5, --dangerously-skip-permissions]   # the classifier is a model call too: auto mode untested here
     env:
       ANTHROPIC_BASE_URL: https://api.z.ai/api/anthropic
       ANTHROPIC_AUTH_TOKEN: "${ZAI_TOKEN}"   # ${VAR} expands from the launcher's environment
@@ -90,12 +93,23 @@ settings:
   runs_dir: ~/.local/state/herdr-review/runs
 ```
 
+Each profile's `args` is one of two lines, the other commented out. **Auto mode** (active in the example): the CLI's own classifier or sandbox judges every action, and what it does not allow becomes a dialog in the agent's tab that the orchestrator answers (the tab shows ` ❓` until it does). **Yolo**: everything is approved in advance; for a throwaway VM or container.
+
+| kind | auto mode | yolo |
+|---|---|---|
+| `claude` | `--permission-mode auto --add-dir <runs_dir>` | `--dangerously-skip-permissions` |
+| `codex` | `--approve-for-me --add-dir <runs_dir>` | `--dangerously-bypass-approvals-and-sandbox` |
+| `grok` | `--permission-mode auto` | `--always-approve` |
+| `gemini` | none: `--approval-mode auto_edit` still asks about every shell command | `--yolo` |
+
+`<runs_dir>` is `settings.runs_dir`, where the agents write outside the repository; both CLIs expand the `~`. The codex sandbox refuses that write without `--add-dir`; claude only consults its classifier more often. The auto mode flags need Claude Code ≥ 2.1.111 (auto mode is also gated by the subscription plan) and Codex ≥ 0.147.0; an older CLI rejects the flag, and that agent leaves the run as ` ✗` with the reason in `herdr-review status`. Checked with Claude Code 2.1.267, Codex 0.153.4 and Grok 1.0.25: reviewers, orchestrator and fixer all in auto mode finished a run with no dialog left for a human.
+
 Rules the validator enforces and facts worth knowing:
 
 | What | Rule |
 |---|---|
 | `kind` | A herdr agent kind, which is also the executable name; `herdr agent start --help` lists them. |
-| `args` | Passed verbatim; the plugin adds nothing, so the yolo flags go here. Copied as they are into `run.json` and `runner.log`: never a secret. |
+| `args` | Passed verbatim; the plugin adds nothing, so the permission flags go here (the mode table above). Copied as they are into `run.json` and `runner.log`: never a secret. |
 | `env` | For tokens and base URLs. Masked in `runner.log`; still visible in `/proc/<pid>/cmdline` while herdr creates the tab and possibly in the herdr server's own log. |
 | Profile names | `^[a-z][a-z0-9_-]{0,24}$`; `orch` and `fixer` are reserved. |
 | Presets | Every name must be a profile; `default` is used when nothing else is named. Each reviewer is a full review of the diff, so a preset's size is its cost. |
@@ -169,6 +183,7 @@ herdr-review profiles               # the validated config, secrets omitted
 - `orchestrator failed to start … Tab … is left open` — open that tab; a login or dialog is waiting. Resolve it and run the printed `herdr agent prompt …`.
 - `no runs for this repository` from `status` — `latest` is per repository. Run it from the repository under review, or pass the run directory.
 - A reviewer shows ` ✗` — `herdr-review status` gives the reason and `status.json` the last screen.
+- A reviewer or the fixer shows ` ❓` — a dialog is waiting in its tab; in auto mode that is the CLI asking about an action. `run wait` reports it to the orchestrator within seconds, and the orchestrator answers it or fails the agent when it does not understand the dialog. `herdr agent read <name> --source visible` shows what is asked.
 - The orchestrator's tab shows ` ❓` — it is waiting for your answer in that tab.
 - A run died with the orchestrator — `status.json` stays at its phase; a new `launch` starts a new run.
 
