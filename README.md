@@ -2,7 +2,7 @@
 
 Multi-agent code review orchestrated inside [herdr](https://herdr.dev). Every participant is a visible, interactive agent in its own herdr tab: N **reviewers** (any agent kind and model), one **orchestrator** that drives them, and one **fixer** that commits the fixes. You launch it, switch to any tab to watch, and come back to a report — or to a question the orchestrator is waiting to ask you.
 
-The plugin is two [Agent Skills](https://agentskills.io) — `review` launches a run, `auto-decide` hands a running one over to the orchestrator — and a runner CLI. The skills run in Claude Code, Grok, Codex, OpenCode and any other host that reads Agent Skills; the reviewers, the orchestrator and the fixer can be any agent herdr starts.
+The plugin is two [Agent Skills](https://agentskills.io) — `review` launches a run, `auto-decide` hands a running one over to the orchestrator — and the `herdr-review` CLI behind them. The skills run in Claude Code, Grok, Codex, OpenCode and any other host that reads Agent Skills; the reviewers, the orchestrator and the fixer can be any agent herdr starts.
 
 ## Requirements
 
@@ -42,11 +42,13 @@ The Claude Code cache (`~/.claude/plugins/cache/zinin/herdr-review/<version>`) s
 
 Any other host that reads Agent Skills takes the same links; the skill names come from the `SKILL.md` frontmatter.
 
-### The runner in a shell
+### The CLI in a shell
 
 `bin/herdr-review` runs from the checkout without installation. To call it from a shell pane outside Claude Code, link it into PATH: `ln -s /path/to/herdr-review/bin/herdr-review ~/.local/bin/herdr-review`.
 
 ## Configure
+
+The config is `~/.config/herdr-review/config.yaml` (`$XDG_CONFIG_HOME` is honoured; `HERDR_REVIEW_CONFIG` overrides the path). Start from the example in the plugin directory — the checkout, or `~/.claude/plugins/cache/zinin/herdr-review/<version>/` after a marketplace install:
 
 ```bash
 mkdir -p ~/.config/herdr-review
@@ -54,39 +56,110 @@ cp config.example.yaml ~/.config/herdr-review/config.yaml
 chmod 600 ~/.config/herdr-review/config.yaml
 ```
 
-`config.example.yaml` sits in the plugin directory: the checkout, or `~/.claude/plugins/cache/zinin/herdr-review/<version>/` after a marketplace install. `HERDR_REVIEW_CONFIG` points the plugin at a config file elsewhere.
+Three sections: **profiles** (what an agent is), **presets** (which profiles make a review), **settings**.
 
-A **profile** is a herdr agent kind plus CLI args plus env; the same profile can serve as reviewer, orchestrator, or fixer. Put the yolo flags in `args` — the plugin adds none. An alt-provider model is the `claude` kind with `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` in `env` (`${VAR}` expands from the launcher's environment). A **preset** names the reviewers, the orchestrator and the fixer. `settings`: `layout` (`tabs` — one tab per agent; `grid` — panes in the orchestrator's tab), `autodecide`, `close_agents_on_finish`, `checkin_sec`, `runs_dir`.
+```yaml
+profiles:                        # a profile = herdr agent kind + CLI args + env;
+  claude-opus:                   # the same profile can be a reviewer, the orchestrator or the fixer
+    kind: claude                 # a kind from `herdr agent start --help`; its executable must be in PATH
+    args: [--model, opus, --dangerously-skip-permissions]
+  codex:
+    kind: codex
+    args: [-m, gpt-5.5, -c, model_reasoning_effort=high, --dangerously-bypass-approvals-and-sandbox]
+  grok:
+    kind: grok
+    args: [-m, grok-4.6, --always-approve]
+  glm:                           # an alt-provider model: the claude kind plus env
+    kind: claude
+    args: [--model, glm-5, --dangerously-skip-permissions]
+    env:
+      ANTHROPIC_BASE_URL: https://api.z.ai/api/anthropic
+      ANTHROPIC_AUTH_TOKEN: "${ZAI_TOKEN}"   # ${VAR} expands from the launcher's environment
 
-herdr 0.9.0 takes profile env as `--env K=V` on `tab create` / `pane split`. Those values are visible in `/proc/<pid>/cmdline` for the duration of the call and may appear in the herdr server's own logs. `runner.log` masks them; the server log is outside this plugin. A secret belongs in `env` and never in `args`: `args` values are masked neither in `run.json` nor in `runner.log`. Use the tool on a machine you trust.
+presets:
+  default:                       # `/herdr-review:review default`; also `launch` without --preset
+    reviewers: [claude-opus, codex, grok]
+    orchestrator: claude-opus
+    fixer: claude-opus
 
-Check it: `herdr-review profiles`.
+settings:
+  layout: tabs                   # tabs: one tab per agent | grid: panes in the orchestrator's tab
+  autodecide: false              # true: the orchestrator decides disputed issues itself
+  close_agents_on_finish: false  # true: close the reviewer and fixer tabs when the run ends
+  checkin_sec: 300               # how often `run wait` hands control back to the orchestrator
+  runs_dir: ~/.local/state/herdr-review/runs
+```
 
-## Run
+Rules the validator enforces and facts worth knowing:
 
-From an agent session inside herdr, invoke the `review` skill with a preset name — `/herdr-review:review default` in Claude Code and Grok, `$herdr-review:review default` in Codex, a plain request in OpenCode — or without arguments to pick the reviewers interactively. The skill takes, in any order: a preset name, `reviewers=a,b,c`, `orchestrator=<profile>`, `fixer=<profile>`, `BASE_BRANCH=<ref>`, `autodecide`, `layout=tabs|grid`; any other text becomes the description. From a shell pane:
+| What | Rule |
+|---|---|
+| `kind` | A herdr agent kind, which is also the executable name; `herdr agent start --help` lists them. |
+| `args` | Passed verbatim; the plugin adds nothing, so the yolo flags go here. Copied as they are into `run.json` and `runner.log`: never a secret. |
+| `env` | For tokens and base URLs. Masked in `runner.log`; still visible in `/proc/<pid>/cmdline` while herdr creates the tab and possibly in the herdr server's own log. |
+| Profile names | `^[a-z][a-z0-9_-]{0,24}$`; `orch` and `fixer` are reserved. |
+| Presets | Every name must be a profile; `default` is used when nothing else is named. Each reviewer is a full review of the diff, so a preset's size is its cost. |
+| The file | 600 permissions (the plugin warns otherwise). The plugin never edits it: validation prints the problems and stops. |
+
+Check the result: `herdr-review profiles`.
+
+## Usage
+
+Everything starts from a herdr pane: an agent session with the skills, or a shell with `herdr-review` in PATH. Reviewers work on the live working tree, uncommitted files included; `launch` warns when the tree is dirty.
+
+### `review` — launch a run
+
+| Host | Command |
+|---|---|
+| Claude Code, Grok | `/herdr-review:review default` |
+| Codex | `$herdr-review:review default` |
+| OpenCode | «запусти herdr review default» |
+
+Arguments, in any order:
+
+| Argument | Meaning |
+|---|---|
+| `default` (any preset name) | Take reviewers, orchestrator and fixer from that preset. |
+| `reviewers=codex,grok` | Reviewers by profile name instead of a preset. |
+| `orchestrator=<profile>`, `fixer=<profile>` | Override those two roles. |
+| `BASE_BRANCH=<ref>` | Review against this ref. Default: `origin/HEAD`, else `master`, else `main`. |
+| `autodecide` | The orchestrator decides disputed issues itself instead of asking you. |
+| `layout=tabs` / `layout=grid` | One tab per agent, or panes inside the orchestrator's tab. |
+| anything else | The description of the change, handed to the reviewers. |
+
+With a preset or `reviewers=` the skill asks nothing. Without either it asks four questions: reviewers, orchestrator, fixer, autodecide. It also passes a plan file when it knows one from the session.
+
+```
+/herdr-review:review default
+/herdr-review:review default autodecide added retries to the uploader
+/herdr-review:review reviewers=codex,grok orchestrator=claude-opus fixer=claude-opus BASE_BRANCH=develop
+```
+
+The skill prints the run directory, the orchestrator's agent name and the two commands to watch it (`herdr agent focus <name>`, `herdr-review status latest`), then ends its turn. The run continues in the orchestrator's tab.
+
+### `auto-decide` — stop answering
+
+`/herdr-review:auto-decide` (Grok: `/auto-decide`, Codex: `$herdr-review:auto-decide`) switches the current run of the repository you are in to automatic decisions and wakes the orchestrator. One-way; it also settles the drift question. Answering «авто» in the orchestrator's tab does the same.
+
+### The CLI
 
 ```bash
 herdr-review launch --preset default --description "what was implemented" --plan docs/plan.md
-herdr-review status --run latest
+herdr-review launch --reviewers codex,grok --orchestrator claude-opus --fixer claude-opus --base develop --autodecide --layout grid
+herdr-review status                 # the latest run of the repository you are in
+herdr-review status <run dir>       # any run
+herdr-review profiles               # the validated config, secrets omitted
 ```
 
-A run costs what its preset costs: every reviewer reads the whole diff, and the orchestrator stays alive until the report is written.
+`launch --help` lists every flag (`--no-autodecide`, `--focus`, …); `--json` on any command gives machine-readable output. `herdr-review run …` is what the orchestrator calls during the run; you never need it.
 
-`latest` is resolved per repository, from the run directory of the repository you are standing in: runs are stored under `<directory name>-<short hash of the repository path>`, so two checkouts with the same directory name keep separate runs and separate `latest` symlinks. Ask about a review from the repository that was reviewed, or pass that run's directory instead.
+### During the run
 
-Reviewers see the live working tree, including uncommitted files. There is no stash or snapshot: yolo flags in the profile can change that tree. `launch` warns when the tree is dirty.
-
-What happens:
-
-1. `launch` creates the tab `rv-<run_id>: orch`, starts the orchestrator agent there and hands it `orchestrator.md`.
-2. The orchestrator starts every reviewer in its own tab (`rv-<run_id>: <profile>`), waits, reads screens when something looks stuck, answers startup dialogs, and drops reviewers that cannot work.
-3. Reviewers write `reviews/<profile>.md`; the orchestrator deduplicates, verifies each finding in the code and classifies it AUTO / DISPUTED / DISMISSED (`issues.md`).
-4. The fixer starts (`rv-<run_id>: fixer`), applies the AUTO fixes and commits them.
-5. Disputed issues go one at a time: with `autodecide` the orchestrator decides (with a self-check and a «под вопросом» mark when unsure); without it, it writes the analysis in its tab, sends a herdr notification, and waits for your answer there. You can hand the rest over in the middle of a run: answer «авто» in the orchestrator's tab, or run the `auto-decide` skill from your own session (`/herdr-review:auto-decide` in Claude Code, `/auto-decide` in Grok, `$herdr-review:auto-decide` in Codex) — it flips the mode and writes to the orchestrator, which is what actually wakes it. The switch is one-way and covers the drift question too.
-6. `report.md` and a «готово» notification. Tab labels carry the state: ` ⏳` working, ` ✓` done, ` ✗` failed, ` ❓` blocked or waiting for you.
-
-Run artifacts live in `~/.local/state/herdr-review/runs/<project>/<timestamp>-<run_id>/` (`latest` symlink), where `<project>` is the repository's directory name plus a short hash of its path: `run.json`, `status.json`, `orchestrator.md`, `prompts/`, `reviews/`, `issues.md`, `fix-*.md`, `report.md`, `runner.log`.
+- **Tabs:** `rv-<run_id>: orch` (the orchestrator), `rv-<run_id>: <profile>` per reviewer, `rv-<run_id>: fixer` once there is something to fix. Labels carry the state: ` ⏳` working, ` ✓` done, ` ✗` failed, ` ❓` stuck on a dialog or waiting for you.
+- **The orchestrator's tab** shows the progress, the classification of every finding (AUTO — fixed by the fixer; DISPUTED — decided one at a time; DISMISSED — false positive, with a reason), and the final report.
+- **A disputed issue without autodecide:** the tab turns ` ❓` and a herdr notification arrives. The orchestrator has written its analysis with variants and a recommendation; answer in that tab with a variant letter, a variant of your own, «не исправлять», «стоп» (defer the rest) or «авто» (the orchestrator decides the rest).
+- **Fixes** land on your branch as commits `review: …` and `review(auto-decide): …`; the fixer commits only the files it changed, so your own uncommitted work in other files stays where it was.
+- **The end:** a «готово» notification and `report.md` in the run directory, `~/.local/state/herdr-review/runs/<project>/<timestamp>-<run_id>/` — next to `status.json`, `reviews/<profile>.md`, `issues.md`, `fix-*.md` and `runner.log`. `latest` there points at the newest run of that repository.
 
 ## Troubleshooting
 
@@ -94,20 +167,10 @@ Run artifacts live in `~/.local/state/herdr-review/runs/<project>/<timestamp>-<r
 - «config not found» — copy `config.example.yaml` from the plugin directory as shown in Configure; the message names the path the plugin looked at.
 - «Operation not permitted» from `herdr` in a Codex session — the Codex sandbox blocks the herdr socket. Approve the escalation, or start Codex with `--sandbox danger-full-access`.
 - «orchestrator failed to start … Tab … is left open» — open that tab; a login or dialog is waiting. Resolve it and run the printed `herdr agent prompt …`.
-- «no runs for this repository» from `status --run latest` — you are in a different repository than the one under review; `latest` is per repository. Run it there, or pass `--run <run dir>`.
+- «no runs for this repository» from `status` — `latest` is per repository. Run it from the repository under review, or pass the run directory.
 - A reviewer shows ` ✗` — `herdr-review status` gives the reason and `status.json` the last screen.
 - The orchestrator's tab shows ` ❓` — it is waiting for your answer in that tab.
 - A run died with the orchestrator — `status.json` stays at its phase; a new `launch` starts a new run.
-
-## Smoke checklist (real herdr)
-
-1. `cp config.example.yaml ~/.config/herdr-review/config.yaml`, keep two profiles (`claude-opus`, `codex`), preset `default` with both, `orchestrator: claude-opus`, `fixer: claude-opus`.
-2. In a herdr pane inside this repository on a branch with changes: `bin/herdr-review launch --preset default --description "smoke"`.
-3. Expect tabs `rv-<id>: orch`, then `rv-<id>: claude-opus ⏳` and `rv-<id>: codex ⏳`; `bin/herdr-review status --run latest` shows `working`.
-4. Reviewers turn ` ✓`; `reviews/*.md` exist; the orchestrator prints the classification table.
-5. The fixer tab appears if there is anything to fix; commits `review: …` land on the branch.
-6. Without autodecide: the orchestrator's tab turns ` ❓` on the first disputed issue and a notification appears; answer in the tab.
-7. `report.md` is written; the «готово» notification appears; `status` says `finished`.
 
 ## Development
 
@@ -117,7 +180,7 @@ tests/run.sh unit
 tests/run.sh bats
 ```
 
-`tests/fake-herdr/herdr` fakes the herdr CLI from a JSON scenario; `tests/bats/helpers.bash` builds a temp config and git repository for each test. The bats half needs [bats](https://github.com/bats-core/bats-core) in PATH; without it `tests/run.sh` runs the unit tests and says so.
+`tests/fake-herdr/herdr` fakes the herdr CLI from a JSON scenario; `tests/bats/helpers.bash` builds a temp config and git repository for each test. The bats half needs [bats](https://github.com/bats-core/bats-core) in PATH; without it `tests/run.sh` runs the unit tests and says so. [tests/SMOKE.md](tests/SMOKE.md) is the checklist for a run against a real herdr.
 
 ## License
 
