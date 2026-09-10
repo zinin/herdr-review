@@ -11,7 +11,9 @@
 # (claude, codex) declares that directory writable — the codex sandbox refuses the write without
 # it, claude only asks its classifier more often. Both CLIs expand the `~`. grok has no such flag
 # and needs none. gemini has no auto mode: `--approval-mode auto_edit` still asks about every
-# shell command, so its profile stays yolo.
+# shell command, so its profile stays yolo. The auto mode flags need Claude Code >= 2.1.111 (auto
+# mode is also gated by the subscription plan) and Codex >= 0.147.0; an older CLI rejects the flag
+# and that agent leaves the run as failed.
 
 profiles:                        # one mechanism for every engine: herdr kind + CLI args + env
   claude-opus:

@@ -102,7 +102,7 @@ Each profile's `args` is one of two lines, the other commented out. **Auto mode*
 | `grok` | `--permission-mode auto` | `--always-approve` |
 | `gemini` | none: `--approval-mode auto_edit` still asks about every shell command | `--yolo` |
 
-`<runs_dir>` is `settings.runs_dir`, where the agents write outside the repository; both CLIs expand the `~`. The codex sandbox refuses that write without `--add-dir`; claude only consults its classifier more often. Checked with Claude Code 2.1.267, Codex 0.153.4 and Grok 1.0.25: reviewers, orchestrator and fixer all in auto mode finished a run with no dialog left for a human.
+`<runs_dir>` is `settings.runs_dir`, where the agents write outside the repository; both CLIs expand the `~`. The codex sandbox refuses that write without `--add-dir`; claude only consults its classifier more often. The auto mode flags need Claude Code ≥ 2.1.111 (auto mode is also gated by the subscription plan) and Codex ≥ 0.147.0; an older CLI rejects the flag, and that agent leaves the run as ` ✗` with the reason in `herdr-review status`. Checked with Claude Code 2.1.267, Codex 0.153.4 and Grok 1.0.25: reviewers, orchestrator and fixer all in auto mode finished a run with no dialog left for a human.
 
 Rules the validator enforces and facts worth knowing:
 
