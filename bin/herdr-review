@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+"""Entry point: run herdr_review.cli from the repository checkout without installation."""
+# This file avoids syntax newer than the oldest interpreter it may be started with: a SyntaxError
+# would be raised before check_requirements() could say that the interpreter is too old.
+import os
+import sys
+
+MIN_PYTHON = (3, 11)
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+
+def check_requirements(version_info=None):
+    """The two conditions from README 'Requirements'. One error line, or None when both hold."""
+    if version_info is None:
+        version_info = sys.version_info
+    if tuple(version_info[:2]) < MIN_PYTHON:
+        return "herdr-review needs Python %d.%d or newer; this is %d.%d.%d at %s. See 'Requirements' in README.md." % (
+            MIN_PYTHON[0], MIN_PYTHON[1], version_info[0], version_info[1], version_info[2], sys.executable)
+    try:
+        import yaml  # noqa: F401
+    except ImportError:
+        return "herdr-review needs PyYAML, which %s cannot import. Install it (pip install PyYAML). See 'Requirements' in README.md." % sys.executable
+    return None
+
+
+def run():
+    problem = check_requirements()
+    if problem is not None:
+        sys.stderr.write(problem + "\n")
+        return 1
+    sys.path.insert(0, ROOT)
+    from herdr_review.cli import main
+    return main()
+
+
+if __name__ == "__main__":
+    sys.exit(run())

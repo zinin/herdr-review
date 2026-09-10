@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Scenario-driven fake of the herdr 0.9.0 CLI for bats tests.
+
+Environment:
+  FAKE_HERDR_LOG       every invocation's argv is appended here, one line each
+  FAKE_HERDR_SCENARIO  JSON file: server_down, agent_start, agent_prompt, agent_get, screens (see Task 14)
+  FAKE_HERDR_STATE     JSON file with counters (tabs, panes, per-agent `agent get` call counts)
+"""
+import fnmatch
+import json
+import os
+import sys
+
+
+def load(path, default):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def lookup(table, key):
+    """Exact match first, then fnmatch globs."""
+    if not isinstance(table, dict):
+        return None
+    if key in table:
+        return table[key]
+    for pattern, value in table.items():
+        if fnmatch.fnmatch(key, pattern):
+            return value
+    return None
+
+
+def option(argv, name, default=None):
+    return argv[argv.index(name) + 1] if name in argv and argv.index(name) + 1 < len(argv) else default
+
+
+def main():
+    argv = sys.argv[1:]
+    log = os.environ.get("FAKE_HERDR_LOG")
+    if log:
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(" ".join(argv) + "\n")
+    scenario = load(os.environ.get("FAKE_HERDR_SCENARIO", ""), {})
+    state_path = os.environ.get("FAKE_HERDR_STATE") or ((log + ".state") if log else "/tmp/fake-herdr.state")
+    state = load(state_path, {"tabs": 1, "panes": 1, "get_calls": {}, "waited_idle": []})   # w1:t1 / w1:p1 exist (the caller's pane)
+
+    def save():
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+
+    def ok(result):
+        print(json.dumps({"id": "cli:fake", "result": result}))
+        return 0
+
+    def err(code, message):
+        print(json.dumps({"error": {"code": code, "message": message}, "id": "cli:fake"}), file=sys.stderr)
+        return 1
+
+    if not argv:
+        return err("usage", "no arguments")
+    head = argv[:2]
+    if argv[0] == "status":
+        if scenario.get("server_down"):
+            print("server: not running", file=sys.stderr)
+            return 1
+        print("status: running\nversion: 0.9.0")
+        return 0
+    if head == ["tab", "create"]:
+        state["tabs"] += 1
+        state["panes"] += 1
+        save()
+        return ok({"type": "tab_created", "tab": {"tab_id": f"w1:t{state['tabs']}", "label": option(argv, "--label", "")}, "root_pane": {"pane_id": f"w1:p{state['panes']}"}})
+    if head == ["pane", "split"]:
+        state["panes"] += 1
+        save()
+        return ok({"type": "pane_info", "pane": {"pane_id": f"w1:p{state['panes']}"}})
+    if head == ["agent", "start"]:
+        name = argv[2]
+        e = lookup(scenario.get("agent_start"), name)
+        if e:
+            return err(e["code"], e.get("message", e["code"]))
+        return ok({"type": "agent_started", "agent": {"name": name, "agent_status": "idle"}})
+    if head == ["agent", "prompt"]:
+        name = argv[2]
+        e = lookup(scenario.get("agent_prompt"), name)
+        if e:
+            return err(e["code"], e.get("message", e["code"]))
+        return ok({"type": "agent_prompted", "agent": {"name": name, "agent_status": option(argv, "--until", "done")}})
+    if head == ["agent", "wait"]:
+        name = argv[2]
+        until = option(argv, "--until", "idle")
+        if until == "idle":
+            waited = state.setdefault("waited_idle", [])
+            if name not in waited:
+                waited.append(name)
+            save()
+        return ok({"type": "agent_info", "agent": {"name": name, "agent_status": until}})
+    if head == ["agent", "get"]:
+        name = argv[2]
+        seq = lookup(scenario.get("agent_get"), name)
+        if not seq:
+            return err("agent_not_found", f"agent target {name} not found")
+        i = state["get_calls"].get(name, 0)
+        state["get_calls"][name] = i + 1
+        save()
+        status = seq[min(i, len(seq) - 1)]
+        if status == "gone":
+            return err("agent_not_found", f"agent target {name} not found")
+        return ok({"type": "agent_info", "agent": {"name": name, "agent_status": status, "launch_pending": None}})
+    if head in (["agent", "read"], ["pane", "read"]):
+        target = argv[2]
+        if argv[0] == "agent" and target in state.get("waited_idle", []):
+            sys.stdout.write("idle\n")
+            return 0
+        text = lookup(scenario.get("screens"), target)
+        sys.stdout.write(text if text is not None else f"screen of {target}\n")
+        return 0
+    if head in (["agent", "send-keys"], ["tab", "rename"], ["pane", "rename"], ["tab", "close"], ["pane", "close"], ["tab", "focus"]):
+        return ok({"type": "ok"})
+    if head == ["notification", "show"]:
+        return ok({"type": "notification_show", "shown": True, "reason": "shown"})
+    return err("unknown_command", " ".join(argv))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,14 @@
+{
+  "name": "herdr-review",
+  "version": "0.1.0",
+  "displayName": "Herdr Review",
+  "description": "Multi-agent code review orchestrated inside herdr: visible reviewers, an orchestrator agent, a fixer agent",
+  "author": {
+    "name": "Alexander V. Zinin",
+    "email": "azinin@gmail.com",
+    "url": "https://github.com/zinin"
+  },
+  "repository": "https://github.com/zinin/herdr-review",
+  "license": "MIT",
+  "keywords": ["claude-code", "herdr", "code-review", "multi-model"]
+}
