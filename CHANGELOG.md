@@ -2,6 +2,15 @@
 
 All notable changes to herdr-review will be documented here.
 
+## [Unreleased]
+
+### Changed
+- `config.example.yaml`: every profile offers the agent's auto mode next to yolo, one of the two
+  commented out; auto mode is the active default (`--permission-mode auto` for claude and grok,
+  `--approve-for-me` for codex, plus `--add-dir` for the run directory). Checked with a real run:
+  reviewers, orchestrator and fixer all in auto mode.
+- README: the auto mode / yolo table in Configure, the `args` rule, the ` ❓` entry in Troubleshooting.
+
 ## [0.1.0] - 2026-09-10
 
 ### Added
