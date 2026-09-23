@@ -109,13 +109,15 @@ Rules the validator enforces and facts worth knowing:
 | What | Rule |
 |---|---|
 | `kind` | A herdr agent kind, which is also the executable name; `herdr agent start --help` lists them. |
-| `args` | Passed verbatim; the plugin adds nothing, so the permission flags go here (the mode table above). Copied as they are into `run.json` and `runner.log`: never a secret. |
+| `args` | Passed verbatim, with one addition: a profile of kind `claude` without a `--settings` of its own starts with `--settings '{"enableAllProjectMcpServers": true}'` (see MCP servers below). The permission flags go here (the mode table above). Copied as they are into `run.json` and `runner.log`: never a secret. |
 | `env` | For tokens and base URLs. Masked in `runner.log`; still visible in `/proc/<pid>/cmdline` while herdr creates the tab and possibly in the herdr server's own log. |
 | Profile names | `^[a-z][a-z0-9_-]{0,24}$`; `orch` and `fixer` are reserved. |
 | Presets | Every name must be a profile; `default` is used when nothing else is named. Each reviewer is a full review of the diff, so a preset's size is its cost. |
 | The file | 600 permissions (the plugin warns otherwise). The plugin never edits it: validation prints the problems and stops. |
 
 Check the result: `herdr-review profiles`.
+
+**MCP servers.** Claude Code asks at startup to approve the servers of a project's `.mcp.json` that you have not decided on, and saves every answer — Esc included — into the repository's `.claude/settings.local.json`. So that no run stops at that dialog or changes your MCP settings, every profile of kind `claude` starts with `--settings '{"enableAllProjectMcpServers": true}'`: the agents of a run get the project's servers, your user servers and the claude.ai connectors, a server you disabled explicitly stays disabled, and the setting lives on the command line only. Two consequences: an MCP server that the branch under review adds to `.mcp.json` starts in every claude agent of the run without approval; and a profile that passes its own `--settings` gets nothing added — put `"enableAllProjectMcpServers": true` into that settings file, or its agents stop at the dialog and leave the run with that reason. Codex and Grok load a project's servers without asking; the runner answers their trust dialogs, as it answers Claude Code's.
 
 ## Usage
 
@@ -180,9 +182,10 @@ herdr-review profiles               # the validated config, secrets omitted
 - `not inside herdr` — start the session in a herdr pane.
 - `config not found` — copy `config.example.yaml` from the plugin directory as shown in Configure; the message names the path the plugin looked at.
 - `Operation not permitted` from `herdr` in a Codex session — the Codex sandbox blocks the herdr socket. Approve the escalation, or start Codex with `--sandbox danger-full-access`.
-- `orchestrator failed to start … Tab … is left open` — open that tab; a login or dialog is waiting. Resolve it and run the printed `herdr agent prompt …`.
+- `orchestrator failed to start … Tab … is left open` — the message says why. The runner answers the trust dialogs of Claude Code, Codex and Grok; it never answers Claude Code's MCP approval dialog, and the message then says what to add to the profile's own `--settings`. Anything else — a login, an unknown dialog — waits in that tab: resolve it there and run the printed `herdr agent prompt …`.
 - `no runs for this repository` from `status` — `latest` is per repository. Run it from the repository under review, or pass the run directory.
 - A reviewer shows ` ✗` — `herdr-review status` gives the reason and `status.json` the last screen.
+- A reviewer or the fixer shows ` ✗` with "Claude Code asks to approve this project's MCP servers" — its profile passes its own `--settings`; add `"enableAllProjectMcpServers": true` to that file (see MCP servers in Configure).
 - A reviewer or the fixer shows ` ❓` — a dialog is waiting in its tab; in auto mode that is the CLI asking about an action. `run wait` reports it to the orchestrator within seconds, and the orchestrator answers it or fails the agent when it does not understand the dialog. `herdr agent read <name> --source visible` shows what is asked.
 - The orchestrator's tab shows ` ❓` — it is waiting for your answer in that tab.
 - A run died with the orchestrator — `status.json` stays at its phase; a new `launch` starts a new run.

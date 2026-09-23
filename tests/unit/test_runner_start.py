@@ -219,6 +219,29 @@ class StartReviewersTest(RunnerBase):
             out = r.start_reviewers()
         self.assertEqual(out["agents"]["hrtest-codex"]["state"], "working")
 
+    def test_mcp_dialog_fails_the_reviewer_with_the_reason(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("claude-opus",))
+        self.herdr.start_errors["hrtest-claude-opus"] = ("agent_not_ready", "blocked during startup")
+        self.herdr.screens["hrtest-claude-opus"] = "2 new MCP servers found in this project\n❯ [✔] one\n  [✔] two\n"
+        self.herdr.pane_screens["w1:p2"] = "2 new MCP servers found in this project\n"
+        out = self.runner(run_dir).start_reviewers()
+        a = out["agents"]["hrtest-claude-opus"]
+        self.assertEqual(a["state"], "failed")
+        self.assertIn("enableAllProjectMcpServers", a["reason"])
+        self.assertEqual(self.herdr.calls_named("agent_send_keys"), [])
+        self.assertEqual(self.herdr.calls_named("agent_prompt"), [])
+        status = json.loads((run_dir / "status.json").read_text())
+        self.assertIn("MCP servers found", status["agents"]["hrtest-claude-opus"]["last_screen"])
+        self.assertIn(("tab_rename", "w1:t2", "rv-hrtest: claude-opus ✗"), self.herdr.calls)
+
+    def test_codex_trust_dialog_resolved_then_prompted(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        self.herdr.start_errors["hrtest-codex"] = ("agent_not_ready", "blocked during startup")
+        self.herdr.screens["hrtest-codex"] = "Trust this folder?\n› 1. Trust and continue\n  2. Quit\n"
+        out = self.runner(run_dir).start_reviewers()
+        self.assertEqual(out["agents"]["hrtest-codex"]["state"], "working")
+        self.assertIn(("agent_send_keys", "hrtest-codex", ("enter",)), self.herdr.calls)
+
 
 class PromptFailFixerTest(RunnerBase):
     def setUp(self):

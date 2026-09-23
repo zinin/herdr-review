@@ -14,7 +14,7 @@ from typing import Callable, Mapping
 
 from . import PROMPTS_DIR, __version__, gitutil
 from .config import Config, is_secretish
-from .dialogs import try_resolve_startup_dialog
+from .dialogs import resolve_startup_dialog, startup_args
 from .herdr import Herdr, HerdrResult
 from .render import render_file
 from .status import RunStatus
@@ -110,7 +110,7 @@ def _unfinished_runs(project_dir: Path) -> list[str]:
 
 def _profile_spec(cfg: Config, profile: str, name: str) -> dict:
     p = cfg.profiles[profile]
-    return {"name": name, "profile": profile, "kind": p.kind, "args": list(p.args), "env_keys": sorted(p.env)}
+    return {"name": name, "profile": profile, "kind": p.kind, "args": startup_args(p.kind, p.args), "env_keys": sorted(p.env)}
 
 
 def launch(
@@ -285,9 +285,17 @@ def launch(
         status.save()
 
         r = herdr.agent_start(orch["name"], orch["kind"], pane_id, orch["args"])
-        if not r.ok and r.error_code == "agent_not_ready" and try_resolve_startup_dialog(herdr, orch["name"]):
-            log("orchestrator startup dialog resolved automatically")
-            r = HerdrResult(True, 0)
+        if not r.ok and r.error_code == "agent_not_ready":
+            outcome = resolve_startup_dialog(herdr, orch["name"])
+            if outcome.resolved:
+                log("orchestrator startup dialog resolved automatically")
+                r = HerdrResult(True, 0)
+            elif outcome.refusal:
+                raise LaunchError(
+                    f"orchestrator '{orch_profile}' stopped at a startup dialog: {outcome.refusal}\n"
+                    f"Tab {tab_id} is left open for inspection.\n"
+                    f"Run directory: {run_dir}"
+                )
         if not r.ok:
             screen = herdr.pane_read(pane_id) or ""
             raise LaunchError(

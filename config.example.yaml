@@ -14,6 +14,11 @@
 # shell command, so its profile stays yolo. The auto mode flags need Claude Code >= 2.1.111 (auto
 # mode is also gated by the subscription plan) and Codex >= 0.147.0; an older CLI rejects the flag
 # and that agent leaves the run as failed.
+#
+# Every profile of kind claude starts with --settings '{"enableAllProjectMcpServers": true}': Claude
+# Code then loads the project's .mcp.json servers without its approval dialog, whose every answer
+# would be saved into the repository's .claude/settings.local.json. A profile that passes its own
+# --settings gets nothing added and must carry that key in its settings file.
 
 profiles:                        # one mechanism for every engine: herdr kind + CLI args + env
   claude-opus:

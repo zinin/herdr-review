@@ -9,7 +9,7 @@ from typing import Callable
 
 from . import PROMPTS_DIR, gitutil
 from .config import ConfigError, is_secretish, load_config
-from .dialogs import try_resolve_startup_dialog
+from .dialogs import resolve_startup_dialog
 from .herdr import Herdr, HerdrResult
 from .layout import fixer_split, plan_grid
 from .render import render_file
@@ -335,9 +335,13 @@ class Runner:
             self._set_state(name, "idle")
             return
         if r.error_code == "agent_not_ready":
-            if try_resolve_startup_dialog(self.herdr, name):
+            outcome = resolve_startup_dialog(self.herdr, name)
+            if outcome.resolved:
                 self.log(f"{name}: startup dialog resolved automatically")
                 self._set_state(name, "idle")
+            elif outcome.refusal:
+                self.log(f"{name}: startup dialog refused: {outcome.refusal}")
+                self._set_state(name, "failed", reason=outcome.refusal, last_screen=self._pane_screen(pane))
             else:
                 self._set_state(name, "blocked-start", reason=r.message)
             return

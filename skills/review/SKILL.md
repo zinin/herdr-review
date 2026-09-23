@@ -56,7 +56,7 @@ Exit 0 → show the summary as printed (run dir, orchestrator agent, `herdr agen
 
 Exit 1 → show stderr verbatim. Two cases you can help with:
 
-- «failed to start … Tab … is left open»: `herdr agent read <name> --source visible --lines 60` shows why. A dialog → resolve it with `herdr agent send-keys <name> …`, then send the prompt from the message. Anything else → report and stop.
+- «failed to start … Tab … is left open»: the message says why. The runner answers the trust dialogs of Claude Code, Codex and Grok by itself and never answers Claude Code's MCP approval dialog — the message then says what to change in the profile. For any other screen (a login, a dialog you do not recognise) run `herdr agent read <name> --source visible --lines 60`, show the error and that screen verbatim, and stop: never press keys in that tab and never ask the user which answer to give.
 - «did not start working … Re-prompt by hand»: run the printed `herdr agent prompt …` once. If it stalls again, report and stop.
 
 ## 7. Later
