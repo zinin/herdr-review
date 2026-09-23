@@ -80,6 +80,7 @@ class PromptTemplatesTest(unittest.TestCase):
                 self.assertIn("/run/uncommitted.txt", text)
                 self.assertIn("has no copy in git", text)
                 self.assertIn("applied, not committed", text)
+                self.assertIn("committed whole or not at all", text)
                 self.assertIn("holds the user's uncommitted work; left to the user", text)
                 self.assertIn(f"git commit --only -F {message} --", text)
                 self.assertIn("git log -n 20", text)
@@ -108,6 +109,7 @@ class PromptTemplatesTest(unittest.TestCase):
         ):
             self.assertIn(phrase, text)
         self.assertNotIn("--stat", text)
+        self.assertNotIn("unprotected file", text)
         self.assertNotIn("review(auto-decide)", text)
         self.assertNotIn("review: auto-fix", text)
 
