@@ -1,4 +1,5 @@
 import json
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -243,6 +244,25 @@ class FinishTest(RunnerBase):
         out = r.finish([])
         self.assertEqual(out["closed"], ["w1:t3"])
         self.assertNotIn("w1:t2", out["closed"])
+
+    def test_finish_counts_only_the_commits_made_during_the_run(self):
+        run_dir = self.reviewed_run(2)                      # two branch commits made before the launch
+        run = json.loads((run_dir / "run.json").read_text())
+        run["head"] = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        (run_dir / "run.json").write_text(json.dumps(run))
+        (self.repo / "a.txt").write_text("fixed during the run\n")
+        git(self.repo, "commit", "-q", "-am", "fix during the run")
+        out = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([])
+        self.assertEqual(out["commits"], [gitutil.log_oneline(self.repo, "HEAD~1..HEAD").split()[0]])
+        self.assertIn("коммитов 1", self.herdr.calls_named("notification_show")[-1][2])
+
+    def test_finish_removes_the_scratch_directory(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        (run_dir / "scratch" / "codex" / "copy").mkdir(parents=True)
+        (run_dir / "scratch" / "codex" / "copy" / "x.go").write_text("package main\n")
+        Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([])
+        self.assertFalse((run_dir / "scratch").exists())
+        self.assertIn("finish: removed scratch/", (run_dir / "runner.log").read_text())
 
 
 if __name__ == "__main__":

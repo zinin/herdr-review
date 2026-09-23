@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Callable
@@ -669,13 +670,25 @@ class Runner:
 
     # ----- finish
     def _log_commits(self) -> list[str] | None:
-        """The hashes git reports for merge_base..HEAD. None when git could not be asked."""
+        """The hashes of the commits made since the run was launched. None when git could not be asked."""
+        since = self.run.get("head") or self.run["merge_base"]      # a run made before `head` existed
         try:
-            out = gitutil.log_oneline(self.repo, f"{self.run['merge_base']}..HEAD")
+            out = gitutil.log_oneline(self.repo, f"{since}..HEAD")
         except gitutil.GitError as e:
             self.log(f"finish: cannot read the commit list from git: {e}")
             return None
         return [line.split(None, 1)[0] for line in out.splitlines() if line.strip()]
+
+    def _remove_scratch(self) -> None:
+        """The reviewers' experiments may hold a whole copy of the repository: they end with the run."""
+        scratch = self.run_dir / "scratch"
+        if not scratch.exists():
+            return
+        try:
+            shutil.rmtree(scratch)
+            self.log("finish: removed scratch/")
+        except OSError as e:
+            self.log(f"finish: cannot remove {scratch}: {e}")
 
     def finish(self, commits: list[str]) -> dict:
         data = self.status.data
@@ -708,5 +721,6 @@ class Runner:
                         closed.append(ident)
                     else:
                         self.log(f"finish: close {ident} failed: {r.error_code}: {r.message}")
+        self._remove_scratch()
         self.status.save()
         return {"phase": "finished", "commits": data["commits"], "closed": closed}

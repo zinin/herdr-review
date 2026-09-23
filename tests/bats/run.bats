@@ -56,6 +56,7 @@ teardown() { teardown_env; }
   [ "$status" -eq 0 ]
   grep -q 'tab rename w1:t2 rv-.*: orch$' "$FAKE_HERDR_LOG"
 
+  echo fixed > "$REPO/a.txt"; git -C "$REPO" commit -q -am "fix during the run"
   HEAD_FULL="$(git -C "$REPO" rev-parse HEAD)"
   run "$HR" run finish --commits abc123,def456
   [ "$status" -eq 0 ]

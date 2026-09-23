@@ -180,7 +180,8 @@ herdr-review profiles               # the validated config, secrets omitted
 - **The orchestrator's tab** shows the progress, the classification of every finding (AUTO — fixed by the fixer; DISPUTED — decided one at a time; DISMISSED — false positive, with a reason), and the final report.
 - **A disputed issue without autodecide:** the tab turns ` ❓` and a herdr notification arrives. The orchestrator has written its analysis with variants and a recommendation; answer in that tab in free text: a variant letter, a variant of your own, "don't fix", "stop" (defers the rest) or "auto" (the orchestrator decides the rest).
 - **Fixes** land on your branch as commits written in your repository's own style: its subject convention, and a body when your history has them. The fixer commits only the files it changed and never deletes, moves or commits your uncommitted files: a fix inside one of them is applied and left uncommitted, and the report says so.
-- **The end:** a done notification and `report.md` in the run directory, `~/.local/state/herdr-review/runs/<project>/<timestamp>-<run_id>/` — next to `status.json`, `reviews/<profile>.md`, `issues.md`, `fix-*.md` and `runner.log`. `latest` there points at the newest run of that repository.
+- **Experiments:** each reviewer keeps its own scripts and scratch copies under `scratch/<profile>/` in the run directory — never in your repository or `/tmp`. `run finish` deletes `scratch/`.
+- **The end:** a done notification and `report.md` in the run directory, `~/.local/state/herdr-review/runs/<project>/<timestamp>-<run_id>/` — next to `status.json`, `uncommitted.txt`, `reviews/<profile>.md`, `issues.md`, `fix-*.md` and `runner.log`. The report and `herdr-review status` list the commits made during the run. `latest` there points at the newest run of that repository.
 
 ## Troubleshooting
 
