@@ -223,9 +223,13 @@ class GitUtilTest(unittest.TestCase):
         key = Path(self.tmp.name) / "signing-key"
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True, capture_output=True)
         git(self.repo, "config", "gpg.format", "ssh")
+        git(self.repo, "config", "gpg.ssh.program", "ssh-keygen")         # over a global one such as 1Password's op-ssh-sign
         git(self.repo, "config", "user.signingKey", str(key))
         (self.repo / "a.txt").write_text("signed\n")
-        git(self.repo, "commit", "-q", "-S", "-am", "signed commit")
+        signed = subprocess.run(["git", "-C", str(self.repo), "commit", "-q", "-S", "-am", "signed commit"],
+                                capture_output=True, text=True)
+        if signed.returncode != 0:                                         # git < 2.34 or OpenSSH < 8.1 cannot sign with SSH
+            self.skipTest("SSH signing is unavailable: " + signed.stderr.strip())
         git(self.repo, "config", "log.showSignature", "true")
         out = gitutil.log_oneline(self.repo, "HEAD")
         self.assertEqual(len(out.splitlines()), 2, out)                    # init and the signed commit
