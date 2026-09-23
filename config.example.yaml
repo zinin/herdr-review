@@ -59,6 +59,7 @@ presets:
 settings:
   layout: tabs                   # tabs = one tab per agent | grid = panes in the orchestrator's tab
   autodecide: false              # true = the orchestrator decides disputed issues itself
+  scope: auto                    # auto = the branch's commits, else the working tree | commits | worktree
   close_agents_on_finish: false  # true = close reviewer and fixer tabs/panes at the end
   checkin_sec: 300               # how often `run wait` returns control to the orchestrator
   runs_dir: ~/.local/state/herdr-review/runs   # keep the --add-dir values above in step with it

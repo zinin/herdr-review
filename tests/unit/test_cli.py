@@ -3,11 +3,11 @@ import json
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from herdr_review import __version__, gitutil
-from herdr_review.cli import build_parser, main, resolve_status_run_dir, status_run_spec
+from herdr_review.cli import build_parser, main, resolve_status_run_dir, scope_lines, status_run_spec
 from herdr_review.launch import basename_slug, project_slug
 from herdr_review.runner import RunnerError
 from herdr_review.status import RunStatus
@@ -98,6 +98,25 @@ class CliParsingTest(unittest.TestCase):
             with self.assertRaises(RunnerError) as ctx:
                 cmd_run(args, {"HERDR_REVIEW_POLL_SEC": raw})
             self.assertIn("must be a positive number", str(ctx.exception))
+
+    def test_launch_scope_flag(self):
+        self.assertEqual(build_parser().parse_args(["launch", "--scope", "worktree"]).scope, "worktree")
+        self.assertIsNone(build_parser().parse_args(["launch"]).scope)
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                build_parser().parse_args(["launch", "--scope", "everything"])
+
+    def test_scope_lines(self):
+        commits = {"scope": "commits", "base": "origin/master", "uncommitted": [" M a.txt", "?? notes/", "?? x"], "untracked": None}
+        self.assertEqual(scope_lines(commits), [
+            "  объём:        коммиты ветки (origin/master..HEAD)",
+            "  вне ревью:    ваши незакоммиченные файлы (изменённых: 1, неотслеживаемых: 2); их никто не тронет",
+        ])
+        self.assertEqual(scope_lines({**commits, "uncommitted": []}), ["  объём:        коммиты ветки (origin/master..HEAD)"])
+        worktree = {"scope": "worktree", "base": "master", "uncommitted": ["?? new.py"], "untracked": {"files": 3, "skipped": 1}}
+        self.assertEqual(scope_lines(worktree), [
+            "  объём:        рабочее дерево — коммиты и незакоммиченное; неотслеживаемых файлов у ревьюеров: 3, из них пропущено: 1",
+        ])
 
 
 class ResolveLatestTest(unittest.TestCase):

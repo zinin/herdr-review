@@ -152,10 +152,70 @@ class LaunchTest(unittest.TestCase):
         self.assertIn("ANTHROPIC_AUTH_TOKEN=***", lines[0])
         self.assertNotIn("sk-tiny", lines[0])
 
-    def test_uncommitted_changes_are_a_warning(self):
+    def test_a_dirty_tree_stays_outside_a_review_of_the_commits(self):
         (self.repo / "a.txt").write_text("dirty\n")
+        (self.repo / "notes").mkdir()
+        (self.repo / "notes" / "todo.md").write_text("mine\n")
         res = self.do_launch()
-        self.assertTrue(any("uncommitted" in w for w in res["warnings"]))
+        run_dir = Path(res["run_dir"])
+        self.assertEqual(res["scope"], "commits")
+        self.assertEqual(res["uncommitted"], [" M a.txt", "?? notes/"])
+        self.assertIsNone(res["untracked"])
+        self.assertFalse(any("uncommitted" in w for w in res["warnings"]))
+        self.assertEqual((run_dir / "uncommitted.txt").read_text(), " M a.txt\n?? notes/\n")
+        run_json = json.loads((run_dir / "run.json").read_text())
+        self.assertEqual((run_json["scope"], run_json["uncommitted"]), ("commits", [" M a.txt", "?? notes/"]))
+        head = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(run_json["head"], head)
+        prompt = (run_dir / "prompts" / "codex.md").read_text()
+        self.assertIn(f"git diff {run_json['merge_base']} HEAD --", prompt)
+        self.assertIn("?? notes/", prompt)
+        self.assertNotIn("git ls-files --others", prompt)
+
+    def test_nothing_committed_reviews_the_working_tree(self):
+        git(self.repo, "switch", "-q", "master")
+        git(self.repo, "switch", "-q", "-c", "wip")
+        (self.repo / "new.py").write_text("print(1)\n")
+        (self.repo / "blob.bin").write_bytes(b"\0\1\2")
+        res = self.do_launch()
+        self.assertEqual(res["scope"], "worktree")
+        self.assertEqual(res["untracked"], {"files": 2, "skipped": 1})
+        prompt = (Path(res["run_dir"]) / "prompts" / "codex.md").read_text()
+        self.assertIn("- `new.py` (9 B)", prompt)
+        self.assertIn("- `blob.bin` (3 B) — skip: binary", prompt)
+
+    def test_the_scope_flag_overrides_the_setting(self):
+        (self.repo / "new.py").write_text("x\n")
+        self.cfg.settings.scope = "worktree"
+        self.assertEqual(self.do_launch()["scope"], "worktree")
+        res = launch(LaunchOptions(scope="commits"), self.cfg, FakeHerdr(), ENV, self.repo, self.runner, which=which_ok, run_id="hrcommits")
+        self.assertEqual(res["scope"], "commits")
+
+    def test_commits_scope_without_commits_is_refused(self):
+        git(self.repo, "switch", "-q", "master")
+        git(self.repo, "switch", "-q", "-c", "wip")
+        (self.repo / "new.py").write_text("x\n")
+        with self.assertRaises(LaunchError) as ctx:
+            self.do_launch(scope="commits")
+        self.assertIn("nothing committed on this branch since master", str(ctx.exception))
+        self.assertFalse((self.root / "runs").exists())          # refused before any run directory
+
+    def test_every_reviewer_gets_a_scratch_directory(self):
+        res = self.do_launch()
+        run_dir = Path(res["run_dir"])
+        self.assertEqual(sorted(p.name for p in (run_dir / "scratch").iterdir()), ["claude-opus", "codex"])
+        self.assertIn(str(run_dir / "scratch" / "codex"), (run_dir / "prompts" / "codex.md").read_text())
+
+    def test_a_long_list_of_uncommitted_files_is_capped_in_the_prompt_and_complete_on_disk(self):
+        for i in range(60):
+            (self.repo / f"junk{i:02}.txt").write_text("x\n")
+        res = self.do_launch()
+        run_dir = Path(res["run_dir"])
+        self.assertEqual(len((run_dir / "uncommitted.txt").read_text().splitlines()), 60)
+        prompt = (run_dir / "prompts" / "codex.md").read_text()
+        self.assertIn("?? junk49.txt", prompt)
+        self.assertNotIn("?? junk50.txt", prompt)
+        self.assertIn(f"…and 10 more: {run_dir / 'uncommitted.txt'} lists them all.", prompt)
 
     def test_focus_switches_to_the_tab(self):
         self.do_launch(focus=True)

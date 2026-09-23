@@ -118,17 +118,6 @@ def committed_changes(repo: Path | str, sha: str) -> bool:
     return False
 
 
-def has_changes(repo: Path | str, sha: str) -> bool:
-    """True when the working tree differs from <sha> (committed, staged, or untracked)."""
-    p = _run(repo, "diff", "--quiet", sha)
-    if p.returncode == 1:
-        return True
-    if p.returncode != 0:
-        raise GitError(f"git diff --quiet {sha} failed: {p.stderr.strip()}")
-    porcelain = _out(repo, "status", "--porcelain", "--untracked-files=all")
-    return bool(porcelain.strip())
-
-
 def _untracked(repo: Path | str) -> list[str]:
     out = _out(repo, "status", "--porcelain", "--untracked-files=all", "-z")
     return sorted(entry[3:] for entry in out.split("\0") if entry.startswith("?? "))

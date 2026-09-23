@@ -112,3 +112,31 @@ teardown() { teardown_env; }
   [[ "$output" == *"w1:t2"* ]]
   ! grep -q 'agent send-keys' "$FAKE_HERDR_LOG"
 }
+
+@test "launch: a dirty tree is left out of a review of the commits" {
+  echo edited > a.txt; mkdir notes; echo x > notes/one.md
+  run "$HR" launch
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"объём:        коммиты ветки (master..HEAD)"* ]]
+  [[ "$output" == *"изменённых: 1, неотслеживаемых: 1"* ]]
+  ! [[ "$output" == *"uncommitted changes"* ]]
+  RUN="$(run_dir_of)"
+  grep -qx ' M a.txt' "$RUN/uncommitted.txt"
+  grep -qx '?? notes/' "$RUN/uncommitted.txt"
+  grep -q 'git diff .* HEAD --' "$RUN/prompts/codex.md"
+}
+
+@test "launch: --scope worktree hands the reviewers the untracked files" {
+  echo new > new.txt
+  run "$HR" launch --json --scope worktree
+  [ "$status" -eq 0 ]
+  json_has "$output" 'd["scope"]=="worktree" and d["untracked"]=={"files": 1, "skipped": 0}'
+  grep -qF -- '- `new.txt` (4 B)' "$(run_dir_of)/prompts/codex.md"
+}
+
+@test "launch: --scope commits refuses a branch with nothing committed" {
+  git switch -q master; git switch -q -c empty; echo wip > b.txt
+  run "$HR" launch --scope commits
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"nothing committed on this branch since master"* ]]
+}

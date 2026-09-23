@@ -10,11 +10,12 @@ from pathlib import Path
 from typing import Mapping
 
 from . import PACKAGE_ROOT, __version__, gitutil
-from .config import ConfigError, load_config, public_json
+from .config import SCOPES, ConfigError, load_config, public_json
 from .herdr import Herdr
 from .launch import LaunchError, LaunchOptions, basename_slug, launch, project_slug
 from .render import RenderError
 from .runner import Runner, RunnerError
+from .scope import uncommitted_counts
 from .status import RunStatus, StatusError
 
 RUNNER_PATH = PACKAGE_ROOT / "bin" / "herdr-review"
@@ -40,6 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--layout", choices=("tabs", "grid"))
     p.add_argument("--description", help="what was implemented (goes into the review prompt)")
     p.add_argument("--plan", help="path to the plan / requirements document")
+    p.add_argument("--scope", choices=SCOPES,
+                   help="the change under review: auto (the branch's commits, else the working tree), commits, worktree")
     p.add_argument("--focus", action="store_true", help="switch to the orchestrator tab")
     p.add_argument("--json", action="store_true")
 
@@ -156,12 +159,30 @@ def cmd_profiles(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     return 0
 
 
+def scope_lines(result: dict) -> list[str]:
+    """The launch summary's lines about what the reviewers review."""
+    if result["scope"] == "commits":
+        lines = [f"  объём:        коммиты ветки ({result['base']}..HEAD)"]
+        if result["uncommitted"]:
+            changed, untracked = uncommitted_counts(result["uncommitted"])
+            lines.append(f"  вне ревью:    ваши незакоммиченные файлы (изменённых: {changed}, неотслеживаемых: {untracked}); их никто не тронет")
+        return lines
+    line = "  объём:        рабочее дерево — коммиты и незакоммиченное"
+    untracked = result.get("untracked") or {}
+    if untracked.get("files"):
+        line += f"; неотслеживаемых файлов у ревьюеров: {untracked['files']}"
+        if untracked.get("skipped"):
+            line += f", из них пропущено: {untracked['skipped']}"
+    return [line]
+
+
 def cmd_launch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     cfg = load_config(environ=environ)
     reviewers = [x.strip() for x in args.reviewers.split(",") if x.strip()] if args.reviewers else None
     opts = LaunchOptions(
         preset=args.preset, reviewers=reviewers, orchestrator=args.orchestrator, fixer=args.fixer, base=args.base,
         autodecide=args.autodecide, layout=args.layout, description=args.description, plan=args.plan, focus=args.focus,
+        scope=args.scope,
     )
     result = launch(opts, cfg, Herdr(), environ, Path.cwd(), RUNNER_PATH)
     if args.json:
@@ -174,6 +195,8 @@ def cmd_launch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     if result["skipped"]:
         print(f"  пропущены:    {', '.join(result['skipped'])}")
     print(f"  база:         {result['base']} ({result['merge_base'][:12]})")
+    for line in scope_lines(result):
+        print(line)
     print(f"  autodecide:   {'on' if result['autodecide'] else 'off'}; layout: {result['layout']}")
     print(f"  смотреть:     {result['hints']['focus']}")
     print(f"  статус:       {result['hints']['status']}")

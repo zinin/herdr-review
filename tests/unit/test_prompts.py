@@ -5,7 +5,7 @@ from herdr_review.render import placeholders, render_file
 
 EXPECTED = {
     "terminal.md": {"FILE"},
-    "reviewer.md": {"DESCRIPTION", "PLAN_REFERENCE", "REPO", "BASE_REF", "MERGE_BASE", "RESULT_PATH", "REVIEWER"},
+    "reviewer.md": {"DESCRIPTION", "PLAN_REFERENCE", "REPO", "BASE_REF", "MERGE_BASE", "RESULT_PATH", "REVIEWER", "SCOPE_STEPS", "SCRATCH_DIR"},
     "fixer-auto.md": {"RUN_DIR"},
     "fixer-decision.md": {"RUN_DIR"},
     "scope-commits.md": {"MERGE_BASE", "UNCOMMITTED"},
@@ -29,13 +29,19 @@ class PromptTemplatesTest(unittest.TestCase):
         self.assertEqual(render_file(PROMPTS_DIR / "terminal.md", {"FILE": "/r/x.md"}).strip(), "Read /r/x.md and follow it exactly.")
 
     def test_reviewer_prompt_has_required_headings_and_rules(self):
-        text = render_file(PROMPTS_DIR / "reviewer.md", {k: "v" for k in EXPECTED["reviewer.md"]})
+        values = {k: "v" for k in EXPECTED["reviewer.md"]}
+        values["SCOPE_STEPS"] = "1. step one\n2. step two"
+        values["SCRATCH_DIR"] = "/run/scratch/codex"
+        text = render_file(PROMPTS_DIR / "reviewer.md", values)
         for heading in ("### Strengths", "### Critical Issues", "### Important Issues", "### Minor Issues", "### Assessment"):
             self.assertIn(heading, text)
-        self.assertIn("git diff v --", text)
+        self.assertIn("1. step one\n2. step two\n\n3. Read the modified files", text)
+        self.assertIn("goes under `/run/scratch/codex`", text)
+        self.assertIn("not into /tmp", text)
+        self.assertIn("tracked or untracked", text)
         self.assertIn("DONE", text)
-        self.assertIn("Do NOT modify", text)
         self.assertIn("gitignored", text)
+        self.assertNotIn("git ls-files --others", text)
 
     def test_fixer_skeletons_mention_report_and_done(self):
         for name in ("fixer-auto.md", "fixer-decision.md"):

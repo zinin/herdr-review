@@ -53,28 +53,16 @@ class GitUtilTest(unittest.TestCase):
         git(self.repo, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
         self.assertEqual(gitutil.detect_base(self.repo), "origin/master")
 
-    def test_merge_base_and_changes(self):
+    def test_merge_base_and_current_branch(self):
         git(self.repo, "switch", "-q", "-c", "feat")
         base = gitutil.merge_base(self.repo, "master")
         self.assertEqual(len(base), 40)
-        self.assertFalse(gitutil.has_changes(self.repo, base))
         (self.repo / "a.txt").write_text("two\n")
-        self.assertTrue(gitutil.has_changes(self.repo, base))
         git(self.repo, "commit", "-q", "-am", "change")
-        self.assertTrue(gitutil.has_changes(self.repo, base))
+        self.assertEqual(gitutil.merge_base(self.repo, "master"), base)
         self.assertEqual(gitutil.current_branch(self.repo), "feat")
         with self.assertRaises(gitutil.GitError):
             gitutil.merge_base(self.repo, "no-such-branch")
-
-    def test_has_changes_sees_untracked_files(self):
-        base = gitutil.merge_base(self.repo, "master")
-        self.assertFalse(gitutil.has_changes(self.repo, base))
-        (self.repo / "only-new.py").write_text("print(1)\n")
-        self.assertTrue(gitutil.has_changes(self.repo, base))
-
-    def test_has_changes_bad_sha_is_error(self):
-        with self.assertRaises(gitutil.GitError):
-            gitutil.has_changes(self.repo, "not-a-commit")
 
     def test_tree_hash_changes_with_untracked_and_modified_files(self):
         h0 = gitutil.tree_hash(self.repo)

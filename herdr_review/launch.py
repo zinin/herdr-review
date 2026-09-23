@@ -17,6 +17,7 @@ from .config import Config, is_secretish
 from .dialogs import resolve_startup_dialog, startup_args
 from .herdr import Herdr, HerdrResult
 from .render import render_file
+from .scope import ScopeError, resolve_scope, reviewer_steps
 from .status import RunStatus
 
 RUN_ID_ALPHABET = string.ascii_lowercase + string.digits
@@ -39,6 +40,7 @@ class LaunchOptions:
     layout: str | None = None
     description: str | None = None
     plan: str | None = None
+    scope: str | None = None
     focus: bool = False
 
 
@@ -157,12 +159,12 @@ def launch(
     try:
         base = opts.base or gitutil.detect_base(repo)
         mb = gitutil.merge_base(repo, base)
-    except gitutil.GitError as e:
+        head = gitutil.head_commit(repo)
+        uncommitted = gitutil.status_lines(repo)
+        scope = resolve_scope(opts.scope or cfg.settings.scope, gitutil.committed_changes(repo, mb), bool(uncommitted), base, mb)
+        untracked = gitutil.untracked_files(repo) if scope == "worktree" else []
+    except (gitutil.GitError, ScopeError) as e:
         raise LaunchError(str(e)) from e
-    if not gitutil.has_changes(repo, mb):
-        raise LaunchError(f"nothing to review: the working tree equals {base} ({mb[:12]})")
-    if gitutil.status_short(repo).strip():
-        warnings.append("working tree has uncommitted changes; yolo reviewers share this tree and can modify them")
     layout = opts.layout or cfg.settings.layout
     autodecide = cfg.settings.autodecide if opts.autodecide is None else opts.autodecide
     project = project_slug(repo)
@@ -176,11 +178,15 @@ def launch(
     run_id = run_id or new_run_id()
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
     run_dir = project_dir / f"{stamp}-{run_id}"
+    listing = run_dir / "uncommitted.txt"
     try:
         run_dir.mkdir(parents=True, mode=0o700)
         run_dir.chmod(0o700)
         (run_dir / "prompts").mkdir()
         (run_dir / "reviews").mkdir()
+        for pname in usable:
+            (run_dir / "scratch" / pname).mkdir(parents=True)
+        listing.write_text("".join(f"{line}\n" for line in uncommitted), encoding="utf-8")
     except OSError as e:
         raise LaunchError(f"cannot create the run directory {run_dir}: {e}") from e
     reviewers_spec = [_profile_spec(cfg, p, f"{run_id}-{p}") for p in usable]
@@ -198,6 +204,9 @@ def launch(
         "branch": branch,
         "base": base,
         "merge_base": mb,
+        "head": head,
+        "scope": scope,
+        "uncommitted": uncommitted,
         "description": description,
         "plan": plan_ref,
         "autodecide": autodecide,
@@ -214,6 +223,7 @@ def launch(
     (run_dir / "run.json").write_text(json.dumps(run_json, indent=2, ensure_ascii=False), encoding="utf-8")
 
     # ----- prompts
+    steps = reviewer_steps(scope, mb, uncommitted, untracked, listing)
     for rv in reviewers_spec:
         text = render_file(PROMPTS_DIR / "reviewer.md", {
             "DESCRIPTION": description,
@@ -223,6 +233,8 @@ def launch(
             "MERGE_BASE": mb,
             "RESULT_PATH": str(run_dir / "reviews" / f"{rv['profile']}.md"),
             "REVIEWER": rv["profile"],
+            "SCOPE_STEPS": steps,
+            "SCRATCH_DIR": str(run_dir / "scratch" / rv["profile"]),
         })
         (run_dir / "prompts" / f"{rv['profile']}.md").write_text(text, encoding="utf-8")
     orch_text = render_file(PROMPTS_DIR / "orchestrator.md", {
@@ -340,6 +352,9 @@ def launch(
         "skipped": [p for p in reviewers if p not in usable],
         "base": base,
         "merge_base": mb,
+        "scope": scope,
+        "uncommitted": uncommitted,
+        "untracked": {"files": len(untracked), "skipped": sum(1 for f in untracked if f.skip)} if scope == "worktree" else None,
         "autodecide": autodecide,
         "layout": layout,
         "warnings": warnings,
