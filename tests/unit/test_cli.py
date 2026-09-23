@@ -118,6 +118,12 @@ class CliParsingTest(unittest.TestCase):
             "  объём:        рабочее дерево — коммиты и незакоммиченное; неотслеживаемых файлов у ревьюеров: 3, из них пропущено: 1",
         ])
 
+    def test_close_parses(self):
+        args = build_parser().parse_args(["close", "latest", "--force", "--json"])
+        self.assertEqual((args.cmd, status_run_spec(args), args.force, args.json), ("close", "latest", True, True))
+        args = build_parser().parse_args(["close"])
+        self.assertEqual((status_run_spec(args), args.force), (None, False))
+
 
 class ResolveLatestTest(unittest.TestCase):
     """`latest` is per repository, and two checkouts named the same must not share it."""

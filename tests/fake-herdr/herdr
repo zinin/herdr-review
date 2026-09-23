@@ -3,7 +3,7 @@
 
 Environment:
   FAKE_HERDR_LOG       every invocation's argv is appended here, one line each
-  FAKE_HERDR_SCENARIO  JSON file: server_down, agent_start, agent_prompt, agent_get, screens (see Task 14)
+  FAKE_HERDR_SCENARIO  JSON file: server_down, agent_start, agent_prompt, agent_get, screens, close
   FAKE_HERDR_STATE     JSON file with counters (tabs, panes, per-agent `agent get` call counts)
 """
 import fnmatch
@@ -117,7 +117,12 @@ def main():
         text = lookup(scenario.get("screens"), target)
         sys.stdout.write(text if text is not None else f"screen of {target}\n")
         return 0
-    if head in (["agent", "send-keys"], ["tab", "rename"], ["pane", "rename"], ["tab", "close"], ["pane", "close"], ["tab", "focus"]):
+    if head in (["tab", "close"], ["pane", "close"]):
+        e = lookup(scenario.get("close"), argv[2])
+        if e:
+            return err(e["code"], e.get("message", e["code"]))
+        return ok({"type": "ok"})
+    if head in (["agent", "send-keys"], ["tab", "rename"], ["pane", "rename"], ["tab", "focus"]):
         return ok({"type": "ok"})
     if head == ["notification", "show"]:
         return ok({"type": "notification_show", "shown": True, "reason": "shown"})

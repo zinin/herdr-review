@@ -51,6 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run", help="run directory or 'latest' (default: $HERDR_REVIEW_RUN, else latest)")
     p.add_argument("--json", action="store_true")
 
+    p = sub.add_parser("close", help="close every tab and pane of a finished run")
+    p.add_argument("run_pos", nargs="?", metavar="DIR", help="run directory or 'latest'")
+    p.add_argument("--run", help="run directory or 'latest' (default: $HERDR_REVIEW_RUN, else latest)")
+    p.add_argument("--force", action="store_true", help="close a run that is still in progress")
+    p.add_argument("--json", action="store_true")
+
     r = sub.add_parser("run", help="runner subcommands used by the orchestrator agent")
     rs = r.add_subparsers(dest="subcmd", required=True)
 
@@ -240,6 +246,20 @@ def cmd_status(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     return 0
 
 
+def cmd_close(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
+    run_dir = resolve_status_run_dir(status_run_spec(args), environ, Path.cwd())
+    result = Runner(run_dir).close(force=args.force)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(f"закрыто: {', '.join(result['closed']) or 'ничего'}")
+        if result["already_closed"]:
+            print(f"уже закрыты: {', '.join(result['already_closed'])}")
+        for ident, why in result["failed"].items():
+            print(f"не удалось закрыть {ident}: {why}", file=sys.stderr)
+    return 1 if result["failed"] else 0
+
+
 def autodecide_now(runner: Runner) -> bool:
     """Fresh from disk: a `run wait` can hold its in-memory snapshot for a whole check-in window."""
     try:
@@ -297,6 +317,8 @@ def dispatch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
         return cmd_launch(args, environ)
     if args.cmd == "status":
         return cmd_status(args, environ)
+    if args.cmd == "close":
+        return cmd_close(args, environ)
     if args.cmd == "run":
         return cmd_run(args, environ)
     return 2

@@ -64,3 +64,5 @@ Exit 1 → show stderr verbatim. Two cases you can help with:
 ## 7. Later
 
 «Как там ревью?» → `"$HR" status --run latest`, relay the output. `latest` is resolved per repository: run it from the repository under review, or pass that run's directory as `--run`. The orchestrator's tab is `rv-<run_id>: orch`; disputed issues are answered there.
+
+«Закрой вкладки ревью» → `"$HR" close --run latest`, relay the output. It refuses a run that is still in progress; pass `--force` only when the user asks for it.

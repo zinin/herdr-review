@@ -706,21 +706,49 @@ class Runner:
         self.herdr.notification_show("herdr-review: готово", body=f"{self.run_id}: отзывов {reviews}, коммитов {len(data['commits'])}", sound="done")
         closed: list[str] = []
         if self.run.get("close_agents_on_finish"):
-            for a in data["agents"].values():
-                if self.layout == "tabs" and a.get("tab"):
-                    ident = a["tab"]
-                    r = self.herdr.tab_close(ident)
-                    if r.ok:
-                        closed.append(ident)
-                    else:
-                        self.log(f"finish: close {ident} failed: {r.error_code}: {r.message}")
-                elif a.get("pane"):
-                    ident = a["pane"]
-                    r = self.herdr.pane_close(ident)
-                    if r.ok:
-                        closed.append(ident)
-                    else:
-                        self.log(f"finish: close {ident} failed: {r.error_code}: {r.message}")
+            closed, _, _ = self._close_all(self._agent_targets(), "finish")
         self._remove_scratch()
         self.status.save()
         return {"phase": "finished", "commits": data["commits"], "closed": closed}
+
+    # ----- close
+    def _agent_targets(self) -> list[tuple[str, bool]]:
+        """(id, is_tab) for every agent's own tab (layout tabs) or pane (layout grid)."""
+        targets: list[tuple[str, bool]] = []
+        for a in self.status.data["agents"].values():
+            if self.layout == "tabs" and a.get("tab"):
+                targets.append((a["tab"], True))
+            elif a.get("pane"):
+                targets.append((a["pane"], False))
+        return targets
+
+    def _close_all(self, targets: list[tuple[str, bool]], who: str) -> tuple[list[str], list[str], dict[str, str]]:
+        """Close each target: (closed, already closed, failed with the reason)."""
+        closed: list[str] = []
+        gone: list[str] = []
+        failed: dict[str, str] = {}
+        for ident, is_tab in targets:
+            r = self.herdr.tab_close(ident) if is_tab else self.herdr.pane_close(ident)
+            if r.ok:
+                closed.append(ident)
+            elif r.error_code and r.error_code.endswith("not_found") and r.error_code not in HERDR_ERROR_CODES:
+                gone.append(ident)
+            else:
+                failed[ident] = f"{r.error_code}: {r.message}"
+                self.log(f"{who}: close {ident} failed: {r.error_code}: {r.message}")
+        return closed, gone, failed
+
+    def close(self, force: bool = False) -> dict:
+        """Close every tab and pane the run opened. A run in progress is refused unless forced."""
+        phase = self.status.data.get("phase")
+        if phase not in ("finished", "aborted") and not force:
+            raise RunnerError(f"run {self.run_id} is still in phase {phase}; closing its tabs stops its agents — pass --force")
+        # In the grid layout every agent is a pane of the orchestrator's tab: closing that tab closes them all.
+        targets = self._agent_targets() if self.layout == "tabs" else []
+        orch = self.status.data.get("orchestrator") or {}
+        if orch.get("tab"):
+            targets.append((orch["tab"], True))
+        closed, gone, failed = self._close_all(targets, "close")
+        self.status.set("closed_at", now_iso())
+        self.status.save()
+        return {"closed": closed, "already_closed": gone, "failed": failed}

@@ -184,3 +184,35 @@ teardown() { teardown_env; }
   [ "$status" -eq 0 ]
   json_has "$output" 'd["was"] is True'
 }
+
+@test "close: refuses a run in progress, then closes every tab once it has finished" {
+  run "$HR" launch --json
+  [ "$status" -eq 0 ]
+  RUN="$(run_dir_of)"
+  run "$HR" run start-reviewers --run "$RUN"
+  [ "$status" -eq 0 ]
+  run "$HR" close
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"still in phase reviewing"* ]]
+  [ "$(grep -c 'tab close' "$FAKE_HERDR_LOG")" -eq 0 ]
+  run "$HR" run finish --run "$RUN"
+  [ "$status" -eq 0 ]
+  run "$HR" close --json
+  [ "$status" -eq 0 ]
+  json_has "$output" 'd["closed"]==["w1:t3","w1:t4","w1:t2"] and d["failed"]=={}'
+}
+
+@test "close: a tab closed by hand is not an error; a failed close is" {
+  run "$HR" launch --json
+  RUN="$(run_dir_of)"
+  run "$HR" run start-reviewers --run "$RUN"
+  run "$HR" run finish --run "$RUN"
+  echo '{"close": {"w1:t3": {"code": "tab_not_found", "message": "tab w1:t3 not found"}}}' > "$FAKE_HERDR_SCENARIO"
+  run "$HR" close --json
+  [ "$status" -eq 0 ]
+  json_has "$output" 'd["already_closed"]==["w1:t3"] and "w1:t4" in d["closed"]'
+  echo '{"close": {"w1:t4": {"code": "server_error", "message": "boom"}}}' > "$FAKE_HERDR_SCENARIO"
+  run "$HR" close
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"не удалось закрыть w1:t4: server_error: boom"* ]]
+}

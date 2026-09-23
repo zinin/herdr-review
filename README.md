@@ -169,6 +169,7 @@ herdr-review launch --reviewers codex,grok --orchestrator claude-opus --fixer cl
 herdr-review launch --preset default --scope worktree   # uncommitted work is part of the change
 herdr-review status                 # the latest run of the repository you are in
 herdr-review status <run dir>       # any run
+herdr-review close                  # close every tab of the latest finished run
 herdr-review profiles               # the validated config, secrets omitted
 ```
 
@@ -176,7 +177,7 @@ herdr-review profiles               # the validated config, secrets omitted
 
 ### During the run
 
-- **Tabs:** `rv-<run_id>: orch` (the orchestrator), `rv-<run_id>: <profile>` per reviewer, `rv-<run_id>: fixer` once there is something to fix. Labels carry the state: ` ⏳` working, ` ✓` done, ` ✗` failed, ` ❓` stuck on a dialog or waiting for you.
+- **Tabs:** `rv-<run_id>: orch` (the orchestrator), `rv-<run_id>: <profile>` per reviewer, `rv-<run_id>: fixer` once there is something to fix. Labels carry the state: ` ⏳` working, ` ✓` done, ` ✗` failed, ` ❓` stuck on a dialog or waiting for you. Once the run has finished, `herdr-review close` closes every tab it opened; `settings.close_agents_on_finish: true` closes the reviewers' and the fixer's by itself at the end.
 - **The orchestrator's tab** shows the progress, the classification of every finding (AUTO — fixed by the fixer; DISPUTED — decided one at a time; DISMISSED — false positive, with a reason), and the final report.
 - **A disputed issue without autodecide:** the tab turns ` ❓` and a herdr notification arrives. The orchestrator has written its analysis with variants and a recommendation; answer in that tab in free text: a variant letter, a variant of your own, "don't fix", "stop" (defers the rest) or "auto" (the orchestrator decides the rest).
 - **Fixes** land on your branch as commits written in your repository's own style: its subject convention, and a body when your history has them. The fixer commits only the files it changed and never deletes, moves or commits your uncommitted files: a fix inside one of them is applied and left uncommitted, and the report says so.
