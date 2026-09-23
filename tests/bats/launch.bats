@@ -17,9 +17,9 @@ teardown() { teardown_env; }
   grep -qF -- '--timeout 300000 -- --settings {"enableAllProjectMcpServers": true, "attribution": {"commit": ""}} --model opus' "$FAKE_HERDR_LOG"
   grep -q "agent prompt hr.*-orch Read $RUN/orchestrator.md and follow it exactly. Do not stop until the run is finished. --wait --until working --timeout 60000" "$FAKE_HERDR_LOG"
   grep -q 'SECRET_TOKEN=\*\*\*' "$RUN/runner.log"
-  ! grep -q 's3cret-value' "$RUN/runner.log"
-  ! grep -q 's3cret-value' "$RUN/run.json"
-  ! grep -q 's3cret-value' "$RUN/orchestrator.md"
+  [ "$(grep -c 's3cret-value' "$RUN/runner.log")" -eq 0 ]
+  [ "$(grep -c 's3cret-value' "$RUN/run.json")" -eq 0 ]
+  [ "$(grep -c 's3cret-value' "$RUN/orchestrator.md")" -eq 0 ]
 }
 
 @test "launch: text output names the run and the hints" {
