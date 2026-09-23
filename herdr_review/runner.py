@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
+import stat
 import time
 from pathlib import Path
 from typing import Callable
@@ -685,6 +687,11 @@ class Runner:
         if not scratch.exists():
             return
         try:
+            for root, dirs, _ in os.walk(scratch):
+                for d in dirs:
+                    path = os.path.join(root, d)
+                    if not os.path.islink(path):          # never chmod through a link out of scratch/
+                        os.chmod(path, stat.S_IRWXU)
             shutil.rmtree(scratch)
             self.log("finish: removed scratch/")
         except OSError as e:

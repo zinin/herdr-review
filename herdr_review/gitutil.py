@@ -206,5 +206,6 @@ def status_lines(repo: Path | str) -> list[str]:
 
 
 def log_oneline(repo: Path | str, range_: str) -> str:
-    """One line per commit, colour-free even under color.ui=always: `finish` reads the hashes."""
-    return _out(repo, "log", "--oneline", "--no-color", range_)
+    """One line per commit, colour-free even under color.ui=always and without signature lines even
+    under log.showSignature=true: `finish` reads the hashes."""
+    return _out(repo, "log", "--oneline", "--no-color", "--no-show-signature", range_)

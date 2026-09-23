@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -204,6 +205,19 @@ class GitUtilTest(unittest.TestCase):
         out = gitutil.log_oneline(self.repo, "HEAD")
         self.assertNotIn("\x1b", out)
         self.assertTrue(out.startswith(short + " "), out)
+
+    def test_log_oneline_is_one_line_per_commit_under_log_show_signature(self):
+        if shutil.which("ssh-keygen") is None:
+            self.skipTest("ssh-keygen is not installed")
+        key = Path(self.tmp.name) / "signing-key"
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True, capture_output=True)
+        git(self.repo, "config", "gpg.format", "ssh")
+        git(self.repo, "config", "user.signingKey", str(key))
+        (self.repo / "a.txt").write_text("signed\n")
+        git(self.repo, "commit", "-q", "-S", "-am", "signed commit")
+        git(self.repo, "config", "log.showSignature", "true")
+        out = gitutil.log_oneline(self.repo, "HEAD")
+        self.assertEqual(len(out.splitlines()), 2, out)                    # init and the signed commit
 
 
 if __name__ == "__main__":

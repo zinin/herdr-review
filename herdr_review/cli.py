@@ -40,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--no-autodecide", dest="autodecide", action="store_false")
     p.add_argument("--layout", choices=("tabs", "grid"))
     p.add_argument("--description", help="what was implemented (goes into the review prompt)")
-    p.add_argument("--plan", help="path to the plan / requirements document")
+    p.add_argument("--plan", help="the plan / requirements: a file path or free text (goes into the review prompt)")
     p.add_argument("--scope", choices=SCOPES,
                    help="the change under review: auto (the branch's commits, else the working tree), commits, worktree")
     p.add_argument("--focus", action="store_true", help="switch to the orchestrator tab")

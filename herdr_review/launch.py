@@ -308,7 +308,7 @@ def launch(
                 r = HerdrResult(True, 0)
             elif outcome.refusal:
                 raise LaunchError(
-                    f"orchestrator '{orch_profile}' stopped at a startup dialog: {outcome.refusal}\n"
+                    f"orchestrator '{orch_profile}' failed to start: {outcome.refusal}\n"
                     f"Tab {tab_id} is left open for inspection.\n"
                     f"Run directory: {run_dir}"
                 )

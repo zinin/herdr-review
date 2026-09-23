@@ -240,10 +240,11 @@ class FinishTest(RunnerBase):
         r = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None)
         r.start_reviewers()
         r.start_fixer()
-        self.herdr.close_errors["w1:t2"] = ("agent_not_found", "gone")
+        self.herdr.close_errors["w1:t2"] = ("server_error", "boom")
         out = r.finish([])
         self.assertEqual(out["closed"], ["w1:t3"])
         self.assertNotIn("w1:t2", out["closed"])
+        self.assertIn("finish: close w1:t2 failed: server_error: boom", (run_dir / "runner.log").read_text())
 
     def test_finish_counts_only_the_commits_made_during_the_run(self):
         run_dir = self.reviewed_run(2)                      # two branch commits made before the launch
@@ -263,6 +264,19 @@ class FinishTest(RunnerBase):
         Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([])
         self.assertFalse((run_dir / "scratch").exists())
         self.assertIn("finish: removed scratch/", (run_dir / "runner.log").read_text())
+
+    def test_finish_removes_scratch_with_a_read_only_directory_in_it(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        locked = run_dir / "scratch" / "codex" / "gomod" / "mod@v1"      # a Go module cache is read-only
+        locked.mkdir(parents=True)
+        (locked / "x.go").write_text("package main\n")
+        locked.chmod(0o555)
+        try:
+            Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([])
+            self.assertFalse((run_dir / "scratch").exists())
+        finally:
+            if locked.exists():
+                locked.chmod(0o755)                                       # tearDown must be able to remove the temp dir
 
 
 if __name__ == "__main__":
