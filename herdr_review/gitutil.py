@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -15,6 +17,16 @@ GIT_TIMEOUT_SEC = 30
 # Above this total, the untracked files that do not fit keep the old size+mtime form:
 # tree_hash runs on every `collect` and must stay fast.
 UNTRACKED_HASH_BUDGET_BYTES = 64 * 1024 * 1024
+# An untracked file above this size is listed for the reviewers but not read.
+UNTRACKED_READ_LIMIT_BYTES = 256 * 1024
+BINARY_SNIFF_BYTES = 8192
+
+
+@dataclass(frozen=True)
+class UntrackedFile:
+    path: str
+    size: int
+    skip: str | None = None     # why a reviewer should not read it; None: read it
 
 
 def _git_env() -> dict[str, str]:
@@ -92,6 +104,20 @@ def merge_base(repo: Path | str, base: str) -> str:
     return p.stdout.strip()
 
 
+def head_commit(repo: Path | str) -> str:
+    return _out(repo, "rev-parse", "HEAD").strip()
+
+
+def committed_changes(repo: Path | str, sha: str) -> bool:
+    """True when HEAD's tree differs from <sha>: the branch has committed changes of its own."""
+    p = _run(repo, "diff", "--quiet", sha, "HEAD", "--")
+    if p.returncode == 1:
+        return True
+    if p.returncode != 0:
+        raise GitError(f"git diff --quiet {sha} HEAD failed: {p.stderr.strip()}")
+    return False
+
+
 def has_changes(repo: Path | str, sha: str) -> bool:
     """True when the working tree differs from <sha> (committed, staged, or untracked)."""
     p = _run(repo, "diff", "--quiet", sha)
@@ -137,8 +163,37 @@ def _untracked_meta(repo: Path | str, paths: list[str]) -> str:
     return "\n".join(f"{path}\0{meta[path]}" for path in paths)
 
 
+def _looks_binary(path: Path) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return b"\0" in f.read(BINARY_SNIFF_BYTES)
+    except OSError:
+        return False
+
+
+def untracked_files(repo: Path | str) -> list[UntrackedFile]:
+    """Every untracked, non-ignored file, one entry per file, marked when a reviewer should not read it."""
+    root = Path(repo)
+    files: list[UntrackedFile] = []
+    for path in _untracked(repo):
+        try:
+            st = os.lstat(root / path)
+        except OSError:
+            continue                          # vanished since `status`
+        if stat.S_ISLNK(st.st_mode):
+            skip = "symlink"
+        elif st.st_size > UNTRACKED_READ_LIMIT_BYTES:
+            skip = f"larger than {UNTRACKED_READ_LIMIT_BYTES // 1024} KB"
+        elif _looks_binary(root / path):
+            skip = "binary"
+        else:
+            skip = None
+        files.append(UntrackedFile(path, st.st_size, skip))
+    return files
+
+
 def tree_hash(repo: Path | str) -> str:
-    head = _out(repo, "rev-parse", "HEAD").strip()
+    head = head_commit(repo)
     status = _out(repo, "status", "--porcelain", "--untracked-files=all")
     diff = _out(repo, "diff", "HEAD")
     untracked_meta = _untracked_meta(repo, _untracked(repo))
@@ -146,7 +201,15 @@ def tree_hash(repo: Path | str) -> str:
 
 
 def status_short(repo: Path | str) -> str:
-    return _out(repo, "status", "--short")
+    """`git status --short` as a person reads it, whatever the user's git config says: no colour,
+    UTF-8 paths unquoted, and an untracked directory as one `?? dir/` line even under
+    status.showUntrackedFiles=no."""
+    return _out(repo, "-c", "color.status=false", "-c", "core.quotePath=false",
+                "status", "--short", "--untracked-files=normal")
+
+
+def status_lines(repo: Path | str) -> list[str]:
+    return [line for line in status_short(repo).splitlines() if line.strip()]
 
 
 def log_oneline(repo: Path | str, range_: str) -> str:

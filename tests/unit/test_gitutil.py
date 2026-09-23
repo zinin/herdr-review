@@ -145,6 +145,57 @@ class GitUtilTest(unittest.TestCase):
         out = gitutil.log_oneline(self.repo, "master..HEAD")
         self.assertIn("second commit", out)
 
+    def test_head_commit(self):
+        out = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(gitutil.head_commit(self.repo), out)
+
+    def test_committed_changes_compare_head_with_the_base(self):
+        base = gitutil.merge_base(self.repo, "master")
+        self.assertFalse(gitutil.committed_changes(self.repo, base))
+        (self.repo / "a.txt").write_text("uncommitted\n")
+        self.assertFalse(gitutil.committed_changes(self.repo, base))      # uncommitted edits do not count
+        git(self.repo, "commit", "-q", "-am", "change")
+        self.assertTrue(gitutil.committed_changes(self.repo, base))
+        with self.assertRaises(gitutil.GitError):
+            gitutil.committed_changes(self.repo, "not-a-commit")
+
+    def test_status_lines_collapse_untracked_directories(self):
+        (self.repo / "a.txt").write_text("edited\n")
+        (self.repo / "notes").mkdir()
+        (self.repo / "notes" / "one.md").write_text("x\n")
+        (self.repo / "notes" / "two.md").write_text("y\n")
+        (self.repo / "loose.txt").write_text("z\n")
+        self.assertEqual(gitutil.status_lines(self.repo), [" M a.txt", "?? loose.txt", "?? notes/"])
+
+    def test_status_lines_of_a_clean_tree_are_empty(self):
+        self.assertEqual(gitutil.status_lines(self.repo), [])
+
+    def test_status_lines_survive_the_users_git_config(self):
+        git(self.repo, "config", "status.showUntrackedFiles", "no")
+        git(self.repo, "config", "color.ui", "always")
+        (self.repo / "заметка.md").write_text("x\n")
+        self.assertEqual(gitutil.status_lines(self.repo), ["?? заметка.md"])
+        self.assertEqual(gitutil.status_short(self.repo), "?? заметка.md\n")
+
+    def test_untracked_files_mark_what_a_reviewer_should_skip(self):
+        (self.repo / "src").mkdir()
+        (self.repo / "src" / "new.py").write_text("print(1)\n")
+        (self.repo / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n\0\0\0")
+        (self.repo / "big.diff").write_text("x" * (gitutil.UNTRACKED_READ_LIMIT_BYTES + 1))
+        os.symlink("a.txt", self.repo / "link.txt")
+        files = {f.path: f for f in gitutil.untracked_files(self.repo)}
+        self.assertEqual(sorted(files), ["big.diff", "link.txt", "logo.png", "src/new.py"])
+        self.assertEqual(files["src/new.py"], gitutil.UntrackedFile("src/new.py", 9))
+        self.assertEqual(files["logo.png"].skip, "binary")
+        self.assertEqual(files["big.diff"].skip, "larger than 256 KB")
+        self.assertEqual(files["link.txt"].skip, "symlink")
+
+    def test_untracked_files_leave_out_ignored_ones(self):
+        (self.repo / ".gitignore").write_text("build/\n")
+        (self.repo / "build").mkdir()
+        (self.repo / "build" / "out.o").write_text("junk\n")
+        self.assertEqual([f.path for f in gitutil.untracked_files(self.repo)], [".gitignore"])
+
 
 if __name__ == "__main__":
     unittest.main()
