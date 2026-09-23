@@ -8,6 +8,8 @@ EXPECTED = {
     "reviewer.md": {"DESCRIPTION", "PLAN_REFERENCE", "REPO", "BASE_REF", "MERGE_BASE", "RESULT_PATH", "REVIEWER"},
     "fixer-auto.md": {"RUN_DIR"},
     "fixer-decision.md": {"RUN_DIR"},
+    "scope-commits.md": {"MERGE_BASE", "UNCOMMITTED"},
+    "scope-worktree.md": {"MERGE_BASE", "UNTRACKED"},
     "orchestrator.md": {
         "RUN_DIR", "RUNNER", "RUN_ID", "REPO", "BRANCH", "BASE_REF", "MERGE_BASE", "REVIEWERS", "ORCH_NAME",
         "FIXER_NAME", "FIXER_PROFILE", "AUTODECIDE", "LAYOUT", "CHECKIN_SEC", "DESCRIPTION", "PLAN_REFERENCE",

@@ -107,6 +107,14 @@ class ParseConfigTest(unittest.TestCase):
         self.assertEqual(pub["presets"]["default"]["orchestrator"], "claude-opus")
         self.assertEqual(pub["settings"]["layout"], "grid")
 
+    def test_scope_setting(self):
+        self.assertEqual(parse_config({"profiles": {"p": {"kind": "x"}}}, {}).settings.scope, "auto")
+        cfg = parse_config({"profiles": {"p": {"kind": "x"}}, "settings": {"scope": "worktree"}}, {})
+        self.assertEqual(cfg.settings.scope, "worktree")
+        self.assertEqual(public_json(cfg)["settings"]["scope"], "worktree")
+        errs = errors_of({"profiles": {"p": {"kind": "x"}}, "settings": {"scope": "everything"}})
+        self.assertTrue(any("settings.scope" in e and "auto, commits, worktree" in e for e in errs))
+
 
 class IsSecretishTest(unittest.TestCase):
     def test_masks_a_long_value_or_a_secret_looking_name(self):
