@@ -83,6 +83,7 @@ class PromptTemplatesTest(unittest.TestCase):
                 self.assertIn(f"git commit --only -F {message} --", text)
                 self.assertIn("git log -n 20", text)
                 self.assertIn("Do not mention the review", text)
+                self.assertIn("Add no trailers", text)
                 self.assertNotIn("review: auto-fix", text)
                 self.assertNotIn('-m "', text)
 
