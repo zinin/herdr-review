@@ -72,5 +72,19 @@ class PromptTemplatesTest(unittest.TestCase):
         self.assertIn("«авто»", text)                 # the answer that flips the mode
         self.assertIn("initial autodecide", text)     # the run facts no longer claim to be current
 
+    def test_fixer_skeletons_protect_the_users_files_and_follow_the_repository_style(self):
+        for name, message in (("fixer-auto.md", "/run/fix-auto-commit.txt"), ("fixer-decision.md", "/run/fix-<ORCHESTRATOR: n>-commit.txt")):
+            with self.subTest(name=name):
+                text = render_file(PROMPTS_DIR / name, {"RUN_DIR": "/run"})
+                self.assertIn("/run/uncommitted.txt", text)
+                self.assertIn("has no copy in git", text)
+                self.assertIn("applied, not committed", text)
+                self.assertIn("holds the user's uncommitted work; left to the user", text)
+                self.assertIn(f"git commit --only -F {message} --", text)
+                self.assertIn("git log -n 20", text)
+                self.assertIn("Do not mention the review", text)
+                self.assertNotIn("review: auto-fix", text)
+                self.assertNotIn('-m "', text)
+
 if __name__ == "__main__":
     unittest.main()
