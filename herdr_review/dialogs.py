@@ -92,13 +92,15 @@ def resolve_startup_dialog(herdr, name: str) -> DialogOutcome:
             return DialogOutcome(resolved=False)
         answered = True
         waited = herdr.agent_wait(name, until="idle", timeout_ms=WAIT_MS)
-        if waited.ok:
-            after = recognize(herdr.agent_read(name, source="visible", lines=SCREEN_LINES) or "")
-            if after is None:
-                return DialogOutcome(resolved=True)
-            if after[0] == dialog:
-                return DialogOutcome(resolved=False)   # idle, yet the same dialog: stale or stuck — never a second key
-        elif waited.error_code != "timeout":
+        if not waited.ok and waited.error_code != "timeout":
             return DialogOutcome(resolved=False)       # no settled screen: a second key could answer the next dialog
-        # The next dialog after an idle wait, or a dialog still up after a timed-out wait: go round.
+        after = recognize(herdr.agent_read(name, source="visible", lines=SCREEN_LINES) or "")
+        if after is None and waited.ok:
+            return DialogOutcome(resolved=True)
+        if after is not None and after[0] == dialog:
+            # The same dialog after any wait, idle or timed out: stale text or stuck — never a second key,
+            # which could pick "No, exit" or "Quit" or land in a live input.
+            return DialogOutcome(resolved=False)
+        # Another dialog is answered or refused at the top of the loop; no dialog after a timed-out wait
+        # gets the extra idle wait there.
     return DialogOutcome(resolved=False)

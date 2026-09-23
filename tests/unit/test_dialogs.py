@@ -47,12 +47,20 @@ class StartupDialogTest(unittest.TestCase):
         self.assertFalse(resolve_startup_dialog(h, "hr1-orch").resolved)
         self.assertEqual(h.calls_named("agent_send_keys"), [])
 
-    def test_wait_failure_is_not_resolved(self):
+    def test_the_same_dialog_after_a_timed_out_wait_gets_no_second_key(self):
         h = FakeHerdr()
         h.wait_ok = False
         h.screens["hr1-orch"] = CLAUDE_TRUST_ON_YES
         self.assertEqual(resolve_startup_dialog(h, "hr1-orch"), DialogOutcome(resolved=False))
-        self.assertEqual(len(h.calls_named("agent_send_keys")), 3)       # MAX_DIALOGS tries, then it gives up
+        self.assertEqual(len(h.calls_named("agent_send_keys")), 1)       # its text lingers or it is stuck: never a second key
+
+    def test_the_mcp_dialog_after_a_timed_out_wait_is_refused(self):
+        h = FakeHerdr()
+        h.wait_results["hr1-rv"] = [False]                  # the wait after the trust answer times out
+        h.screens["hr1-rv"] = CLAUDE_TRUST_ON_YES
+        h.screens_after_wait["hr1-rv"] = [MCP_ONE]
+        self.assertEqual(resolve_startup_dialog(h, "hr1-rv"), DialogOutcome(resolved=False, refusal=MCP_REFUSAL))
+        self.assertEqual(len(h.calls_named("agent_send_keys")), 1)
 
     def test_an_agent_slow_to_turn_idle_after_the_answer_is_resolved(self):
         h = FakeHerdr()
