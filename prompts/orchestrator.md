@@ -59,9 +59,9 @@ Loop until done:
    - `gone` → the agent process exited. It is out of the run (its last screen is in `status.json`). Nothing to do.
 4. Stop looping when `wait` reports `settled: true` and `collect` reports no `pending`.
 
-Then look at `drift` in the last `collect` output. `drift: true` means a reviewer changed the working tree; `drift_status` is `git status --short`.
+Then look at `drift` in the last `collect` output. `drift: true` means the working tree changed while the reviewers worked — a reviewer wrote into it, or the user went on editing their own files; `drift_status` is `git status --short`.
 - Current autodecide `true`: continue; mention the drift in the final report.
-- Current autodecide `false`: `"{RUNNER}" run notify --title "herdr-review: нужен ответ" --body "ревьюер изменил рабочее дерево" --sound request --run "{RUN_DIR}"`, show `drift_status` to the user, ask whether to continue, and end your turn. Continue only after the user answers, then run `"{RUNNER}" run phase aggregating --run "{RUN_DIR}"`.
+- Current autodecide `false`: `"{RUNNER}" run notify --title "herdr-review: нужен ответ" --body "рабочее дерево изменилось во время ревью" --sound request --run "{RUN_DIR}"`, show `drift_status` to the user, say that their own edits count too, ask whether to continue, and end your turn. Continue only after the user answers, then run `"{RUNNER}" run phase aggregating --run "{RUN_DIR}"`.
 
 If `collect` reports zero `collected` reviewers, go to Phase 6 and write a report that says the review did not happen, with each reviewer's reason.
 

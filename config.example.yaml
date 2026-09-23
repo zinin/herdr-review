@@ -64,4 +64,4 @@ settings:
   scope: auto                    # auto = the branch's commits, else the working tree | commits | worktree
   close_agents_on_finish: false  # true = close reviewer and fixer tabs/panes at the end
   checkin_sec: 300               # how often `run wait` returns control to the orchestrator
-  runs_dir: ~/.local/state/herdr-review/runs   # keep the --add-dir values above in step with it
+  runs_dir: ~/.local/state/herdr-review/runs   # keep the --add-dir values above in step with it; keep it outside the repository, or the run's own files count as drift

@@ -106,7 +106,7 @@ class PromptTemplatesTest(unittest.TestCase):
             "/run/uncommitted.txt", "/run/scratch/<profile>/", "вне изменения: ваш незакоммиченный файл",
             "применено, не закоммичено", "log --oneline v..HEAD", "rev-parse HEAD",
             "/run/reviews/<profile>.md", "except your review file", "everything else its task file asks for",
-            'cursor is on "Quit"', "--name-only",
+            'cursor is on "Quit"', "--name-only", "the user went on editing their own files",
         ):
             self.assertIn(phrase, text)
         self.assertNotIn("--stat", text)
