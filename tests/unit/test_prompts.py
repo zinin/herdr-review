@@ -42,6 +42,7 @@ class PromptTemplatesTest(unittest.TestCase):
         self.assertIn("DONE", text)
         self.assertIn("gitignored", text)
         self.assertNotIn("git ls-files --others", text)
+        self.assertIn("Apart from your review file", text)
 
     def test_fixer_skeletons_mention_report_and_done(self):
         for name in ("fixer-auto.md", "fixer-decision.md"):
@@ -86,6 +87,12 @@ class PromptTemplatesTest(unittest.TestCase):
                 self.assertIn("Add no trailers", text)
                 self.assertNotIn("review: auto-fix", text)
                 self.assertNotIn('-m "', text)
+                self.assertIn("no commit", text)
+                self.assertIn("changed by a reviewer", text)
+                self.assertNotIn("already modified by a reviewer", text)
+                self.assertIn("Generated with", text)
+                if name == "fixer-decision.md":
+                    self.assertIn("Problem: <ORCHESTRATOR:", text)
 
     def test_orchestrator_prompt_names_the_dialogs_and_protects_the_users_files(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
@@ -96,8 +103,11 @@ class PromptTemplatesTest(unittest.TestCase):
             "new MCP servers found in this project", "not even with Esc", "Trust and continue", "Grok — `y`",
             "/run/uncommitted.txt", "/run/scratch/<profile>/", "вне изменения: ваш незакоммиченный файл",
             "применено, не закоммичено", "log --oneline v..HEAD", "rev-parse HEAD",
+            "/run/reviews/<profile>.md", "except your review file", "everything else its task file asks for",
+            'cursor is on "Quit"', "--name-only",
         ):
             self.assertIn(phrase, text)
+        self.assertNotIn("--stat", text)
         self.assertNotIn("review(auto-decide)", text)
         self.assertNotIn("review: auto-fix", text)
 
