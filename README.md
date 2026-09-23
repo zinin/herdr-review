@@ -124,7 +124,7 @@ Check the result: `herdr-review profiles`.
 
 Everything starts from a herdr pane: an agent session with the skills, or a shell with `herdr-review` in PATH.
 
-The change under review is the branch's commits since the base (`git diff <merge-base> HEAD`). Your uncommitted edits and untracked files stay out of it, and nothing in the run touches them: `launch` lists them in the run directory as `uncommitted.txt` and says so in its summary. When nothing is committed yet, the whole working tree is the change. `scope=worktree` (`--scope worktree`, or `settings.scope`) reviews the working tree with its uncommitted work even when there are commits.
+The change under review is the branch's commits since the base (`git diff <merge-base> HEAD`). Your uncommitted edits and untracked files stay out of it, and nothing in the run deletes, moves or commits them: `launch` lists them in the run directory as `uncommitted.txt` and says so in its summary. When nothing is committed yet, the whole working tree is the change. `scope=worktree` (`--scope worktree`, or `settings.scope`) reviews the working tree with its uncommitted work even when there are commits.
 
 ### `review` — launch a run
 
@@ -144,7 +144,7 @@ Arguments, in any order:
 | `BASE_BRANCH=<ref>` | Review against this ref. Default: `origin/HEAD`, else `master`, else `main`. |
 | `autodecide` | The orchestrator decides disputed issues itself instead of asking you. |
 | `layout=tabs` / `layout=grid` | One tab per agent, or panes inside the orchestrator's tab. |
-| `scope=worktree` / `scope=commits` | Review the working tree with its uncommitted work, or only the branch's commits. Default: the commits, else the working tree. |
+| `scope=worktree` / `scope=commits` / `scope=auto` | Review the working tree with its uncommitted work, only the branch's commits, or (`auto`) the commits, else the working tree. Default: `settings.scope`, `auto` unless you changed it. |
 | anything else | The description of the change, handed to the reviewers. |
 
 With a preset or `reviewers=` the skill asks nothing. Without either it asks four questions: reviewers, orchestrator, fixer, autodecide. It never asks about uncommitted files or startup dialogs. It also passes the plan when it knows one from the session: a file path, or free text — `git show <sha>:<path>` when the plan lives only in git history, and your rulings from earlier review rounds.
@@ -155,7 +155,7 @@ With a preset or `reviewers=` the skill asks nothing. Without either it asks fou
 /herdr-review:review reviewers=codex,grok orchestrator=claude-opus fixer=claude-opus BASE_BRANCH=develop
 ```
 
-The skill prints the run directory, the orchestrator's agent name and the two commands to watch it (`herdr agent focus <name>`, `herdr-review status latest`), then ends its turn. The run continues in the orchestrator's tab.
+The skill prints the run directory, the orchestrator's agent name, what is under review and what stays out of it, and the two commands to watch it (`herdr agent focus <name>`, `herdr-review status latest`), then ends its turn. The run continues in the orchestrator's tab.
 
 ### `auto-decide` — stop answering
 
@@ -189,11 +189,11 @@ herdr-review profiles               # the validated config, secrets omitted
 - `not inside herdr` — start the session in a herdr pane.
 - `config not found` — copy `config.example.yaml` from the plugin directory as shown in Configure; the message names the path the plugin looked at.
 - `Operation not permitted` from `herdr` in a Codex session — the Codex sandbox blocks the herdr socket. Approve the escalation, or start Codex with `--sandbox danger-full-access`.
-- `orchestrator failed to start … Tab … is left open` — the message says why. The runner answers the trust dialogs of Claude Code, Codex and Grok; it never answers Claude Code's MCP approval dialog, and the message then says what to add to the profile's own `--settings`. Anything else — a login, an unknown dialog — waits in that tab: resolve it there and run the printed `herdr agent prompt …`.
+- `orchestrator failed to start … Tab … is left open` — the message says why. The runner answers the trust dialogs of Claude Code, Codex and Grok; it never answers Claude Code's MCP approval dialog, and the message then says what to add to the profile's own `--settings`. Anything else — a login, an unknown dialog — waits in that tab: resolve it there, close that tab with `herdr-review close <run dir>` (the message's `Run directory:`; the run is already aborted) and launch again.
 - `no runs for this repository` from `status` — `latest` is per repository. Run it from the repository under review, or pass the run directory.
 - A file you changed is not in the review — it is uncommitted, and the review covers the branch's commits. Commit it, or launch with `scope=worktree`.
 - A reviewer shows ` ✗` — `herdr-review status` gives the reason and `status.json` the last screen.
-- A reviewer or the fixer shows ` ✗` with "Claude Code asks to approve this project's MCP servers" — its profile passes its own `--settings`; add `"enableAllProjectMcpServers": true` to that file (see MCP servers in Configure).
+- A reviewer or the fixer shows ` ✗` with "Claude Code asks to approve this project's MCP servers" — its profile passes its own `--settings`; add `"enableAllProjectMcpServers": true` to that file (see MCP servers in Configure). Do not answer the dialog left in its tab: any answer, Esc included, is saved; `herdr-review close` closes the tab once the run has finished.
 - A reviewer or the fixer shows ` ❓` — a dialog is waiting in its tab; in auto mode that is the CLI asking about an action. `run wait` reports it to the orchestrator within seconds, and the orchestrator answers it or fails the agent when it does not understand the dialog. `herdr agent read <name> --source visible` shows what is asked.
 - The orchestrator's tab shows ` ❓` — it is waiting for your answer in that tab.
 - A run died with the orchestrator — `status.json` stays at its phase; a new `launch` starts a new run.

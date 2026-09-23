@@ -27,7 +27,7 @@ Exit 1 → print its stderr to the user verbatim and stop. Never edit the config
 
 ## 3. Arguments
 
-Recognise, in any order: `default` or another preset name from `presets`; `BASE_BRANCH=<ref>`; `autodecide`; `layout=tabs|grid`; `scope=commits|worktree`; `reviewers=a,b,c`; `orchestrator=<profile>`; `fixer=<profile>`. Anything else is free text: use it as the description.
+Recognise, in any order: `default` or another preset name from `presets`; `BASE_BRANCH=<ref>`; `autodecide`; `layout=tabs|grid`; `scope=auto|commits|worktree`; `reviewers=a,b,c`; `orchestrator=<profile>`; `fixer=<profile>`. Anything else is free text: use it as the description.
 
 With a preset or an explicit `reviewers=` there are no questions.
 
@@ -65,4 +65,4 @@ Exit 1 → show stderr verbatim. Two cases you can help with:
 
 «Как там ревью?» → `"$HR" status --run latest`, relay the output. `latest` is resolved per repository: run it from the repository under review, or pass that run's directory as `--run`. The orchestrator's tab is `rv-<run_id>: orch`; disputed issues are answered there.
 
-«Закрой вкладки ревью» → `"$HR" close --run latest`, relay the output. It refuses a run that is still in progress; pass `--force` only when the user asks for it.
+«Закрой вкладки ревью» → `"$HR" close --run latest`, relay the output. It refuses a run that is still in progress; pass `--force` only when the user asks for it. After a failed launch `latest` still points at the previous run: pass the `Run directory:` from the launch error instead.

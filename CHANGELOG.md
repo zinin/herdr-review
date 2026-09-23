@@ -22,7 +22,8 @@ All notable changes to herdr-review will be documented here.
   dialog does not appear and the agents get every MCP server; an agent that still stops at it leaves
   the run with the reason.
 - The fixer never deletes, moves, renames or commits the owner's uncommitted files; a fix inside one
-  is applied and left uncommitted. The orchestrator dismisses findings about files outside the change.
+  is applied and left uncommitted. In a review of the commits, the orchestrator dismisses findings
+  about the owner's uncommitted files outside the change.
 - Fix commits follow the repository's own commit style instead of fixed `review:` subjects; the
   orchestrator verifies them by hash.
 - `run finish`, `status` and the report list the commits made during the run, not every commit since
