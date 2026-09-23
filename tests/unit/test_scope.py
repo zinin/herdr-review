@@ -90,5 +90,13 @@ class ReviewerStepsTest(unittest.TestCase):
         self.assertNotIn("{", text)
 
 
+class OrchestratorScopeTest(unittest.TestCase):
+    def test_lines(self):
+        self.assertEqual(scope.orchestrator_scope("commits", MB),
+                         f"commits — the change is `git diff {MB} HEAD`; everything uncommitted is the user's own work and outside the change")
+        self.assertEqual(scope.orchestrator_scope("worktree", MB),
+                         f"worktree — the change is `git diff {MB}`, committed and uncommitted, plus the untracked files the reviewers were given")
+
+
 if __name__ == "__main__":
     unittest.main()

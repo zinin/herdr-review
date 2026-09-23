@@ -93,6 +93,10 @@ class LaunchTest(unittest.TestCase):
         self.assertIn(f'"{self.runner}" run wait', orch)
         self.assertIn("hrtest-codex", orch)
         self.assertIn("autodecide: false", orch)
+        self.assertIn("Scope: commits — the change is `git diff", orch)
+        self.assertIn(f"HEAD at launch `{run_json['head']}`", orch)
+        self.assertIn(f"scratch `{run_dir}/scratch/codex/`", orch)
+        self.assertIn("(0 entries;", orch)
         for f in ("run.json", "orchestrator.md", "runner.log"):
             self.assertNotIn("s3cret", (run_dir / f).read_text())
         status = json.loads((run_dir / "status.json").read_text())

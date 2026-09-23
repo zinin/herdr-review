@@ -81,3 +81,10 @@ def reviewer_steps(scope: str, merge_base: str, uncommitted: list[str], untracke
     return render_file(PROMPTS_DIR / "scope-worktree.md", {
         "MERGE_BASE": merge_base, "UNTRACKED": untracked_block(untracked),
     }).strip()
+
+
+def orchestrator_scope(scope: str, merge_base: str) -> str:
+    """The scope line of the orchestrator's run facts."""
+    if scope == "commits":
+        return f"commits — the change is `git diff {merge_base} HEAD`; everything uncommitted is the user's own work and outside the change"
+    return f"worktree — the change is `git diff {merge_base}`, committed and uncommitted, plus the untracked files the reviewers were given"

@@ -13,7 +13,7 @@ EXPECTED = {
     "orchestrator.md": {
         "RUN_DIR", "RUNNER", "RUN_ID", "REPO", "BRANCH", "BASE_REF", "MERGE_BASE", "REVIEWERS", "ORCH_NAME",
         "FIXER_NAME", "FIXER_PROFILE", "AUTODECIDE", "LAYOUT", "CHECKIN_SEC", "DESCRIPTION", "PLAN_REFERENCE",
-        "FIXER_AUTO_SKELETON", "FIXER_DECISION_SKELETON",
+        "FIXER_AUTO_SKELETON", "FIXER_DECISION_SKELETON", "START_HEAD", "SCOPE", "UNCOMMITTED_COUNT",
     },
 }
 
@@ -86,6 +86,20 @@ class PromptTemplatesTest(unittest.TestCase):
                 self.assertIn("Add no trailers", text)
                 self.assertNotIn("review: auto-fix", text)
                 self.assertNotIn('-m "', text)
+
+    def test_orchestrator_prompt_names_the_dialogs_and_protects_the_users_files(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        values["RUNNER"] = "/opt/hr/bin/herdr-review"
+        values["RUN_DIR"] = "/run"
+        text = render_file(PROMPTS_DIR / "orchestrator.md", values)
+        for phrase in (
+            "new MCP servers found in this project", "not even with Esc", "Trust and continue", "Grok — `y`",
+            "/run/uncommitted.txt", "/run/scratch/<profile>/", "вне изменения: ваш незакоммиченный файл",
+            "применено, не закоммичено", "log --oneline v..HEAD", "rev-parse HEAD",
+        ):
+            self.assertIn(phrase, text)
+        self.assertNotIn("review(auto-decide)", text)
+        self.assertNotIn("review: auto-fix", text)
 
 if __name__ == "__main__":
     unittest.main()

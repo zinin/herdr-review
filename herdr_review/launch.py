@@ -17,7 +17,7 @@ from .config import Config, is_secretish
 from .dialogs import resolve_startup_dialog, startup_args
 from .herdr import Herdr, HerdrResult
 from .render import render_file
-from .scope import ScopeError, resolve_scope, reviewer_steps
+from .scope import ScopeError, orchestrator_scope, resolve_scope, reviewer_steps
 from .status import RunStatus
 
 RUN_ID_ALPHABET = string.ascii_lowercase + string.digits
@@ -88,7 +88,8 @@ def resolve_selection(cfg: Config, opts: LaunchOptions) -> tuple[list[str], str,
 
 def _reviewers_table(reviewers: list[dict], run_dir: Path) -> str:
     return "\n".join(
-        f"  - `{rv['name']}` — profile `{rv['profile']}` ({rv['kind']}); prompt `{run_dir}/prompts/{rv['profile']}.md`; result `{run_dir}/reviews/{rv['profile']}.md`"
+        f"  - `{rv['name']}` — profile `{rv['profile']}` ({rv['kind']}); prompt `{run_dir}/prompts/{rv['profile']}.md`; "
+        f"result `{run_dir}/reviews/{rv['profile']}.md`; scratch `{run_dir}/scratch/{rv['profile']}/`"
         for rv in reviewers
     )
 
@@ -245,6 +246,9 @@ def launch(
         "BRANCH": branch,
         "BASE_REF": base,
         "MERGE_BASE": mb,
+        "START_HEAD": head,
+        "SCOPE": orchestrator_scope(scope, mb),
+        "UNCOMMITTED_COUNT": len(uncommitted),
         "REVIEWERS": _reviewers_table(reviewers_spec, run_dir),
         "ORCH_NAME": orch["name"],
         "FIXER_NAME": fixer["name"],
