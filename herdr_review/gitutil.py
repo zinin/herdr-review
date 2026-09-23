@@ -172,7 +172,8 @@ def _looks_binary(path: Path) -> bool:
 
 
 def untracked_files(repo: Path | str) -> list[UntrackedFile]:
-    """Every untracked, non-ignored file, one entry per file, marked when a reviewer should not read it."""
+    """Every untracked, non-ignored file, one entry per file, marked when a reviewer should not read it.
+    An untracked nested repository is one `dir/` entry: git does not look inside it."""
     root = Path(repo)
     files: list[UntrackedFile] = []
     for path in _untracked(repo):
@@ -182,6 +183,8 @@ def untracked_files(repo: Path | str) -> list[UntrackedFile]:
             continue                          # vanished since `status`
         if stat.S_ISLNK(st.st_mode):
             skip = "symlink"
+        elif stat.S_ISDIR(st.st_mode):
+            skip = "nested git repository"
         elif st.st_size > UNTRACKED_READ_LIMIT_BYTES:
             skip = f"larger than {UNTRACKED_READ_LIMIT_BYTES // 1024} KB"
         elif _looks_binary(root / path):
@@ -202,15 +205,17 @@ def tree_hash(repo: Path | str) -> str:
 
 def status_short(repo: Path | str) -> str:
     """`git status --short` as a person reads it, whatever the user's git config says: no colour,
-    UTF-8 paths unquoted, and an untracked directory as one `?? dir/` line even under
-    status.showUntrackedFiles=no."""
+    no `## <branch>` line, UTF-8 paths unquoted, and an untracked directory as one `?? dir/` line
+    even under status.showUntrackedFiles=no."""
     return _out(repo, "-c", "color.status=false", "-c", "core.quotePath=false",
-                "status", "--short", "--untracked-files=normal")
+                "status", "--short", "--no-branch", "--untracked-files=normal")
 
 
 def status_lines(repo: Path | str) -> list[str]:
-    return [line for line in status_short(repo).splitlines() if line.strip()]
+    # Not splitlines(): git prints a name holding U+2028 or U+0085 as is, and that is one entry.
+    return [line for line in status_short(repo).split("\n") if line.strip()]
 
 
 def log_oneline(repo: Path | str, range_: str) -> str:
-    return _out(repo, "log", "--oneline", range_)
+    """One line per commit, colour-free even under color.ui=always: `finish` reads the hashes."""
+    return _out(repo, "log", "--oneline", "--no-color", range_)

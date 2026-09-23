@@ -173,6 +173,8 @@ class GitUtilTest(unittest.TestCase):
     def test_status_lines_survive_the_users_git_config(self):
         git(self.repo, "config", "status.showUntrackedFiles", "no")
         git(self.repo, "config", "color.ui", "always")
+        git(self.repo, "config", "status.branch", "true")
+        self.assertEqual(gitutil.status_lines(self.repo), [])             # a clean tree: no `## master` line
         (self.repo / "заметка.md").write_text("x\n")
         self.assertEqual(gitutil.status_lines(self.repo), ["?? заметка.md"])
         self.assertEqual(gitutil.status_short(self.repo), "?? заметка.md\n")
@@ -195,6 +197,25 @@ class GitUtilTest(unittest.TestCase):
         (self.repo / "build").mkdir()
         (self.repo / "build" / "out.o").write_text("junk\n")
         self.assertEqual([f.path for f in gitutil.untracked_files(self.repo)], [".gitignore"])
+
+    def test_untracked_files_mark_a_nested_repository(self):
+        nested = self.repo / "vendor"
+        nested.mkdir()
+        git(nested, "init", "-q")
+        (nested / "lib.py").write_text("print(1)\n")
+        self.assertEqual([(f.path, f.skip) for f in gitutil.untracked_files(self.repo)],
+                         [("vendor/", "nested git repository")])
+
+    def test_status_lines_keep_a_name_with_a_line_separator_whole(self):
+        (self.repo / "a\u2028b.txt").write_text("x\n")
+        self.assertEqual(gitutil.status_lines(self.repo), ["?? a\u2028b.txt"])
+
+    def test_log_oneline_is_colour_free_under_color_ui_always(self):
+        git(self.repo, "config", "color.ui", "always")
+        short = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        out = gitutil.log_oneline(self.repo, "HEAD")
+        self.assertNotIn("\x1b", out)
+        self.assertTrue(out.startswith(short + " "), out)
 
 
 if __name__ == "__main__":
