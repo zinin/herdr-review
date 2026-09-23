@@ -17,6 +17,7 @@ class FakeHerdr:
         self.start_errors: dict[str, tuple[str, str]] = {}
         self.prompt_errors: dict[str, tuple[str, str]] = {}
         self.wait_ok = True
+        self.wait_results: dict[str, list[bool]] = {}      # per agent, one per agent_wait; then wait_ok
         self.wait_error = ("timeout", "wait timed out")
         self.close_errors: dict[str, tuple[str, str]] = {}
         self.keep_screen_on_wait = False
@@ -63,12 +64,14 @@ class FakeHerdr:
 
     def agent_wait(self, name, until=None, timeout_ms=None):
         self.calls.append(("agent_wait", name, until, timeout_ms))
+        results = self.wait_results.get(name)
+        ok = results.pop(0) if results else self.wait_ok
         queued = self.screens_after_wait.get(name)
         if queued:
             self.screens[name] = queued.pop(0)
-        elif self.wait_ok and not self.keep_screen_on_wait:
+        elif ok and not self.keep_screen_on_wait:
             self.screens[name] = "idle\n"
-        if not self.wait_ok:
+        if not ok:
             code, msg = self.wait_error
             return HerdrResult(False, 1, error_code=code, message=msg)
         return HerdrResult(True, 0, result={"type": "agent_info", "agent": {"name": name, "agent_status": until or "idle"}})

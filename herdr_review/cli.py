@@ -171,7 +171,7 @@ def scope_lines(result: dict) -> list[str]:
         lines = [f"  объём:        коммиты ветки ({result['base']}..HEAD)"]
         if result["uncommitted"]:
             changed, untracked = uncommitted_counts(result["uncommitted"])
-            lines.append(f"  вне ревью:    ваши незакоммиченные файлы (изменённых: {changed}, неотслеживаемых: {untracked}); их никто не тронет")
+            lines.append(f"  вне ревью:    ваши незакоммиченные файлы (изменённых: {changed}, неотслеживаемых: {untracked}); их никто не удалит и не закоммитит")
         return lines
     line = "  объём:        рабочее дерево — коммиты и незакоммиченное"
     untracked = result.get("untracked") or {}

@@ -17,6 +17,7 @@ MCP_MANY = (
 CODEX_TRUST_ON_TRUST = "Trust this folder? Codex can read, edit, and run files here.\n› 1. Trust and continue\n  2. Quit\n  enter continue · esc quit\n"
 CODEX_TRUST_ON_QUIT = "Trust this folder? Codex can read, edit, and run files here.\n  1. Trust and continue\n› 2. Quit\n"
 GROK_TRUST = "Do you trust the contents of this directory?\n  Yes, proceed   y\n  No, quit   n\n"
+CLAUDE_IDLE = "❯ \n  ⏵⏵ auto mode on (shift+tab to cycle)\n"
 
 
 class StartupDialogTest(unittest.TestCase):
@@ -51,6 +52,24 @@ class StartupDialogTest(unittest.TestCase):
         h.screens["hr1-orch"] = CLAUDE_TRUST_ON_YES
         self.assertEqual(resolve_startup_dialog(h, "hr1-orch"), DialogOutcome(resolved=False))
         self.assertEqual(len(h.calls_named("agent_send_keys")), 3)       # MAX_DIALOGS tries, then it gives up
+
+    def test_an_agent_slow_to_turn_idle_after_the_answer_is_resolved(self):
+        h = FakeHerdr()
+        h.wait_results["hr1-orch"] = [False, True]           # the dialog is gone, but idle comes after the first wait
+        h.screens["hr1-orch"] = CLAUDE_TRUST_ON_YES
+        h.screens_after_wait["hr1-orch"] = [CLAUDE_IDLE]
+        self.assertEqual(resolve_startup_dialog(h, "hr1-orch"), DialogOutcome(resolved=True))
+        self.assertEqual(len(h.calls_named("agent_send_keys")), 1)
+        self.assertEqual(len(h.calls_named("agent_wait")), 2)
+
+    def test_an_agent_that_never_turns_idle_after_the_answer_is_not_resolved(self):
+        h = FakeHerdr()
+        h.wait_results["hr1-orch"] = [False, False]
+        h.screens["hr1-orch"] = CLAUDE_TRUST_ON_YES
+        h.screens_after_wait["hr1-orch"] = [CLAUDE_IDLE]
+        self.assertEqual(resolve_startup_dialog(h, "hr1-orch"), DialogOutcome(resolved=False))
+        self.assertEqual(len(h.calls_named("agent_send_keys")), 1)
+        self.assertEqual(len(h.calls_named("agent_wait")), 2)
 
     def test_a_failed_wait_other_than_a_timeout_sends_no_second_key(self):
         h = FakeHerdr()
@@ -113,6 +132,10 @@ class RecognizeTest(unittest.TestCase):
         self.assertEqual(recognize(CODEX_TRUST_ON_TRUST), ("codex-trust", ("enter",)))
         self.assertEqual(recognize(GROK_TRUST), ("grok-trust", ("y",)))
         self.assertEqual(recognize(CLAUDE_TRUST_ON_NO + MCP_ONE), ("claude-mcp", None))
+
+    def test_a_cursor_glyph_on_an_unrelated_line_above_the_options(self):
+        self.assertEqual(recognize("› Ask Codex to do anything\n" + CODEX_TRUST_ON_QUIT), ("codex-trust", ("up", "enter")))
+        self.assertEqual(recognize("❯ ~/src/app\n" + CLAUDE_TRUST_ON_NO), ("claude-trust", ("down", "enter")))
 
     def test_an_idle_agent_is_not_a_dialog(self):
         self.assertIsNone(recognize("❯ \n  ⏵⏵ auto mode on (shift+tab to cycle)\n"))

@@ -52,21 +52,24 @@ class BlocksTest(unittest.TestCase):
         self.assertIn("…and 7 more: /run/uncommitted.txt lists them all.", text)
 
     def test_untracked_block_marks_skipped_files(self):
+        listing = Path("/run/untracked.txt")
         text = scope.untracked_block([
             UntrackedFile("src/new.py", 900),
             UntrackedFile("review.diff", 408 * 1024, "larger than 256 KB"),
             UntrackedFile("logo.png", 2048, "binary"),
-        ])
+            UntrackedFile("vendor/", 4096, "nested git repository"),
+        ], listing)
         self.assertIn("- `src/new.py` (900 B)", text)
         self.assertIn("- `review.diff` (408 KB) — skip: larger than 256 KB", text)
         self.assertIn("- `logo.png` (2 KB) — skip: binary", text)
-        self.assertEqual(scope.untracked_block([]), "There are none.")
+        self.assertIn("- `vendor/` — skip: nested git repository", text)      # a directory's size is no file size
+        self.assertEqual(scope.untracked_block([], listing), "There are none.")
 
     def test_untracked_block_caps_the_list(self):
         files = [UntrackedFile(f"f{i}.txt", 1) for i in range(scope.UNTRACKED_INLINE + 3)]
-        text = scope.untracked_block(files)
-        self.assertIn("…and 3 more", text)
-        self.assertIn("git ls-files --others --exclude-standard", text)
+        text = scope.untracked_block(files, Path("/run/untracked.txt"))
+        self.assertIn("- …and 3 more: `/run/untracked.txt` lists them all with the same marks.", text)
+        self.assertNotIn("git ls-files", text)
 
     def test_counts_and_sizes(self):
         self.assertEqual(scope.uncommitted_counts([" M a.txt", "M  b.txt", "?? notes/", "?? x"]), (2, 2))
@@ -76,14 +79,14 @@ class BlocksTest(unittest.TestCase):
 
 class ReviewerStepsTest(unittest.TestCase):
     def test_commits_steps(self):
-        text = scope.reviewer_steps("commits", MB, [" M x.txt"], [], Path("/run/uncommitted.txt"))
+        text = scope.reviewer_steps("commits", MB, [" M x.txt"], [], Path("/run/uncommitted.txt"), Path("/run/untracked.txt"))
         self.assertTrue(text.startswith(f"1. Run `git diff {MB} HEAD --`"))
         self.assertIn("git show HEAD:<path>", text)
         self.assertIn(" M x.txt", text)
         self.assertNotIn("{", text)
 
     def test_worktree_steps(self):
-        text = scope.reviewer_steps("worktree", MB, [], [UntrackedFile("new.py", 10)], Path("/run/uncommitted.txt"))
+        text = scope.reviewer_steps("worktree", MB, [], [UntrackedFile("new.py", 10)], Path("/run/uncommitted.txt"), Path("/run/untracked.txt"))
         self.assertTrue(text.startswith(f"1. Run `git diff {MB} --`"))
         self.assertIn("- `new.py` (10 B)", text)
         self.assertIn("do not `git add` anything", text)

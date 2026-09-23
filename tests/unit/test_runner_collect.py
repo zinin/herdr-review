@@ -1,4 +1,5 @@
 import json
+import stat
 import subprocess
 import unittest
 from pathlib import Path
@@ -274,6 +275,25 @@ class FinishTest(RunnerBase):
         try:
             Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([])
             self.assertFalse((run_dir / "scratch").exists())
+        finally:
+            if locked.exists():
+                locked.chmod(0o755)                                       # tearDown must be able to remove the temp dir
+
+    def test_finish_removes_a_scratch_link_and_leaves_its_target_alone(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        target = self.root / "elsewhere"                                  # outside the run directory
+        locked = target / "gomod"
+        locked.mkdir(parents=True)
+        (locked / "x.go").write_text("package main\n")
+        locked.chmod(0o555)
+        modes = {p: stat.S_IMODE(p.stat().st_mode) for p in (target, locked)}
+        (run_dir / "scratch").symlink_to(target, target_is_directory=True)
+        try:
+            Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([])
+            self.assertFalse((run_dir / "scratch").is_symlink())
+            self.assertEqual({p: stat.S_IMODE(p.stat().st_mode) for p in (target, locked)}, modes)
+            self.assertEqual((locked / "x.go").read_text(), "package main\n")
+            self.assertIn("finish: scratch/ was a symlink", (run_dir / "runner.log").read_text())
         finally:
             if locked.exists():
                 locked.chmod(0o755)                                       # tearDown must be able to remove the temp dir

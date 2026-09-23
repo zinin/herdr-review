@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from herdr_review.config import parse_config
 from herdr_review.dialogs import CLAUDE_MCP_SETTINGS
@@ -167,6 +168,7 @@ class LaunchTest(unittest.TestCase):
         self.assertIsNone(res["untracked"])
         self.assertFalse(any("uncommitted" in w for w in res["warnings"]))
         self.assertEqual((run_dir / "uncommitted.txt").read_text(), " M a.txt\n?? notes/\n")
+        self.assertFalse((run_dir / "untracked.txt").exists())
         run_json = json.loads((run_dir / "run.json").read_text())
         self.assertEqual((run_json["scope"], run_json["uncommitted"]), ("commits", [" M a.txt", "?? notes/"]))
         head = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
@@ -187,6 +189,22 @@ class LaunchTest(unittest.TestCase):
         prompt = (Path(res["run_dir"]) / "prompts" / "codex.md").read_text()
         self.assertIn("- `new.py` (9 B)", prompt)
         self.assertIn("- `blob.bin` (3 B) — skip: binary", prompt)
+
+    def test_the_worktree_scope_lists_every_untracked_file_with_its_marks_on_disk(self):
+        git(self.repo, "switch", "-q", "master")
+        git(self.repo, "switch", "-q", "-c", "wip")
+        for i in range(105):
+            (self.repo / f"new{i:03}.py").write_text("print(1)\n")
+        (self.repo / "zz.bin").write_bytes(b"\0\1\2")               # sorted last: past the inline cap
+        res = self.do_launch()
+        run_dir = Path(res["run_dir"])
+        listing = (run_dir / "untracked.txt").read_text()
+        self.assertEqual(len(listing.splitlines()), 106)
+        self.assertTrue(listing.startswith("- `new000.py` (9 B)\n"))
+        self.assertTrue(listing.endswith("- `zz.bin` (3 B) — skip: binary\n"))
+        prompt = (run_dir / "prompts" / "codex.md").read_text()
+        self.assertNotIn("zz.bin", prompt)
+        self.assertIn(f"…and 6 more: `{run_dir / 'untracked.txt'}` lists them all with the same marks.", prompt)
 
     def test_the_scope_flag_overrides_the_setting(self):
         (self.repo / "new.py").write_text("x\n")
@@ -309,6 +327,21 @@ class LaunchTest(unittest.TestCase):
         status = json.loads((run_dir / "status.json").read_text())
         self.assertEqual(status["phase"], "aborted")
         self.assertEqual(status["abort_reason"], message)
+
+    def test_a_failed_write_into_the_run_directory_is_a_launch_error(self):
+        real = Path.write_text
+
+        def no_space_for_run_json(path, *args, **kwargs):
+            if path.name == "run.json":
+                raise OSError(28, "No space left on device")
+            return real(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "write_text", no_space_for_run_json):
+            with self.assertRaises(LaunchError) as ctx:
+                self.do_launch()
+        run_dir = next((self.root / "runs").glob("*/*-hrtest"))
+        self.assertIn(f"cannot write the run directory {run_dir}", str(ctx.exception))
+        self.assertIn("No space left on device", str(ctx.exception))
 
     def test_unfinished_runs_skips_both_terminal_phases(self):
         project = self.root / "runs" / "some-project"

@@ -12,7 +12,7 @@ from typing import Callable
 
 from . import PROMPTS_DIR, gitutil
 from .config import ConfigError, is_secretish, load_config
-from .dialogs import resolve_startup_dialog
+from .dialogs import SCREEN_LINES, resolve_startup_dialog
 from .herdr import Herdr, HerdrResult
 from .layout import fixer_split, plan_grid
 from .render import render_file
@@ -46,7 +46,6 @@ LABEL_SUFFIX = {
 }
 FIXER_DONE_STATES = {"idle", "done"}
 PROMPT_TIMEOUT_MS = 30000
-SCREEN_LINES = 60
 LAST_SCREEN_LINES = 40
 LIVE_STATUSES = ("idle", "working", "blocked", "done", "unknown")
 # Codes the herdr client raises when it could not reach herdr at all. They say nothing about
@@ -687,11 +686,18 @@ class Runner:
         if not scratch.exists():
             return
         try:
+            if scratch.is_symlink():                      # os.walk would follow it into a target that is not ours
+                scratch.unlink()
+                self.log("finish: scratch/ was a symlink; removed the link, not its target")
+                return
             for root, dirs, _ in os.walk(scratch):
                 for d in dirs:
                     path = os.path.join(root, d)
                     if not os.path.islink(path):          # never chmod through a link out of scratch/
-                        os.chmod(path, stat.S_IRWXU)
+                        try:
+                            os.chmod(path, stat.S_IRWXU)
+                        except OSError as e:
+                            self.log(f"finish: cannot make {path} writable: {e}")
             shutil.rmtree(scratch)
             self.log("finish: removed scratch/")
         except OSError as e:
@@ -756,6 +762,12 @@ class Runner:
         if orch.get("tab"):
             targets.append((orch["tab"], True))
         closed, gone, failed = self._close_all(targets, "close")
+        if force and phase not in ("finished", "aborted"):
+            # Its agents are gone: the run ends here, and no later launch may count it as unfinished.
+            self.status.set("abort_reason", "closed with --force")
+            self.status.set("waiting_for_user", False)
+            self.status.set_phase("aborted")
+            self._remove_scratch()
         self.status.set("closed_at", now_iso())
         self.status.save()
         return {"closed": closed, "already_closed": gone, "failed": failed}

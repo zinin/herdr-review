@@ -118,7 +118,7 @@ Rules the validator enforces and facts worth knowing:
 
 Check the result: `herdr-review profiles`.
 
-**MCP servers.** Claude Code asks at startup to approve the servers of a project's `.mcp.json` that you have not decided on, and saves every answer — Esc included — into the repository's `.claude/settings.local.json`. So that no run stops at that dialog or changes your MCP settings, every profile of kind `claude` starts with `--settings '{"enableAllProjectMcpServers": true}'`: the agents of a run get the project's servers, your user servers and the claude.ai connectors, a server you disabled explicitly stays disabled, and the setting lives on the command line only. Two consequences: an MCP server that the branch under review adds to `.mcp.json` starts in every claude agent of the run without approval; and a profile that passes its own `--settings` gets nothing added — put `"enableAllProjectMcpServers": true` into that settings file, or its agents stop at the dialog and leave the run with that reason. Codex and Grok load a project's servers without asking; the runner answers their trust dialogs, as it answers Claude Code's.
+**MCP servers.** Claude Code asks at startup to approve the servers of a project's `.mcp.json` that you have not decided on, and saves every answer — Esc included — into the repository's `.claude/settings.local.json`. So that no run stops at that dialog or changes your MCP settings, every profile of kind `claude` starts with `--settings '{"enableAllProjectMcpServers": true}'`: the agents of a run get the project's servers, your user servers and the claude.ai connectors, a server you disabled explicitly stays disabled, and the setting lives on the command line only. Two consequences: an MCP server that the branch under review adds to `.mcp.json` starts in every claude agent of the run without approval; and a profile that passes its own `--settings` gets nothing added — put `"enableAllProjectMcpServers": true` into that settings file, or its agents stop at the dialog and leave the run with that reason. Codex and Grok load a project's servers without asking; the runner answers their trust dialogs, as it answers Claude Code's. The trust answers the runner gives are saved by each CLI, so after one run the repository stays trusted in Claude Code, Codex and Grok. For a branch you do not fully trust, put `--strict-mcp-config` into the claude profile's `args`: its agents then load no MCP servers at all, project or user.
 
 ## Usage
 
@@ -173,7 +173,7 @@ herdr-review close                  # close every tab of the latest finished run
 herdr-review profiles               # the validated config, secrets omitted
 ```
 
-`launch --help` lists every flag (`--no-autodecide`, `--focus`, …); `--json` on any command gives machine-readable output. `herdr-review run …` is what the orchestrator calls during the run; you never need it.
+`launch --help` lists every flag (`--no-autodecide`, `--focus`, …); `--json` on any command gives machine-readable output. `launch --json` also carries `scope`, `uncommitted` (the `git status --short` lines kept out of the review) and, in the worktree scope, `untracked` (`files`, `skipped`). `herdr-review run …` is what the orchestrator calls during the run; you never need it.
 
 ### During the run
 

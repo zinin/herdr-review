@@ -17,7 +17,7 @@ from .config import Config, is_secretish
 from .dialogs import resolve_startup_dialog, startup_args
 from .herdr import Herdr, HerdrResult
 from .render import render_file
-from .scope import ScopeError, orchestrator_scope, resolve_scope, reviewer_steps
+from .scope import ScopeError, orchestrator_scope, resolve_scope, reviewer_steps, untracked_line
 from .status import RunStatus
 
 RUN_ID_ALPHABET = string.ascii_lowercase + string.digits
@@ -180,6 +180,7 @@ def launch(
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
     run_dir = project_dir / f"{stamp}-{run_id}"
     listing = run_dir / "uncommitted.txt"
+    untracked_listing = run_dir / "untracked.txt"
     try:
         run_dir.mkdir(parents=True, mode=0o700)
         run_dir.chmod(0o700)
@@ -188,81 +189,83 @@ def launch(
         for pname in usable:
             (run_dir / "scratch" / pname).mkdir(parents=True)
         listing.write_text("".join(f"{line}\n" for line in uncommitted), encoding="utf-8")
-    except OSError as e:
-        raise LaunchError(f"cannot create the run directory {run_dir}: {e}") from e
-    reviewers_spec = [_profile_spec(cfg, p, f"{run_id}-{p}") for p in usable]
-    orch = _profile_spec(cfg, orch_profile, f"{run_id}-orch")
-    fixer = _profile_spec(cfg, fixer_profile, f"{run_id}-fixer")
-    description = (opts.description or "").strip() or "(not provided)"
-    plan_ref = (opts.plan or "").strip() or "(not provided)"
-    branch = gitutil.current_branch(repo)
-    run_json = {
-        "version": __version__,
-        "run_id": run_id,
-        "run_dir": str(run_dir),
-        "repo": str(repo),
-        "project": project,
-        "branch": branch,
-        "base": base,
-        "merge_base": mb,
-        "head": head,
-        "scope": scope,
-        "uncommitted": uncommitted,
-        "description": description,
-        "plan": plan_ref,
-        "autodecide": autodecide,
-        "layout": layout,
-        "checkin_sec": cfg.settings.checkin_sec,
-        "close_agents_on_finish": cfg.settings.close_agents_on_finish,
-        "workspace_id": workspace_id,
-        "reviewers": reviewers_spec,
-        "orchestrator": orch,
-        "fixer": fixer,
-        "runner": str(runner_path),
-        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now())),
-    }
-    (run_dir / "run.json").write_text(json.dumps(run_json, indent=2, ensure_ascii=False), encoding="utf-8")
+        if scope == "worktree":
+            untracked_listing.write_text("".join(f"{untracked_line(f)}\n" for f in untracked), encoding="utf-8")
+        reviewers_spec = [_profile_spec(cfg, p, f"{run_id}-{p}") for p in usable]
+        orch = _profile_spec(cfg, orch_profile, f"{run_id}-orch")
+        fixer = _profile_spec(cfg, fixer_profile, f"{run_id}-fixer")
+        description = (opts.description or "").strip() or "(not provided)"
+        plan_ref = (opts.plan or "").strip() or "(not provided)"
+        branch = gitutil.current_branch(repo)
+        run_json = {
+            "version": __version__,
+            "run_id": run_id,
+            "run_dir": str(run_dir),
+            "repo": str(repo),
+            "project": project,
+            "branch": branch,
+            "base": base,
+            "merge_base": mb,
+            "head": head,
+            "scope": scope,
+            "uncommitted": uncommitted,
+            "description": description,
+            "plan": plan_ref,
+            "autodecide": autodecide,
+            "layout": layout,
+            "checkin_sec": cfg.settings.checkin_sec,
+            "close_agents_on_finish": cfg.settings.close_agents_on_finish,
+            "workspace_id": workspace_id,
+            "reviewers": reviewers_spec,
+            "orchestrator": orch,
+            "fixer": fixer,
+            "runner": str(runner_path),
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now())),
+        }
+        (run_dir / "run.json").write_text(json.dumps(run_json, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    # ----- prompts
-    steps = reviewer_steps(scope, mb, uncommitted, untracked, listing)
-    for rv in reviewers_spec:
-        text = render_file(PROMPTS_DIR / "reviewer.md", {
-            "DESCRIPTION": description,
-            "PLAN_REFERENCE": plan_ref,
+        # ----- prompts
+        steps = reviewer_steps(scope, mb, uncommitted, untracked, listing, untracked_listing)
+        for rv in reviewers_spec:
+            text = render_file(PROMPTS_DIR / "reviewer.md", {
+                "DESCRIPTION": description,
+                "PLAN_REFERENCE": plan_ref,
+                "REPO": str(repo),
+                "BASE_REF": base,
+                "MERGE_BASE": mb,
+                "RESULT_PATH": str(run_dir / "reviews" / f"{rv['profile']}.md"),
+                "REVIEWER": rv["profile"],
+                "SCOPE_STEPS": steps,
+                "SCRATCH_DIR": str(run_dir / "scratch" / rv["profile"]),
+            })
+            (run_dir / "prompts" / f"{rv['profile']}.md").write_text(text, encoding="utf-8")
+        orch_text = render_file(PROMPTS_DIR / "orchestrator.md", {
+            "RUN_DIR": str(run_dir),
+            "RUNNER": str(runner_path),
+            "RUN_ID": run_id,
             "REPO": str(repo),
+            "BRANCH": branch,
             "BASE_REF": base,
             "MERGE_BASE": mb,
-            "RESULT_PATH": str(run_dir / "reviews" / f"{rv['profile']}.md"),
-            "REVIEWER": rv["profile"],
-            "SCOPE_STEPS": steps,
-            "SCRATCH_DIR": str(run_dir / "scratch" / rv["profile"]),
+            "START_HEAD": head,
+            "SCOPE": orchestrator_scope(scope, mb),
+            "UNCOMMITTED_COUNT": len(uncommitted),
+            "REVIEWERS": _reviewers_table(reviewers_spec, run_dir),
+            "ORCH_NAME": orch["name"],
+            "FIXER_NAME": fixer["name"],
+            "FIXER_PROFILE": fixer_profile,
+            "AUTODECIDE": "true" if autodecide else "false",
+            "LAYOUT": layout,
+            "CHECKIN_SEC": cfg.settings.checkin_sec,
+            "DESCRIPTION": description,
+            "PLAN_REFERENCE": plan_ref,
+            "FIXER_AUTO_SKELETON": render_file(PROMPTS_DIR / "fixer-auto.md", {"RUN_DIR": str(run_dir)}),
+            "FIXER_DECISION_SKELETON": render_file(PROMPTS_DIR / "fixer-decision.md", {"RUN_DIR": str(run_dir)}),
         })
-        (run_dir / "prompts" / f"{rv['profile']}.md").write_text(text, encoding="utf-8")
-    orch_text = render_file(PROMPTS_DIR / "orchestrator.md", {
-        "RUN_DIR": str(run_dir),
-        "RUNNER": str(runner_path),
-        "RUN_ID": run_id,
-        "REPO": str(repo),
-        "BRANCH": branch,
-        "BASE_REF": base,
-        "MERGE_BASE": mb,
-        "START_HEAD": head,
-        "SCOPE": orchestrator_scope(scope, mb),
-        "UNCOMMITTED_COUNT": len(uncommitted),
-        "REVIEWERS": _reviewers_table(reviewers_spec, run_dir),
-        "ORCH_NAME": orch["name"],
-        "FIXER_NAME": fixer["name"],
-        "FIXER_PROFILE": fixer_profile,
-        "AUTODECIDE": "true" if autodecide else "false",
-        "LAYOUT": layout,
-        "CHECKIN_SEC": cfg.settings.checkin_sec,
-        "DESCRIPTION": description,
-        "PLAN_REFERENCE": plan_ref,
-        "FIXER_AUTO_SKELETON": render_file(PROMPTS_DIR / "fixer-auto.md", {"RUN_DIR": str(run_dir)}),
-        "FIXER_DECISION_SKELETON": render_file(PROMPTS_DIR / "fixer-decision.md", {"RUN_DIR": str(run_dir)}),
-    })
-    (run_dir / "orchestrator.md").write_text(orch_text, encoding="utf-8")
-    status = RunStatus.create(run_dir, run_id=run_id, repo=str(repo), branch=branch, base=base, merge_base=mb, autodecide=autodecide, layout=layout)
+        (run_dir / "orchestrator.md").write_text(orch_text, encoding="utf-8")
+        status = RunStatus.create(run_dir, run_id=run_id, repo=str(repo), branch=branch, base=base, merge_base=mb, autodecide=autodecide, layout=layout)
+    except OSError as e:
+        raise LaunchError(f"cannot write the run directory {run_dir}: {e}") from e
 
     # ----- herdr: log into runner.log from here on, mask profile secrets
     log_path = run_dir / "runner.log"

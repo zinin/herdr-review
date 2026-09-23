@@ -20,6 +20,8 @@ UNTRACKED_HASH_BUDGET_BYTES = 64 * 1024 * 1024
 # An untracked file above this size is listed for the reviewers but not read.
 UNTRACKED_READ_LIMIT_BYTES = 256 * 1024
 BINARY_SNIFF_BYTES = 8192
+# The skip mark of an untracked nested repository: git lists it as one `dir/` entry.
+NESTED_REPO = "nested git repository"
 
 
 @dataclass(frozen=True)
@@ -132,11 +134,13 @@ def _untracked_meta(repo: Path | str, paths: list[str]) -> str:
     budget = UNTRACKED_HASH_BUDGET_BYTES
     for path in paths:                       # `_untracked` sorts, so the fallback is deterministic
         try:
-            st = os.stat(root / path)
+            st = os.lstat(root / path)
         except OSError:
             meta[path] = "missing"           # vanished since `status`; git would fail on it
             continue
-        if "\n" in path or st.st_size > budget:
+        # Only a regular file is hashed: git hash-object fails on a nested repository's `dir/` entry
+        # and on a link to a directory.
+        if not stat.S_ISREG(st.st_mode) or "\n" in path or st.st_size > budget:
             meta[path] = f"{st.st_size}\0{st.st_mtime_ns}"
             continue
         budget -= st.st_size
@@ -173,7 +177,7 @@ def untracked_files(repo: Path | str) -> list[UntrackedFile]:
         if stat.S_ISLNK(st.st_mode):
             skip = "symlink"
         elif stat.S_ISDIR(st.st_mode):
-            skip = "nested git repository"
+            skip = NESTED_REPO
         elif st.st_size > UNTRACKED_READ_LIMIT_BYTES:
             skip = f"larger than {UNTRACKED_READ_LIMIT_BYTES // 1024} KB"
         elif _looks_binary(root / path):

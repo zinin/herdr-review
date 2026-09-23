@@ -5,7 +5,7 @@ from pathlib import Path
 
 from . import PROMPTS_DIR
 from .config import SCOPES
-from .gitutil import UntrackedFile
+from .gitutil import NESTED_REPO, UntrackedFile
 from .render import render_file
 
 # How many entries a reviewer prompt inlines before it points at the full list.
@@ -57,29 +57,33 @@ def uncommitted_block(lines: list[str], listing: Path) -> str:
     return text
 
 
-def untracked_block(files: list[UntrackedFile]) -> str:
+def untracked_line(f: UntrackedFile) -> str:
+    """One untracked file as the reviewer reads it, in the prompt and in untracked.txt."""
+    # A nested repository is a directory: its size is no file size.
+    line = f"- `{f.path}`" if f.skip == NESTED_REPO else f"- `{f.path}` ({human_size(f.size)})"
+    if f.skip:
+        line += f" — skip: {f.skip}"
+    return line
+
+
+def untracked_block(files: list[UntrackedFile], listing: Path) -> str:
     """The untracked files of the change as the worktree-scope reviewer prompt shows them."""
     if not files:
         return "There are none."
-    lines = []
-    for f in files[:UNTRACKED_INLINE]:
-        line = f"- `{f.path}` ({human_size(f.size)})"
-        if f.skip:
-            line += f" — skip: {f.skip}"
-        lines.append(line)
+    lines = [untracked_line(f) for f in files[:UNTRACKED_INLINE]]
     if len(files) > UNTRACKED_INLINE:
-        lines.append(f"- …and {len(files) - UNTRACKED_INLINE} more: `git ls-files --others --exclude-standard` lists them all.")
+        lines.append(f"- …and {len(files) - UNTRACKED_INLINE} more: `{listing}` lists them all with the same marks.")
     return "\n".join(lines)
 
 
-def reviewer_steps(scope: str, merge_base: str, uncommitted: list[str], untracked: list[UntrackedFile], listing: Path) -> str:
+def reviewer_steps(scope: str, merge_base: str, uncommitted: list[str], untracked: list[UntrackedFile], uncommitted_listing: Path, untracked_listing: Path) -> str:
     """Steps 1-2 of the reviewer prompt for <scope>."""
     if scope == "commits":
         return render_file(PROMPTS_DIR / "scope-commits.md", {
-            "MERGE_BASE": merge_base, "UNCOMMITTED": uncommitted_block(uncommitted, listing),
+            "MERGE_BASE": merge_base, "UNCOMMITTED": uncommitted_block(uncommitted, uncommitted_listing),
         }).strip()
     return render_file(PROMPTS_DIR / "scope-worktree.md", {
-        "MERGE_BASE": merge_base, "UNTRACKED": untracked_block(untracked),
+        "MERGE_BASE": merge_base, "UNTRACKED": untracked_block(untracked, untracked_listing),
     }).strip()
 
 

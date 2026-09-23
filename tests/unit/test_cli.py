@@ -110,7 +110,7 @@ class CliParsingTest(unittest.TestCase):
         commits = {"scope": "commits", "base": "origin/master", "uncommitted": [" M a.txt", "?? notes/", "?? x"], "untracked": None}
         self.assertEqual(scope_lines(commits), [
             "  объём:        коммиты ветки (origin/master..HEAD)",
-            "  вне ревью:    ваши незакоммиченные файлы (изменённых: 1, неотслеживаемых: 2); их никто не тронет",
+            "  вне ревью:    ваши незакоммиченные файлы (изменённых: 1, неотслеживаемых: 2); их никто не удалит и не закоммитит",
         ])
         self.assertEqual(scope_lines({**commits, "uncommitted": []}), ["  объём:        коммиты ветки (origin/master..HEAD)"])
         worktree = {"scope": "worktree", "base": "master", "uncommitted": ["?? new.py"], "untracked": {"files": 3, "skipped": 1}}

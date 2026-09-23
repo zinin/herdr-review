@@ -121,6 +121,17 @@ class GitUtilTest(unittest.TestCase):
         with mock.patch.object(gitutil, "_untracked", with_a_ghost):
             self.assertNotEqual(gitutil.tree_hash(self.repo), "")
 
+    def test_tree_hash_survives_a_nested_repository_and_a_link_to_a_directory(self):
+        nested = self.repo / "vendor"                       # git lists it as one `vendor/` entry
+        nested.mkdir()
+        git(nested, "init", "-q")
+        (nested / "lib.py").write_text("print(1)\n")
+        outside = Path(self.tmp.name) / "shared"
+        outside.mkdir()
+        os.symlink(outside, self.repo / "shared")
+        first = gitutil.tree_hash(self.repo)
+        self.assertEqual(gitutil.tree_hash(self.repo), first)
+
     def test_tree_hash_changes_when_a_commit_lands_on_a_clean_tree(self):
         h0 = gitutil.tree_hash(self.repo)
         (self.repo / "a.txt").write_text("committed\n")

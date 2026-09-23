@@ -12,8 +12,8 @@ MCP_DIALOG = re.compile(r"new MCP servers? found in this project", re.IGNORECASE
 MCP_REFUSAL = (
     "Claude Code asks to approve this project's MCP servers (.mcp.json); herdr-review never answers "
     "that dialog: every answer, Esc included, is saved into .claude/settings.local.json of the "
-    "repository. It appears only when the profile passes its own --settings: add "
-    '"enableAllProjectMcpServers": true there.'
+    "repository. Usually the profile passes its own --settings, which replaces the session-only one: "
+    'add "enableAllProjectMcpServers": true there.'
 )
 # Claude Code: "❯ No, exit" / "Yes, I trust this folder" — the cursor starts on "No, exit".
 CLAUDE_CURSOR = "❯"
@@ -53,7 +53,7 @@ def _cursor_keys(screen: str, cursor: str, yes: re.Pattern, no: re.Pattern, back
             return ("enter",)
         if no.search(raw):
             return (back, "enter")
-        return None
+        continue                # the glyph on an unrelated line above the options: Codex's composer, a header
     return None
 
 
@@ -73,15 +73,22 @@ def recognize(screen: str) -> tuple[str, tuple[str, ...] | None] | None:
 
 def resolve_startup_dialog(herdr, name: str) -> DialogOutcome:
     """Answer the trust dialogs of Claude Code, Codex and Grok; refuse Claude Code's MCP approval dialog."""
+    answered = False
     for _ in range(MAX_DIALOGS):
         found = recognize(herdr.agent_read(name, source="visible", lines=SCREEN_LINES) or "")
         if found is None:
+            if answered:
+                # The answered dialog is gone after a timed-out wait: the agent may only be slow to turn
+                # idle (project MCP servers starting), so give it one more wait.
+                waited = herdr.agent_wait(name, until="idle", timeout_ms=WAIT_MS)
+                return DialogOutcome(resolved=waited.ok)
             return DialogOutcome(resolved=False)
         dialog, keys = found
         if dialog == "claude-mcp":
             return DialogOutcome(resolved=False, refusal=MCP_REFUSAL)
         if not keys or not herdr.agent_send_keys(name, *keys).ok:
             return DialogOutcome(resolved=False)
+        answered = True
         waited = herdr.agent_wait(name, until="idle", timeout_ms=WAIT_MS)
         if waited.ok:
             after = recognize(herdr.agent_read(name, source="visible", lines=SCREEN_LINES) or "")

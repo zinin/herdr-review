@@ -40,6 +40,27 @@ class CloseTest(RunnerBase):
         self.assertEqual(self.herdr.calls_named("tab_close"), [])
         self.assertEqual(r.close(force=True)["closed"], ["w1:t2", "w1:t1"])
 
+    def test_a_forced_close_aborts_a_run_in_progress(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        (run_dir / "scratch" / "codex").mkdir(parents=True)
+        r = self.runner(run_dir)
+        r.start_reviewers()
+        r.notify("x", sound="request")
+        r.close(force=True)
+        status = json.loads((run_dir / "status.json").read_text())
+        self.assertEqual(status["phase"], "aborted")
+        self.assertEqual(status["abort_reason"], "closed with --force")
+        self.assertFalse(status["waiting_for_user"])
+        self.assertIn("closed_at", status)
+        self.assertFalse((run_dir / "scratch").exists())
+
+    def test_a_forced_close_of_a_finished_run_keeps_it_finished(self):
+        run_dir = self.finished_run()
+        self.runner(run_dir).close(force=True)
+        status = json.loads((run_dir / "status.json").read_text())
+        self.assertEqual(status["phase"], "finished")
+        self.assertNotIn("abort_reason", status)
+
     def test_a_tab_closed_by_hand_is_not_an_error(self):
         run_dir = self.finished_run()
         self.herdr.close_errors["w1:t3"] = ("tab_not_found", "tab w1:t3 not found")
