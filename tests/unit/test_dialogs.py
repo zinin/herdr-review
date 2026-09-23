@@ -52,11 +52,20 @@ class StartupDialogTest(unittest.TestCase):
         self.assertEqual(resolve_startup_dialog(h, "hr1-orch"), DialogOutcome(resolved=False))
         self.assertEqual(len(h.calls_named("agent_send_keys")), 3)       # MAX_DIALOGS tries, then it gives up
 
+    def test_a_failed_wait_other_than_a_timeout_sends_no_second_key(self):
+        h = FakeHerdr()
+        h.wait_ok = False
+        h.wait_error = ("server_error", "boom")
+        h.screens["hr1-orch"] = CLAUDE_TRUST_ON_YES
+        self.assertEqual(resolve_startup_dialog(h, "hr1-orch"), DialogOutcome(resolved=False))
+        self.assertEqual(len(h.calls_named("agent_send_keys")), 1)
+
     def test_dialog_still_on_screen_after_wait_is_not_resolved(self):
         h = FakeHerdr()
         h.keep_screen_on_wait = True
         h.screens["hr1-orch"] = CLAUDE_TRUST_ON_NO
         self.assertFalse(resolve_startup_dialog(h, "hr1-orch").resolved)
+        self.assertEqual(len(h.calls_named("agent_send_keys")), 1)       # idle, yet the same dialog: never a second key
 
     def test_mcp_dialog_is_refused_without_a_key(self):
         for screen in (MCP_ONE, MCP_MANY):
@@ -72,6 +81,13 @@ class StartupDialogTest(unittest.TestCase):
         h.screens["hr1-rv"] = CLAUDE_TRUST_ON_NO
         h.screens_after_wait["hr1-rv"] = [MCP_MANY]
         self.assertEqual(resolve_startup_dialog(h, "hr1-rv").refusal, MCP_REFUSAL)
+        self.assertEqual(h.calls_named("agent_send_keys"), [("agent_send_keys", "hr1-rv", ("down", "enter"))])
+
+    def test_mcp_dialog_after_an_idle_wait_is_refused(self):
+        h = FakeHerdr()
+        h.screens["hr1-rv"] = CLAUDE_TRUST_ON_NO
+        h.screens_after_wait["hr1-rv"] = [MCP_ONE]
+        self.assertEqual(resolve_startup_dialog(h, "hr1-rv"), DialogOutcome(resolved=False, refusal=MCP_REFUSAL))
         self.assertEqual(h.calls_named("agent_send_keys"), [("agent_send_keys", "hr1-rv", ("down", "enter"))])
 
     def test_codex_trust_dialog(self):
@@ -96,6 +112,7 @@ class RecognizeTest(unittest.TestCase):
         self.assertEqual(recognize(CLAUDE_TRUST_ON_NO), ("claude-trust", ("down", "enter")))
         self.assertEqual(recognize(CODEX_TRUST_ON_TRUST), ("codex-trust", ("enter",)))
         self.assertEqual(recognize(GROK_TRUST), ("grok-trust", ("y",)))
+        self.assertEqual(recognize(CLAUDE_TRUST_ON_NO + MCP_ONE), ("claude-mcp", None))
 
     def test_an_idle_agent_is_not_a_dialog(self):
         self.assertIsNone(recognize("❯ \n  ⏵⏵ auto mode on (shift+tab to cycle)\n"))

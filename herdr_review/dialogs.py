@@ -82,8 +82,14 @@ def resolve_startup_dialog(herdr, name: str) -> DialogOutcome:
             return DialogOutcome(resolved=False, refusal=MCP_REFUSAL)
         if not keys or not herdr.agent_send_keys(name, *keys).ok:
             return DialogOutcome(resolved=False)
-        if herdr.agent_wait(name, until="idle", timeout_ms=WAIT_MS).ok:
-            if recognize(herdr.agent_read(name, source="visible", lines=SCREEN_LINES) or "") is None:
+        waited = herdr.agent_wait(name, until="idle", timeout_ms=WAIT_MS)
+        if waited.ok:
+            after = recognize(herdr.agent_read(name, source="visible", lines=SCREEN_LINES) or "")
+            if after is None:
                 return DialogOutcome(resolved=True)
-        # A dialog is still on screen — the next one, or the same one again: go round.
+            if after[0] == dialog:
+                return DialogOutcome(resolved=False)   # idle, yet the same dialog: stale or stuck — never a second key
+        elif waited.error_code != "timeout":
+            return DialogOutcome(resolved=False)       # no settled screen: a second key could answer the next dialog
+        # The next dialog after an idle wait, or a dialog still up after a timed-out wait: go round.
     return DialogOutcome(resolved=False)
