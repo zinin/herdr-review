@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 from herdr_review.config import parse_config
-from herdr_review.dialogs import CLAUDE_MCP_SETTINGS
+from herdr_review.dialogs import CLAUDE_SESSION_SETTINGS
 from herdr_review.herdr import Herdr
 from herdr_review.launch import LaunchError, LaunchOptions, _unfinished_runs, launch, new_run_id, project_slug, resolve_selection
 from tests.unit.fakeherdr import FakeHerdr
@@ -107,7 +107,7 @@ class LaunchTest(unittest.TestCase):
         self.assertEqual(tab_call[3], "rv-hrtest: orch")
         self.assertEqual(tab_call[4]["HERDR_REVIEW_RUN"], str(run_dir))
         self.assertEqual(tab_call[4]["ANTHROPIC_AUTH_TOKEN"], "s3cret")
-        self.assertEqual(self.herdr.calls_named("agent_start")[0], ("agent_start", "hrtest-orch", "claude", "w1:p2", ["--settings", CLAUDE_MCP_SETTINGS, "--model", "opus"]))
+        self.assertEqual(self.herdr.calls_named("agent_start")[0], ("agent_start", "hrtest-orch", "claude", "w1:p2", ["--settings", CLAUDE_SESSION_SETTINGS, "--model", "opus"]))
         prompt_call = self.herdr.calls_named("agent_prompt")[0]
         self.assertEqual(prompt_call[2], f"Read {run_dir / 'orchestrator.md'} and follow it exactly. Do not stop until the run is finished.")
         self.assertEqual(prompt_call[3:], ("working", 60000))
@@ -435,9 +435,9 @@ class LaunchTest(unittest.TestCase):
     def test_claude_profiles_start_with_the_session_mcp_setting(self):
         res = self.do_launch()
         run_json = json.loads((Path(res["run_dir"]) / "run.json").read_text())
-        self.assertEqual(run_json["reviewers"][0]["args"], ["--settings", CLAUDE_MCP_SETTINGS, "--model", "opus"])
+        self.assertEqual(run_json["reviewers"][0]["args"], ["--settings", CLAUDE_SESSION_SETTINGS, "--model", "opus"])
         self.assertEqual(run_json["reviewers"][1]["args"], ["-m", "gpt-5.5"])            # codex: untouched
-        self.assertEqual(run_json["orchestrator"]["args"][:2], ["--settings", CLAUDE_MCP_SETTINGS])
+        self.assertEqual(run_json["orchestrator"]["args"][:2], ["--settings", CLAUDE_SESSION_SETTINGS])
 
     def test_a_profile_with_its_own_settings_is_left_alone(self):
         self.cfg.profiles["claude-opus"].args = ["--model", "opus", "--settings=/home/me/claude.json"]

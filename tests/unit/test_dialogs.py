@@ -1,6 +1,7 @@
+import json
 import unittest
 
-from herdr_review.dialogs import CLAUDE_MCP_SETTINGS, MCP_REFUSAL, DialogOutcome, recognize, resolve_startup_dialog, startup_args
+from herdr_review.dialogs import CLAUDE_SESSION_SETTINGS, MCP_REFUSAL, DialogOutcome, recognize, resolve_startup_dialog, startup_args
 from tests.unit.fakeherdr import FakeHerdr
 
 CLAUDE_TRUST_ON_NO = "Quick safety check … ❯ No, exit\n  Yes, I trust this folder\nEnter to confirm · Esc to cancel\n"
@@ -143,10 +144,11 @@ class RecognizeTest(unittest.TestCase):
 
 
 class StartupArgsTest(unittest.TestCase):
-    def test_claude_starts_with_the_session_mcp_setting(self):
+    def test_claude_starts_with_the_session_settings(self):
         args = ["--model", "opus"]
-        self.assertEqual(startup_args("claude", args), ["--settings", CLAUDE_MCP_SETTINGS, "--model", "opus"])
+        self.assertEqual(startup_args("claude", args), ["--settings", CLAUDE_SESSION_SETTINGS, "--model", "opus"])
         self.assertEqual(args, ["--model", "opus"])          # the profile's own list stays as it was
+        self.assertEqual(json.loads(CLAUDE_SESSION_SETTINGS), {"enableAllProjectMcpServers": True, "attribution": {"commit": ""}})
 
     def test_a_profile_with_its_own_settings_is_left_alone(self):
         for args in (["--settings", "/x.json"], ["--model", "opus", "--settings=/x.json"]):

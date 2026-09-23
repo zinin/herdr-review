@@ -14,7 +14,7 @@ teardown() { teardown_env; }
   grep -q '"phase": "reviewing"' "$RUN/status.json"
   grep -q "tab create --workspace w1 --cwd $REPO --label rv-.*: orch --env HERDR_REVIEW_RUN=$RUN --env XDG_CONFIG_HOME=$XDG_CONFIG_HOME --env SECRET_TOKEN=s3cret-value --no-focus" "$FAKE_HERDR_LOG"
   grep -q 'agent start hr.*-orch --kind claude --pane w1:p2' "$FAKE_HERDR_LOG"
-  grep -qF -- '--timeout 300000 -- --settings {"enableAllProjectMcpServers": true} --model opus' "$FAKE_HERDR_LOG"
+  grep -qF -- '--timeout 300000 -- --settings {"enableAllProjectMcpServers": true, "attribution": {"commit": ""}} --model opus' "$FAKE_HERDR_LOG"
   grep -q "agent prompt hr.*-orch Read $RUN/orchestrator.md and follow it exactly. Do not stop until the run is finished. --wait --until working --timeout 60000" "$FAKE_HERDR_LOG"
   grep -q 'SECRET_TOKEN=\*\*\*' "$RUN/runner.log"
   ! grep -q 's3cret-value' "$RUN/runner.log"

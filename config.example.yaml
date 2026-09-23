@@ -15,10 +15,12 @@
 # mode is also gated by the subscription plan) and Codex >= 0.147.0; an older CLI rejects the flag
 # and that agent leaves the run as failed.
 #
-# Every profile of kind claude starts with --settings '{"enableAllProjectMcpServers": true}': Claude
-# Code then loads the project's .mcp.json servers without its approval dialog, whose every answer
-# would be saved into the repository's .claude/settings.local.json. A profile that passes its own
-# --settings gets nothing added and must carry that key in its settings file.
+# Every profile of kind claude starts with the session-only --settings
+# '{"enableAllProjectMcpServers": true, "attribution": {"commit": ""}}'. With the first key Claude
+# Code loads the project's .mcp.json servers without its approval dialog, whose every answer would
+# be saved into the repository's .claude/settings.local.json; the second, attribution.commit set to
+# "", keeps Claude Code's trailer out of the fix commits. A profile that passes its own --settings
+# gets nothing added and must carry those keys in its settings file itself.
 
 profiles:                        # one mechanism for every engine: herdr kind + CLI args + env
   claude-opus:
