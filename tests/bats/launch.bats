@@ -119,7 +119,7 @@ teardown() { teardown_env; }
   [ "$status" -eq 0 ]
   [[ "$output" == *"объём:        коммиты ветки (master..HEAD)"* ]]
   [[ "$output" == *"изменённых: 1, неотслеживаемых: 1"* ]]
-  ! [[ "$output" == *"uncommitted changes"* ]]
+  [[ "$output" != *"uncommitted changes"* ]]
   RUN="$(run_dir_of)"
   grep -qx ' M a.txt' "$RUN/uncommitted.txt"
   grep -qx '?? notes/' "$RUN/uncommitted.txt"
