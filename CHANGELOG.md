@@ -32,6 +32,9 @@ All notable changes to herdr-review will be documented here.
   orchestrator verifies each one by hash and subject.
 - `run finish`, `status` and the report list the commits made during the run, not every commit since
   the merge-base.
+- Drift is worded as a change of the working tree, not as a reviewer's doing: `status` says «рабочее
+  дерево изменилось во время ревью», and `drift_status` holds only the `git status --short` lines
+  that are new since the launch, so the owner's files uncommitted then are not reported as changed.
 - The launcher never asks about untracked files or startup dialogs; `--plan` is documented as a path
   or free text.
 - `config.example.yaml`: every profile offers the agent's auto mode next to yolo, one of the two

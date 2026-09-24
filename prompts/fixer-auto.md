@@ -7,7 +7,7 @@ Repository: the current working directory. Run directory: {RUN_DIR}
 <ORCHESTRATOR: one entry per AUTO issue, in this shape>
 - **path/to/file.ext:123** — what is wrong — the exact change to make
 
-## Files a reviewer already changed
+## Files changed during the review
 
 <ORCHESTRATOR: the paths from `drift_status`, one per line, or "none">
 

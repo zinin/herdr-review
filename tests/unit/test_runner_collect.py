@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from herdr_review import gitutil
-from herdr_review.runner import Runner, retry_text
+from herdr_review.runner import DRIFT_NOTHING_NEW, Runner, retry_text
 from tests.unit.fakeherdr import FakeHerdr
 from tests.unit.test_runner_start import RunnerBase, git, make_run
 
@@ -154,6 +154,32 @@ class CollectTest(RunnerBase):
         r2.phase("aggregating")
         (self.repo / "a.txt").write_text("changed by the fixer\n")
         self.assertFalse(r2.collect()["drift"])
+
+    def reviewing_since_now(self, name: str) -> Runner:
+        """A run whose run.json records the tree's `git status --short` lines as uncommitted, as launch does."""
+        run_dir = make_run(self.root / name, self.repo, reviewers=("codex",))
+        run = json.loads((run_dir / "run.json").read_text())
+        run["uncommitted"] = gitutil.status_lines(self.repo)
+        (run_dir / "run.json").write_text(json.dumps(run))
+        r = Runner(run_dir, herdr=FakeHerdr(), poll_sec=0, sleep=lambda s: None)
+        r.start_reviewers()
+        return r
+
+    def test_drift_status_lists_only_what_is_new_since_launch(self):
+        (self.repo / "mine.txt").write_text("the owner's, untracked at launch\n")
+        r = self.reviewing_since_now("own")
+        (self.repo / "new.txt").write_text("written during the review\n")
+        out = r.collect()
+        self.assertTrue(out["drift"])
+        self.assertEqual(out["drift_status"], "?? new.txt\n")
+
+    def test_drift_status_says_so_when_nothing_is_new_since_launch(self):
+        (self.repo / "a.txt").write_text("the owner's edit\n")
+        r = self.reviewing_since_now("again")
+        (self.repo / "a.txt").write_text("the owner's edit, edited again\n")
+        out = r.collect()
+        self.assertTrue(out["drift"])
+        self.assertEqual(out["drift_status"], DRIFT_NOTHING_NEW + "\n")
 
 
 class FinishTest(RunnerBase):

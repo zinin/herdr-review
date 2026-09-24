@@ -235,7 +235,7 @@ def cmd_status(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     if data.get("waiting_for_user"):
         print("ожидает ответа пользователя в панели оркестратора")
     if data.get("drift"):
-        print("drift: ревьюер изменил рабочее дерево")
+        print("drift: рабочее дерево изменилось во время ревью")
     print(f"{'agent':<28} {'role':<9} {'state':<15} {'since':>6}  file  reason")
     for n, a in data["agents"].items():
         reason = (a.get("reason") or "")[:60]

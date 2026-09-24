@@ -52,6 +52,8 @@ LIVE_STATUSES = ("idle", "working", "blocked", "done", "unknown")
 # the agent, so they must never take one out of the run.
 HERDR_ERROR_CODES = ("herdr_not_found", "herdr_failed", "timeout")
 OBSERVE_ATTEMPTS = 3
+# drift_status when the tree changed but no `git status --short` line is new since launch.
+DRIFT_NOTHING_NEW = "no line of `git status --short` is new since launch: a file uncommitted then changed again, or a commit landed"
 
 
 class RunnerError(Exception):
@@ -623,6 +625,16 @@ class Runner:
         return {"autodecide": True, "was": was, "switched_at": data.get("autodecide_switched_at")}
 
     # ----- collect
+    def _drift_status(self) -> str:
+        """The `git status --short` lines that were not there at launch: what was uncommitted then is the
+        owner's own work, listed in uncommitted.txt. A run from before `uncommitted` was recorded gets them all."""
+        before = self.run.get("uncommitted")
+        if not isinstance(before, list):
+            return gitutil.status_short(self.repo)
+        known = set(before)
+        new = [line for line in gitutil.status_lines(self.repo) if line not in known]
+        return "".join(f"{line}\n" for line in new) if new else DRIFT_NOTHING_NEW + "\n"
+
     def _check_drift(self) -> bool:
         data = self.status.data
         if data.get("phase") != "reviewing" or not data.get("tree_hash_before"):
@@ -631,7 +643,7 @@ class Runner:
             current = gitutil.tree_hash(self.repo)
             if current != data["tree_hash_before"]:
                 self.status.set("drift", True)
-                self.status.set("drift_status", gitutil.status_short(self.repo))
+                self.status.set("drift_status", self._drift_status())
         except gitutil.GitError as e:
             raise RunnerError(str(e)) from e
         return bool(data.get("drift"))

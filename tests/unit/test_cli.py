@@ -63,6 +63,17 @@ class CliParsingTest(unittest.TestCase):
             self.assertIn("autodecide: on", out.getvalue())
             self.assertIn("2026-09-10T16:33:00+00:00", out.getvalue())
 
+    def test_status_says_the_working_tree_changed_not_who_changed_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            st = RunStatus.create(Path(d), run_id="hrtest", repo=d, layout="tabs")
+            st.set("drift", True)
+            st.save()
+            out = io.StringIO()
+            with redirect_stdout(out):
+                main(["status", "--run", d])
+            self.assertIn("drift: рабочее дерево изменилось во время ревью", out.getvalue())
+            self.assertNotIn("ревьюер", out.getvalue())
+
     def test_status_accepts_positional_latest_and_run_flag(self):
         p = build_parser()
         self.assertEqual(status_run_spec(p.parse_args(["status", "latest"])), "latest")

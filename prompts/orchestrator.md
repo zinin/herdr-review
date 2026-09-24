@@ -59,7 +59,7 @@ Loop until done:
    - `gone` → the agent process exited. It is out of the run (its last screen is in `status.json`). Nothing to do.
 4. Stop looping when `wait` reports `settled: true` and `collect` reports no `pending`.
 
-Then look at `drift` in the last `collect` output. `drift: true` means the working tree changed while the reviewers worked — a reviewer wrote into it, or the user went on editing their own files; `drift_status` is `git status --short`.
+Then look at `drift` in the last `collect` output. `drift: true` means the working tree changed while the reviewers worked — a reviewer wrote into it, or the user went on editing their own files. `drift_status` lists the `git status --short` lines that are new since launch (what was uncommitted then is in `{RUN_DIR}/uncommitted.txt`), or says in one line that none is new: a file uncommitted then changed again, or a commit landed.
 - Current autodecide `true`: continue; mention the drift in the final report.
 - Current autodecide `false`: `"{RUNNER}" run notify --title "herdr-review: нужен ответ" --body "рабочее дерево изменилось во время ревью" --sound request --run "{RUN_DIR}"`, show `drift_status` to the user, say that their own edits count too, ask whether to continue, and end your turn. Continue only after the user answers, then run `"{RUNNER}" run phase aggregating --run "{RUN_DIR}"`.
 
@@ -112,7 +112,7 @@ Otherwise `"{RUNNER}" run start-fixer --run "{RUN_DIR}"`. The JSON gives the fix
 
 If A > 0:
 
-1. Write `{RUN_DIR}/fix-auto.md` from this skeleton, replacing every `<ORCHESTRATOR: …>` marker: one entry per AUTO issue (location, problem, exact change), and under "Files a reviewer already changed" the paths from `drift_status` in the last `collect` output, one per line — `none` when there was no drift:
+1. Write `{RUN_DIR}/fix-auto.md` from this skeleton, replacing every `<ORCHESTRATOR: …>` marker: one entry per AUTO issue (location, problem, exact change), and under "Files changed during the review" the paths that `drift_status` lists in the last `collect` output, one per line — `none` when there was no drift or it lists no path:
 
 ```
 {FIXER_AUTO_SKELETON}
@@ -152,7 +152,7 @@ The same switch can arrive without a question pending — the user has a command
 
 **Apply a decision** («не исправлять» is only recorded):
 
-1. Write `{RUN_DIR}/fix-<i>.md` from this skeleton, filling every `<ORCHESTRATOR: …>` marker; `n` is `<i>`. "Files a reviewer already changed" takes the paths from `drift_status` in the last `collect` output, one per line, or `none` when there was no drift. The fixer writes the commit message itself, in the repository's style, to `{RUN_DIR}/fix-<i>-commit.txt`, and its report to `{RUN_DIR}/fix-<i>-report.md`:
+1. Write `{RUN_DIR}/fix-<i>.md` from this skeleton, filling every `<ORCHESTRATOR: …>` marker; `n` is `<i>`. "Files changed during the review" takes the paths that `drift_status` lists in the last `collect` output, one per line, or `none` when there was no drift or it lists no path. The fixer writes the commit message itself, in the repository's style, to `{RUN_DIR}/fix-<i>-commit.txt`, and its report to `{RUN_DIR}/fix-<i>-report.md`:
 
 ```
 {FIXER_DECISION_SKELETON}

@@ -112,7 +112,8 @@ class PromptTemplatesTest(unittest.TestCase):
                 self.assertNotIn("review: auto-fix", text)
                 self.assertNotIn('-m "', text)
                 self.assertIn("no commit", text)
-                self.assertIn("changed by a reviewer", text)
+                self.assertIn("applied, not committed: changed during the review", text)
+                self.assertIn('under "Files changed during the review"', text)
                 self.assertNotIn("already modified by a reviewer", text)
                 self.assertIn("Generated with", text)
                 if name == "fixer-decision.md":
@@ -138,6 +139,19 @@ class PromptTemplatesTest(unittest.TestCase):
             self.assertIn(phrase, text)
         self.assertNotIn("--stat", text)
         self.assertNotIn("unprotected file", text)
+
+    def test_drift_is_worded_as_a_change_of_the_tree_not_of_a_reviewer(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        texts = {"orchestrator.md": render_file(PROMPTS_DIR / "orchestrator.md", values)}
+        for kind in ("auto", "decision"):
+            for scope in ("commits", "worktree"):
+                texts[f"fixer-{kind} ({scope})"] = fixer_skeleton(kind, scope, "/run")
+        for name, text in texts.items():
+            with self.subTest(name=name):
+                self.assertIn("Files changed during the review", text)
+                for old in ("Files a reviewer already changed", "changed by a reviewer", "a reviewer already changed"):
+                    self.assertNotIn(old, text)
+        self.assertIn("`drift_status` lists the `git status --short` lines that are new since launch", texts["orchestrator.md"])
 
     def test_orchestrator_checks_that_a_fix_commit_is_the_one_the_task_made(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}

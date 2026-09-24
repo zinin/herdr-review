@@ -7,7 +7,7 @@ Location: <ORCHESTRATOR: path/to/file.ext:123>
 Problem: <ORCHESTRATOR: what is wrong, in one or two sentences>
 Decision: <ORCHESTRATOR: the chosen variant, described precisely enough to implement without judgment calls>
 
-## Files a reviewer already changed
+## Files changed during the review
 
 <ORCHESTRATOR: the paths from `drift_status`, one per line, or "none">
 
