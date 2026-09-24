@@ -422,6 +422,28 @@ class FinishTest(RunnerBase):
         self.assertEqual(out["commits"], [fix, merge])          # the owner's merge is a commit of the run; master's three are not
         self.assertIn("коммитов 2", self.herdr.calls_named("notification_show")[-1][2])
 
+    def test_a_fix_commit_made_before_a_merge_of_the_base_stays_listed(self):
+        git(self.repo, "switch", "-q", "-c", "feat")
+        run_dir = self.reviewed_run(2, launched_now=True)       # two branch commits, then the launch
+        (self.repo / "a.txt").write_text("first fix\n")
+        git(self.repo, "commit", "-q", "-am", "first fix")
+        fix1 = short(self.repo)
+        git(self.repo, "switch", "-q", "master")
+        for i in range(3):                                      # master moves on by three commits
+            (self.repo / f"m{i}.txt").write_text("master moves on\n")
+            git(self.repo, "add", f"m{i}.txt")
+            git(self.repo, "commit", "-q", "-m", f"master moves on {i}")
+        git(self.repo, "switch", "-q", "feat")
+        git(self.repo, "merge", "-q", "--no-ff", "--no-edit", "master")   # the owner merges the base between two fixes
+        merge = short(self.repo)
+        (self.repo / "a.txt").write_text("second fix\n")
+        git(self.repo, "commit", "-q", "-am", "second fix")
+        fix2 = short(self.repo)
+        out = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([fix1, fix2])
+        # newest first: the fix made before the merge is on the first-parent line too; master's three are not
+        self.assertEqual(out["commits"], [fix2, merge, fix1])
+        self.assertIn("коммитов 3", self.herdr.calls_named("notification_show")[-1][2])
+
     def test_a_subject_with_a_cr_a_form_feed_and_a_line_separator_is_one_commit(self):
         run_dir = self.reviewed_run(0, launched_now=True)
         (self.repo / "a.txt").write_text("fixed during the run\n")
