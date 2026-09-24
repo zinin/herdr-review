@@ -53,6 +53,10 @@ All notable changes to herdr-review will be documented here.
   made `run start-reviewers` fail before any agent started, and `collect` fail during the run. The
   drift check now reads the untracked files itself, with no clean filter of `.gitattributes`, and
   describes a file it cannot read by its size and mtime.
+- An untracked file whose name is not UTF-8 or holds a CR, such as a Latin-1 `café.py` or macOS's
+  `Icon\r`, was dropped from the working-tree scope: the reviewers' list, `untracked.txt` and the
+  launch summary's count missed it, and so did the drift check. Such a name is now listed quoted as
+  git quotes a path: `"caf\351.py"`, `"Icon\r"`.
 
 ## [0.1.0] - 2026-09-10
 

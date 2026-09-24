@@ -29,6 +29,9 @@ NESTED_REPO = "nested git repository"
 # backslash or a control character; bare otherwise. A rename or copy entry reads `<old> -> <new>`.
 STATUS_PATH = r'"(?:[^"\\]|\\.)*"|[^ ]+'
 STATUS_RENAME = re.compile(rf"({STATUS_PATH}) -> ({STATUS_PATH})")
+# Inside a path quote_path quotes: the characters with an escape of their own. Every other control character,
+# and every byte that is not UTF-8, is written as three-digit octal.
+PATH_ESCAPES = {"\t": "\\t", "\n": "\\n", "\r": "\\r", '"': '\\"', "\\": "\\\\"}
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,18 @@ def _out(repo: Path | str, *args: str) -> str:
     p = _run(repo, *args)
     if p.returncode != 0:
         raise GitError(f"git {' '.join(args)} failed: {p.stderr.strip()}")
+    return p.stdout
+
+
+def _out_bytes(repo: Path | str, *args: str) -> bytes:
+    """`_out` for output that names files the filesystem must find again: git's bytes as they are. Read as text,
+    a name that is not UTF-8 would come back with U+FFFD in it, and a CR in a name as a newline."""
+    try:
+        p = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, env=_git_env(), timeout=GIT_TIMEOUT_SEC)
+    except subprocess.TimeoutExpired as e:
+        raise GitError(f"git {' '.join(args)} timed out after {GIT_TIMEOUT_SEC}s") from e
+    if p.returncode != 0:
+        raise GitError(f"git {' '.join(args)} failed: {p.stderr.decode('utf-8', 'replace').strip()}")
     return p.stdout
 
 
@@ -119,8 +134,27 @@ def committed_changes(repo: Path | str, sha: str) -> bool:
 
 
 def _untracked(repo: Path | str) -> list[str]:
-    out = _out(repo, "status", "--porcelain", "--untracked-files=all", "-z")
-    return sorted(entry[3:] for entry in out.split("\0") if entry.startswith("?? "))
+    """The untracked, non-ignored files, each name decoded by `os.fsdecode`: a byte that is not UTF-8 becomes a
+    lone surrogate and a CR stays a CR, so the name still finds its file."""
+    out = _out_bytes(repo, "status", "--porcelain", "--untracked-files=all", "-z")
+    return sorted(os.fsdecode(entry[3:]) for entry in out.split(b"\0") if entry.startswith(b"?? "))
+
+
+def _unprintable(c: str) -> bool:
+    """A control character, or a byte that is not UTF-8: `os.fsdecode` makes it a surrogate, U+DC80 to U+DCFF."""
+    return c < " " or c == "\x7f" or "\udc80" <= c <= "\udcff"
+
+
+def quote_path(path: str) -> str:
+    """<path>, a name as `os.fsdecode` gives it, quoted the way git quotes a path when the name is not UTF-8 or
+    holds a control character: `"caf\\351.py"`, `"Icon\\r"`. Any other name, UTF-8 and spaces included, comes
+    back as it is. A quoted name holds no surrogate, so it can be written to a UTF-8 file."""
+    text = os.fsencode(path).decode("utf-8", "surrogateescape")
+    if not any(_unprintable(c) for c in text):
+        return text
+    # `& 0xff`: a control character is its own byte, a surrogate U+DCxx stands for the byte xx.
+    escaped = (PATH_ESCAPES.get(c) or (f"\\{ord(c) & 0xff:03o}" if _unprintable(c) else c) for c in text)
+    return '"' + "".join(escaped) + '"'
 
 
 def _blob_id(path: Path, st: os.stat_result) -> str:
@@ -215,7 +249,8 @@ def tree_hash(repo: Path | str) -> str:
     # here: git's random temp paths make every hash differ, and a slow driver hits the git timeout.
     diff = _out(repo, "diff", "--no-ext-diff", "--no-textconv", "HEAD")
     untracked_meta = _untracked_meta(repo, _untracked(repo))
-    return hashlib.sha256((head + "\n" + status + "\n" + diff + "\n" + untracked_meta).encode("utf-8", "replace")).hexdigest()
+    # A name that is not UTF-8 holds lone surrogates: they encode back to its own bytes, so two such names differ.
+    return hashlib.sha256((head + "\n" + status + "\n" + diff + "\n" + untracked_meta).encode("utf-8", "surrogateescape")).hexdigest()
 
 
 def status_short(repo: Path | str) -> str:

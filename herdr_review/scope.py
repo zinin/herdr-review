@@ -5,7 +5,7 @@ from pathlib import Path
 
 from . import PROMPTS_DIR
 from .config import SCOPES
-from .gitutil import NESTED_REPO, UntrackedFile
+from .gitutil import NESTED_REPO, UntrackedFile, quote_path
 from .render import render_file
 
 # How many entries a reviewer prompt inlines before it points at the full list.
@@ -58,9 +58,11 @@ def uncommitted_block(lines: list[str], listing: Path) -> str:
 
 
 def untracked_line(f: UntrackedFile) -> str:
-    """One untracked file as the reviewer reads it, in the prompt and in untracked.txt."""
+    """One untracked file as the reviewer reads it, in the prompt and in untracked.txt. A name that is not UTF-8
+    or holds a control character is quoted as git quotes a path."""
+    name = quote_path(f.path)
     # A nested repository is a directory: its size is no file size.
-    line = f"- `{f.path}`" if f.skip == NESTED_REPO else f"- `{f.path}` ({human_size(f.size)})"
+    line = f"- `{name}`" if f.skip == NESTED_REPO else f"- `{name}` ({human_size(f.size)})"
     if f.skip:
         line += f" — skip: {f.skip}"
     return line

@@ -1,3 +1,4 @@
+import os
 import unittest
 from pathlib import Path
 
@@ -64,6 +65,12 @@ class BlocksTest(unittest.TestCase):
         self.assertIn("- `logo.png` (2 KB) — skip: binary", text)
         self.assertIn("- `vendor/` — skip: nested git repository", text)      # a directory's size is no file size
         self.assertEqual(scope.untracked_block([], listing), "There are none.")
+
+    def test_untracked_line_quotes_a_name_that_is_not_utf8_or_holds_a_cr(self):
+        self.assertEqual(scope.untracked_line(UntrackedFile(os.fsdecode(b"caf\xe9.py"), 9)), '- `"caf\\351.py"` (9 B)')
+        self.assertEqual(scope.untracked_line(UntrackedFile("Icon\r", 0)), '- `"Icon\\r"` (0 B)')
+        self.assertEqual(scope.untracked_line(UntrackedFile("заметка.md", 9)), "- `заметка.md` (9 B)")
+        self.assertEqual(scope.untracked_line(UntrackedFile("my file.py", 9)), "- `my file.py` (9 B)")
 
     def test_untracked_block_caps_the_list(self):
         files = [UntrackedFile(f"f{i}.txt", 1) for i in range(scope.UNTRACKED_INLINE + 3)]

@@ -25,6 +25,17 @@ def make_repo(d: Path) -> Path:
     return repo
 
 
+def write_bytes_name(test: unittest.TestCase, repo: Path, name: bytes, content: bytes) -> Path:
+    """Create <repo>/<name> through a bytes path, for a name that is not UTF-8; skip <test> where the filesystem
+    refuses such a name."""
+    try:
+        with open(os.path.join(os.fsencode(repo), name), "wb") as f:
+            f.write(content)
+    except OSError as e:
+        test.skipTest(f"the filesystem refuses the name {name!r}: {e}")
+    return repo / os.fsdecode(name)
+
+
 class GitUtilTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -260,6 +271,28 @@ class GitUtilTest(unittest.TestCase):
         (nested / "lib.py").write_text("print(1)\n")
         self.assertEqual([(f.path, f.skip) for f in gitutil.untracked_files(self.repo)],
                          [("vendor/", "nested git repository")])
+
+    def test_untracked_files_keep_a_name_that_is_not_utf8_or_holds_a_cr(self):
+        write_bytes_name(self, self.repo, b"caf\xe9.py", b"aaa\n")        # a legacy-encoded name
+        (self.repo / "Icon\r").write_bytes(b"icon")                        # macOS's folder-icon file
+        self.assertEqual({f.path: f.size for f in gitutil.untracked_files(self.repo)},
+                         {os.fsdecode(b"caf\xe9.py"): 4, "Icon\r": 4})
+
+    def test_tree_hash_reads_a_name_that_is_not_utf8(self):
+        path = write_bytes_name(self, self.repo, b"caf\xe9.py", b"aaa\n")
+        stamp = path.stat().st_mtime_ns
+        h0 = gitutil.tree_hash(self.repo)
+        path.write_bytes(b"bbb\n")                                        # same size
+        os.utime(path, ns=(stamp, stamp))                                   # and the same mtime
+        self.assertNotEqual(gitutil.tree_hash(self.repo), h0)
+
+    def test_quote_path_quotes_a_name_as_git_does_only_when_it_is_not_utf8_or_holds_a_control_character(self):
+        self.assertEqual(gitutil.quote_path(os.fsdecode(b"caf\xe9.py")), '"caf\\351.py"')
+        self.assertEqual(gitutil.quote_path("Icon\r"), '"Icon\\r"')
+        self.assertEqual(gitutil.quote_path('a\tb\nc"d\\e\x01f\x7fg'), '"a\\tb\\nc\\"d\\\\e\\001f\\177g"')
+        for name in ("заметка.md", "my file.py", 'q"uote.txt', "back\\slash.txt", "a\u2028b.txt"):
+            with self.subTest(name=name):
+                self.assertEqual(gitutil.quote_path(name), name)
 
     def test_status_lines_keep_a_name_with_a_line_separator_whole(self):
         (self.repo / "a\u2028b.txt").write_text("x\n")
