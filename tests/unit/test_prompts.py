@@ -189,12 +189,14 @@ class PromptTemplatesTest(unittest.TestCase):
         values["RUN_DIR"] = "/run"
         text = render_file(PROMPTS_DIR / "orchestrator.md", values)
         for phrase in (
-            'log -1 --format=%s <hash>', "must equal the first line of `/run/fix-auto-commit.txt`",
-            "compared to the first line of `/run/fix-<i>-commit.txt`", "compare subjects, not whole messages",
+            'the first line of the commit\'s message (`git -C "v" log -1 --no-show-signature --format=%B <hash>`)',
+            "must equal the first line of `/run/fix-auto-commit.txt`", "compare first lines, not whole messages",
+            "with the first line of its message compared to the first line of `/run/fix-<i>-commit.txt`",
             "must differ from `v` and from every hash an earlier fix of this run reported",
             "its fixes count as `done` without a commit", "применено, не закоммичено: коммит не создан",
         ):
             self.assertIn(phrase, text)
+        self.assertNotIn("--format=%s", text)        # git's subject joins the first paragraph into one line
         self.assertNotIn("review(auto-decide)", text)
         self.assertNotIn("review: auto-fix", text)
 
