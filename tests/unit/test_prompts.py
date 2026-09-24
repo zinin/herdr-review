@@ -117,6 +117,10 @@ class PromptTemplatesTest(unittest.TestCase):
                 self.assertIn("Generated with", text)
                 if name == "fixer-decision.md":
                     self.assertIn("Problem: <ORCHESTRATOR:", text)
+                else:                                   # --only commits a file whole, the other fix's change too
+                    self.assertIn("Apply every fix first, then decide what to commit", text)
+                    self.assertIn("applied, not committed: shares <file> with an uncommitted fix", text)
+                    self.assertIn("Commit once, with only the files of the fixes still marked `done`", text)
 
     def test_orchestrator_prompt_names_the_dialogs_and_protects_the_users_files(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
