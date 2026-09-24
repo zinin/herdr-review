@@ -217,5 +217,20 @@ class PromptTemplatesTest(unittest.TestCase):
             self.assertIn(phrase, text)
         self.assertNotIn("--format=%s", text)        # git's subject joins the first paragraph into one line
 
+    def test_the_report_takes_the_runs_commits_from_git_only_while_the_branch_holds_the_start_head(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        values.update(REPO="/repo", START_HEAD="abc123")
+        text = render_file(PROMPTS_DIR / "orchestrator.md", values)
+        report = text[text.index("## Phase 6"):text.index("## Red flags")]
+        for phrase in (
+            'git -C "/repo" merge-base --is-ancestor abc123 HEAD',
+            'git -C "/repo" log --oneline abc123..HEAD',
+            "«ветку переписали во время прогона (rebase, amend, reset или смена ветки) — git не отделит коммиты"
+            " прогона; ниже коммиты фиксера по его отчётам»",
+            "the fix commits you noted from the fixer's reports — the same hashes you pass to `run finish --commits`",
+        ):
+            self.assertIn(phrase, report)
+        self.assertLess(report.index("merge-base --is-ancestor"), report.index("log --oneline abc123..HEAD"))
+
 if __name__ == "__main__":
     unittest.main()

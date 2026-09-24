@@ -275,7 +275,20 @@ def status_paths(line: str) -> list[str]:
     return [p[1:-1] if len(p) > 1 and p[0] == p[-1] == '"' else p for p in (renamed.groups() if renamed else (rest,))]
 
 
-def log_oneline(repo: Path | str, range_: str) -> str:
-    """One line per commit, colour-free even under color.ui=always and without signature lines even
-    under log.showSignature=true: `finish` reads the hashes."""
-    return _out(repo, "log", "--oneline", "--no-color", "--no-show-signature", range_)
+def is_ancestor(repo: Path | str, commit: str) -> bool:
+    """Whether <commit> is HEAD or one of its ancestors: `git merge-base --is-ancestor` exits 0 for yes and 1 for
+    no. Anything else, an unknown commit say, is a GitError."""
+    if not commit or commit.startswith("-"):
+        raise GitError(f"invalid commit '{commit}'")
+    p = _run(repo, "merge-base", "--is-ancestor", "--", commit, "HEAD")
+    if p.returncode not in (0, 1):
+        raise GitError(f"git merge-base --is-ancestor {commit} HEAD failed: {p.stderr.strip()}")
+    return p.returncode == 0
+
+
+def commit_hashes(repo: Path | str, range_: str) -> list[str]:
+    """The abbreviated hashes of the commits in <range_>, newest first. git prints the hash alone, one per line: no
+    subject can split an entry, and no colour or signature line joins one even under color.ui=always and
+    log.showSignature=true."""
+    out = _out(repo, "log", "--format=%h", "--no-color", "--no-show-signature", range_)
+    return [line for line in out.split("\n") if line]

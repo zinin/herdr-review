@@ -724,14 +724,19 @@ class Runner:
 
     # ----- finish
     def _log_commits(self) -> list[str] | None:
-        """The hashes of the commits made since the run was launched. None when git could not be asked."""
+        """The hashes of the commits made since the run was launched, while the branch still holds the HEAD of the
+        launch. None, with the reason in runner.log, when git cannot tell them: it could not be asked, or the
+        branch was rewritten or switched during the run (a rebase, an amend, a reset), and `<head>..HEAD` would
+        hold the rewritten commits of the branch and the base's."""
         since = self.run.get("head") or self.run["merge_base"]      # a run made before `head` existed
         try:
-            out = gitutil.log_oneline(self.repo, f"{since}..HEAD")
+            if not gitutil.is_ancestor(self.repo, since):
+                self.log(f"finish: the branch was rewritten or switched during the run ({since} is no longer an ancestor of HEAD); recording the orchestrator's --commits")
+                return None
+            return gitutil.commit_hashes(self.repo, f"{since}..HEAD")
         except gitutil.GitError as e:
             self.log(f"finish: cannot read the commit list from git: {e}")
             return None
-        return [line.split(None, 1)[0] for line in out.splitlines() if line.strip()]
 
     def _remove_scratch(self) -> None:
         """The reviewers' experiments may hold a whole copy of the repository: they end with the run."""
@@ -759,7 +764,7 @@ class Runner:
     def finish(self, commits: list[str]) -> dict:
         data = self.status.data
         passed = [c.strip() for c in commits if c and c.strip()]
-        # `--commits` is the orchestrator's recollection; git knows what actually landed.
+        # `--commits` is the orchestrator's recollection; git knows what actually landed, until the branch is rewritten.
         computed = self._log_commits()
         recorded = passed if computed is None else computed
         if computed is not None and passed and not same_commits(passed, computed):

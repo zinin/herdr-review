@@ -172,11 +172,11 @@ Write `{RUN_DIR}/report.md` in Russian:
 - **Ревьюеры:** таблица профиль / kind / `ok` или `failed` + причина.
 - **Замечания:** таблица из `issues.md` с итоговым статусом каждого: исправлено в `<hash>` / решено автоматически в `<hash>` (пометка «под вопросом», если была) / применено, не закоммичено: причина / отклонено: обоснование / отложено по «стоп»: рекомендация Вариант X / не применено: причина / не исправлять.
 - **Итог:** авто-исправлено A; решено автоматически C (из них «под вопросом» — списком с тем, чего не хватило); обсуждено с пользователем B; отклонено X; отложено по «стоп» S (списком с рекомендацией).
-- **Коммиты:** вывод `git -C "{REPO}" log --oneline {START_HEAD}..HEAD` — коммиты, сделанные за время прогона.
+- **Коммиты:** first run `git -C "{REPO}" merge-base --is-ancestor {START_HEAD} HEAD`. When it succeeds, the branch still holds the HEAD of the launch: вывод `git -C "{REPO}" log --oneline {START_HEAD}..HEAD` — коммиты, сделанные за время прогона. When it fails, the branch was rewritten during the run (a rebase, an amend, a reset or a branch switch), and that range would mix the rewritten commits of the branch and the base's with the run's own: write «ветку переписали во время прогона (rebase, amend, reset или смена ветки) — git не отделит коммиты прогона; ниже коммиты фиксера по его отчётам», then list the fix commits you noted from the fixer's reports — the same hashes you pass to `run finish --commits`.
 - **Drift**, если был: что изменилось (незакоммиченную работу, которой больше не видно, — прямо) и что вы сделали.
 - Ревью не состоялось (ноль собранных отзывов): вместо таблиц — причины по каждому ревьюеру.
 
-Then `"{RUNNER}" run finish --commits <hash1>,<hash2> --run "{RUN_DIR}"` (omit `--commits` when there are none). Print the report as your last message.
+Then `"{RUNNER}" run finish --commits <hash1>,<hash2> --run "{RUN_DIR}"` with the fix commits you noted from the fixer's reports (omit `--commits` when there are none). Print the report as your last message.
 
 ## Red flags — stop if you catch yourself doing this
 

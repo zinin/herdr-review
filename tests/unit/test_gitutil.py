@@ -192,12 +192,31 @@ class GitUtilTest(unittest.TestCase):
         git(self.repo, "commit", "-q", "-am", "reviewer commit")
         self.assertNotEqual(gitutil.tree_hash(self.repo), h0)
 
-    def test_log_oneline(self):
+    def short(self, rev: str = "HEAD") -> str:
+        return subprocess.run(["git", "-C", str(self.repo), "rev-parse", "--short", rev], capture_output=True, text=True, check=True).stdout.strip()
+
+    def test_commit_hashes(self):
         git(self.repo, "switch", "-q", "-c", "feat")
         (self.repo / "a.txt").write_text("two\n")
         git(self.repo, "commit", "-q", "-am", "second commit")
-        out = gitutil.log_oneline(self.repo, "master..HEAD")
-        self.assertIn("second commit", out)
+        self.assertEqual(gitutil.commit_hashes(self.repo, "master..HEAD"), [self.short()])
+        self.assertEqual(gitutil.commit_hashes(self.repo, "HEAD..HEAD"), [])
+
+    def test_is_ancestor_tells_whether_head_still_holds_a_commit(self):
+        first = gitutil.head_commit(self.repo)
+        (self.repo / "a.txt").write_text("two\n")
+        git(self.repo, "commit", "-q", "-am", "second")
+        second = gitutil.head_commit(self.repo)
+        self.assertTrue(gitutil.is_ancestor(self.repo, first))
+        self.assertTrue(gitutil.is_ancestor(self.repo, second))           # HEAD itself
+        git(self.repo, "switch", "-q", "-c", "side", first)
+        (self.repo / "b.txt").write_text("side\n")
+        git(self.repo, "add", "b.txt")
+        git(self.repo, "commit", "-q", "-m", "side")
+        self.assertFalse(gitutil.is_ancestor(self.repo, second))          # another line of history
+        for bad in ("0" * 40, "-x"):
+            with self.subTest(commit=bad), self.assertRaises(gitutil.GitError):
+                gitutil.is_ancestor(self.repo, bad)
 
     def test_head_commit(self):
         out = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
@@ -309,14 +328,11 @@ class GitUtilTest(unittest.TestCase):
         self.assertEqual([gitutil.status_paths(line) for line in lines],
                          [["a.txt", "b -> c.txt"], ["my dir/"], ['q\\"uote.txt']])    # an escape inside stays
 
-    def test_log_oneline_is_colour_free_under_color_ui_always(self):
+    def test_commit_hashes_are_colour_free_under_color_ui_always(self):
         git(self.repo, "config", "color.ui", "always")
-        short = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-        out = gitutil.log_oneline(self.repo, "HEAD")
-        self.assertNotIn("\x1b", out)
-        self.assertTrue(out.startswith(short + " "), out)
+        self.assertEqual(gitutil.commit_hashes(self.repo, "HEAD"), [self.short()])
 
-    def test_log_oneline_is_one_line_per_commit_under_log_show_signature(self):
+    def test_commit_hashes_are_one_per_commit_under_log_show_signature(self):
         if shutil.which("ssh-keygen") is None:
             self.skipTest("ssh-keygen is not installed")
         key = Path(self.tmp.name) / "signing-key"
@@ -330,8 +346,7 @@ class GitUtilTest(unittest.TestCase):
         if signed.returncode != 0:                                         # git < 2.34 or OpenSSH < 8.1 cannot sign with SSH
             self.skipTest("SSH signing is unavailable: " + signed.stderr.strip())
         git(self.repo, "config", "log.showSignature", "true")
-        out = gitutil.log_oneline(self.repo, "HEAD")
-        self.assertEqual(len(out.splitlines()), 2, out)                    # init and the signed commit
+        self.assertEqual(gitutil.commit_hashes(self.repo, "HEAD"), [self.short(), self.short("HEAD~1")])   # the signed commit and init
 
 
 if __name__ == "__main__":

@@ -12,6 +12,11 @@ from tests.unit.test_runner_start import RunnerBase, git, make_run
 GOOD_REVIEW = "### Strengths\nx\n### Critical Issues\nNone.\n### Important Issues\nNone.\n### Minor Issues\nNone.\n### Assessment\n**Ready to merge:** Yes\n"
 
 
+def short(repo: Path, rev: str = "HEAD") -> str:
+    """<rev>'s abbreviated hash, as git abbreviates it."""
+    return subprocess.run(["git", "-C", str(repo), "rev-parse", "--short", rev], capture_output=True, text=True, check=True).stdout.strip()
+
+
 class CollectTest(RunnerBase):
     def setUp(self):
         super().setUp()
@@ -277,8 +282,9 @@ class FinishTest(RunnerBase):
         self.assertEqual(note[3], "done")
         self.assertEqual(self.herdr.calls_named("tab_close"), [])
 
-    def reviewed_run(self, commits: int = 2) -> Path:
-        """A run whose merge_base is real, with <commits> commits on top of it."""
+    def reviewed_run(self, commits: int = 2, launched_now: bool = False) -> Path:
+        """A run whose merge_base is real, with <commits> commits on top of it; <launched_now>: its run.json
+        records the HEAD of now as the HEAD at launch."""
         base = gitutil.merge_base(self.repo, "HEAD")
         for i in range(commits):
             (self.repo / "a.txt").write_text(f"change {i}\n")
@@ -286,6 +292,8 @@ class FinishTest(RunnerBase):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",))
         run = json.loads((run_dir / "run.json").read_text())
         run["merge_base"] = base
+        if launched_now:
+            run["head"] = gitutil.head_commit(self.repo)
         (run_dir / "run.json").write_text(json.dumps(run))
         return run_dir
 
@@ -293,8 +301,7 @@ class FinishTest(RunnerBase):
         run_dir = self.reviewed_run(2)
         r = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None)
         out = r.finish([])                                   # --commits omitted entirely
-        full = gitutil.log_oneline(self.repo, "HEAD~2..HEAD").splitlines()
-        self.assertEqual(out["commits"], [line.split()[0] for line in full])
+        self.assertEqual(out["commits"], [short(self.repo, "HEAD"), short(self.repo, "HEAD~1")])
         self.assertEqual(r.status.data["commits"], out["commits"])
         note = self.herdr.calls_named("notification_show")[-1]
         self.assertIn("коммитов 2", note[2])
@@ -363,8 +370,35 @@ class FinishTest(RunnerBase):
         (self.repo / "a.txt").write_text("fixed during the run\n")
         git(self.repo, "commit", "-q", "-am", "fix during the run")
         out = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([])
-        self.assertEqual(out["commits"], [gitutil.log_oneline(self.repo, "HEAD~1..HEAD").split()[0]])
+        self.assertEqual(out["commits"], [short(self.repo)])
         self.assertIn("коммитов 1", self.herdr.calls_named("notification_show")[-1][2])
+
+    def test_a_branch_rebased_during_the_run_records_the_orchestrators_commits(self):
+        git(self.repo, "switch", "-q", "-c", "feat")
+        run_dir = self.reviewed_run(2, launched_now=True)       # two branch commits, then the launch
+        git(self.repo, "switch", "-q", "master")
+        (self.repo / "b.txt").write_text("master moves on\n")
+        git(self.repo, "add", "b.txt")
+        git(self.repo, "commit", "-q", "-m", "master moves on")
+        git(self.repo, "switch", "-q", "feat")
+        git(self.repo, "rebase", "-q", "master")                # the owner rebases during the run
+        (self.repo / "a.txt").write_text("fixed during the run\n")
+        git(self.repo, "commit", "-q", "-am", "fix during the run")
+        fix = short(self.repo)
+        out = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([fix])
+        self.assertEqual(out["commits"], [fix])                 # not the rebased commits and master's
+        self.assertIn("коммитов 1", self.herdr.calls_named("notification_show")[-1][2])
+        log = (run_dir / "runner.log").read_text()
+        self.assertIn("finish: the branch was rewritten or switched during the run", log)
+        self.assertIn("recording the orchestrator's --commits", log)
+        self.assertNotIn("does not match", log)
+
+    def test_a_subject_with_a_cr_a_form_feed_and_a_line_separator_is_one_commit(self):
+        run_dir = self.reviewed_run(0, launched_now=True)
+        (self.repo / "a.txt").write_text("fixed during the run\n")
+        git(self.repo, "commit", "-q", "-am", "fix\r one\x0c two\u2028 three")
+        out = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([])
+        self.assertEqual(out["commits"], [short(self.repo)])
 
     def test_finish_removes_the_scratch_directory(self):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",))

@@ -32,7 +32,9 @@ All notable changes to herdr-review will be documented here.
 - Fix commits follow the repository's own commit style instead of fixed `review:` subjects; the
   orchestrator verifies each one by hash and subject.
 - `run finish`, `status` and the report list the commits made during the run, not every commit since
-  the merge-base.
+  the merge-base. When the branch was rewritten during the run (a rebase, an amend, a reset or a
+  branch switch), git can no longer tell those apart, and they list the fixer's commits as the
+  orchestrator noted them from its reports.
 - Drift is worded as a change of the working tree, not as a reviewer's doing: `status` says «рабочее
   дерево изменилось во время ревью», and `drift_status` holds only the `git status --short` lines
   that are new since the launch, so the owner's files uncommitted then are not reported as changed.
