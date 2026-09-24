@@ -777,7 +777,7 @@ class Runner:
         self.herdr.notification_show("herdr-review: готово", body=f"{self.run_id}: отзывов {reviews}, коммитов {len(data['commits'])}", sound="done")
         closed: list[str] = []
         if self.run.get("close_agents_on_finish"):
-            closed, _, _ = self._close_all(self._agent_targets(), "finish")
+            closed, _, _, _ = self._close_all(self._agent_targets(), "finish")
         self._remove_scratch()
         self.status.save()
         return {"phase": "finished", "commits": data["commits"], "closed": closed}
@@ -795,8 +795,8 @@ class Runner:
 
     def _check_tab(self, tab: str, who: str) -> str:
         """What herdr says of <tab>: "ours" while it still shows the tab under this run's label; "gone" when it
-        no longer has it or the ID now names someone else's tab (a restarted server reissues IDs); otherwise
-        why herdr could not tell."""
+        no longer has it; "foreign" when the ID now names someone else's tab (a restarted server reissues IDs),
+        which stays open; otherwise why herdr could not tell."""
         r = self.herdr.tab_get(tab)
         if not r.ok:
             return "gone" if not_found(r) else f"{r.error_code}: {r.message}"
@@ -807,19 +807,24 @@ class Runner:
         if isinstance(label, str) and label.startswith(f"rv-{self.run_id}:"):
             return "ours"
         self.log(f"{who}: {tab} is now labelled {label!r}, not a tab of this run; left open")
-        return "gone"
+        return "foreign"
 
-    def _close_all(self, targets: list[tuple[str, bool]], who: str) -> tuple[list[str], list[str], dict[str, str]]:
-        """Close each target: (closed, already closed, failed with the reason). A tab is closed only while
-        it is still this run's; a pane of the grid layout lives inside the orchestrator's tab."""
+    def _close_all(self, targets: list[tuple[str, bool]], who: str) -> tuple[list[str], list[str], list[str], dict[str, str]]:
+        """Close each target: (closed, already closed, left open, failed with the reason). A tab is closed only
+        while it is still this run's: one whose ID now names someone else's tab is left open, and that is no
+        failure. A pane of the grid layout lives inside the orchestrator's tab."""
         closed: list[str] = []
         gone: list[str] = []
+        left_open: list[str] = []
         failed: dict[str, str] = {}
         for ident, is_tab in targets:
             if is_tab:
                 verdict = self._check_tab(ident, who)
                 if verdict == "gone":
                     gone.append(ident)
+                    continue
+                if verdict == "foreign":
+                    left_open.append(ident)
                     continue
                 if verdict != "ours":
                     failed[ident] = verdict
@@ -833,7 +838,7 @@ class Runner:
             else:
                 failed[ident] = f"{r.error_code}: {r.message}"
                 self.log(f"{who}: close {ident} failed: {r.error_code}: {r.message}")
-        return closed, gone, failed
+        return closed, gone, left_open, failed
 
     def _check_session(self, environ: Mapping[str, str]) -> None:
         """Refuse a caller outside the herdr session the run was launched in: tab IDs such as `w1:t2` are
@@ -859,12 +864,14 @@ class Runner:
             raise RunnerError(f"run {self.run_id} is still in phase {phase}; closing its tabs stops its agents — pass --force")
         closed: list[str] = []
         gone: list[str] = []
+        left_open: list[str] = []
         failed: dict[str, str] = {}
 
         def close_these(targets: list[tuple[str, bool]]) -> None:
-            c, g, f = self._close_all(targets, "close")
+            c, g, o, f = self._close_all(targets, "close")
             closed.extend(c)
             gone.extend(g)
+            left_open.extend(o)
             failed.update(f)
 
         # Typed in one of the run's own tabs (the orchestrator's has HERDR_REVIEW_RUN set), close ends in
@@ -903,7 +910,7 @@ class Runner:
             if failed:
                 # An agent whose tab did not close may still be working: the run keeps its phase and its
                 # scratch/, so a later launch still warns about it and another close --force can finish the job.
-                self.log(f"close --force: {len(failed)} of {len(closed) + len(gone) + len(failed)} did not close; the run stays in phase {phase}")
+                self.log(f"close --force: {len(failed)} of {len(closed) + len(gone) + len(left_open) + len(failed)} did not close; the run stays in phase {phase}")
             else:
                 # Its agents are gone: the run ends here, and no later launch may count it as unfinished.
                 # The caller's own tab does not count: the user is at a shell there, not an agent.
@@ -914,4 +921,4 @@ class Runner:
         self.status.set("closed_at", now_iso())
         self.status.save()
         close_these(own)
-        return {"closed": closed, "already_closed": gone, "failed": failed}
+        return {"closed": closed, "already_closed": gone, "left_open": left_open, "failed": failed}

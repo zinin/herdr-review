@@ -231,6 +231,11 @@ teardown() { teardown_env; }
   echo '{"labels": {"w1:t3": "build"}}' > "$FAKE_HERDR_SCENARIO"   # the ID now names someone else's tab
   run "$HR" close --json
   [ "$status" -eq 0 ]
-  json_has "$output" 'd["already_closed"]==["w1:t3"] and "w1:t4" in d["closed"]'
+  json_has "$output" 'd["left_open"]==["w1:t3"] and d["already_closed"]==[] and "w1:t4" in d["closed"] and d["failed"]=={}'
   [ "$(grep -c 'tab close w1:t3' "$FAKE_HERDR_LOG")" -eq 0 ]
+  run "$HR" close                                     # again, in text: the run's own tabs are closed by now
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"оставлены открытыми (ID теперь у чужой вкладки): w1:t3"* ]]
+  [[ "$output" == *"уже закрыты: w1:t2, w1:t4"* ]]
+  [ "$(grep 'уже закрыты' <<< "$output" | grep -c 'w1:t3')" -eq 0 ]
 }

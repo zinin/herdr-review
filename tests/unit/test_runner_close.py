@@ -28,7 +28,7 @@ class CloseTest(RunnerBase):
     def test_close_shuts_every_tab_of_a_finished_run(self):
         run_dir = self.finished_run()
         out = self.runner(run_dir).close()
-        self.assertEqual(out, {"closed": ["w1:t1", "w1:t2", "w1:t3", "w1:t4"], "already_closed": [], "failed": {}})
+        self.assertEqual(out, {"closed": ["w1:t1", "w1:t2", "w1:t3", "w1:t4"], "already_closed": [], "left_open": [], "failed": {}})
         self.assertEqual([c[1] for c in self.herdr.calls_named("tab_close")], ["w1:t1", "w1:t2", "w1:t3", "w1:t4"])
         self.assertIn("closed_at", json.loads((run_dir / "status.json").read_text()))
 
@@ -120,7 +120,7 @@ class CloseTest(RunnerBase):
         out = self.runner(run_dir).close(force=True)
         status = json.loads((run_dir / "status.json").read_text())
         fixer = status["agents"]["hrtest-fixer"]["tab"]
-        self.assertEqual(out, {"closed": ["w1:t1", "w1:t2", fixer], "already_closed": [], "failed": {}})
+        self.assertEqual(out, {"closed": ["w1:t1", "w1:t2", fixer], "already_closed": [], "left_open": [], "failed": {}})
         self.assertEqual(status["phase"], "aborted")
 
     def test_tabs_that_keep_opening_while_close_runs_keep_the_run_in_progress(self):
@@ -213,9 +213,18 @@ class CloseTest(RunnerBase):
         run_dir = self.finished_run()
         self.herdr.tab_labels["w1:t3"] = "build"                 # a restarted herdr gave the ID to another tab
         out = self.runner(run_dir).close()
-        self.assertEqual(out, {"closed": ["w1:t1", "w1:t2", "w1:t4"], "already_closed": ["w1:t3"], "failed": {}})
+        self.assertEqual(out, {"closed": ["w1:t1", "w1:t2", "w1:t4"], "already_closed": [], "left_open": ["w1:t3"], "failed": {}})
         self.assertNotIn(("tab_close", "w1:t3"), self.herdr.calls)
         self.assertIn("close: w1:t3 is now labelled 'build', not a tab of this run; left open", (run_dir / "runner.log").read_text())
+
+    def test_a_forced_close_that_leaves_someone_elses_tab_open_still_aborts_the_run(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex", "gemini"))
+        self.runner(run_dir).start_reviewers()
+        self.herdr.tab_labels["w1:t3"] = "build"                 # no agent of this run is left behind it
+        out = self.runner(run_dir).close(force=True)
+        self.assertEqual(out, {"closed": ["w1:t1", "w1:t2"], "already_closed": [], "left_open": ["w1:t3"], "failed": {}})
+        status = json.loads((run_dir / "status.json").read_text())
+        self.assertEqual((status["phase"], status["abort_reason"]), ("aborted", "closed with --force"))
 
     def test_a_tab_herdr_cannot_describe_is_not_closed(self):
         run_dir = self.finished_run()

@@ -14,7 +14,7 @@ All notable changes to herdr-review will be documented here.
   rename one of the owner's uncommitted files is still skipped.
 - `herdr-review close`: closes every tab and pane of a finished run; `--force` for one in progress.
   It runs only from the herdr session the run was launched in, and leaves open a tab whose ID now
-  names another tab.
+  names another tab, listed as left open (`left_open` in `--json`) rather than as closed.
 - A scratch directory per reviewer, `<run_dir>/scratch/<profile>/`, for its experiments; `run finish`
   deletes it.
 - The runner answers the trust dialogs of Codex and Grok, as it answers Claude Code's.

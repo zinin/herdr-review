@@ -255,6 +255,8 @@ def cmd_close(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
         print(f"закрыто: {', '.join(result['closed']) or 'ничего'}")
         if result["already_closed"]:
             print(f"уже закрыты: {', '.join(result['already_closed'])}")
+        if result["left_open"]:
+            print(f"оставлены открытыми (ID теперь у чужой вкладки): {', '.join(result['left_open'])}")
         for ident, why in result["failed"].items():
             print(f"не удалось закрыть {ident}: {why}", file=sys.stderr)
     return 1 if result["failed"] else 0
