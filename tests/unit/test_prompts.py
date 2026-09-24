@@ -54,11 +54,30 @@ class PromptTemplatesTest(unittest.TestCase):
         self.assertIn("Apart from your review file", text)
 
     def test_a_reviewers_copy_of_the_repository_registers_nothing_in_it(self):
-        reviewer = render_file(PROMPTS_DIR / "reviewer.md", {k: "v" for k in EXPECTED["reviewer.md"]})
-        self.assertIn("Copy the repository with `git clone` or `cp -a`, never with `git worktree add`", reviewer)
-        orchestrator = render_file(PROMPTS_DIR / "orchestrator.md", {k: "v" for k in EXPECTED["orchestrator.md"]})
+        values = {k: "v" for k in EXPECTED["reviewer.md"]}
+        values.update(REPO="/repo", SCRATCH_DIR="/run/scratch/codex")
+        reviewer = render_file(PROMPTS_DIR / "reviewer.md", values)
+        self.assertIn("Copy the repository with `git clone /repo /run/scratch/codex/repo`.", reviewer)
+        # the flags keep the patch intact under diff.external, color.ui=always and a textconv driver
+        self.assertIn("When the change under review includes uncommitted work, bring it along with `git -C /repo diff"
+                      " --binary --no-color --no-ext-diff --no-textconv HEAD | git -C /run/scratch/codex/repo apply`, and"
+                      " copy the untracked files of the change over.", reviewer)
+        self.assertIn("Never use `git worktree add`: it registers the copy in the repository and can create a branch"
+                      " there.", reviewer)
+        # a linked worktree's `.git` is a file: git in a copy of it moves the owner's HEAD and commits on its branch
+        self.assertIn("Never run git in a copy made with `cp` or `rsync`: in a linked worktree `.git` is a file that points"
+                      " back at the repository, so such a copy shares its HEAD, index and branches.", reviewer)
+        self.assertNotIn("cp -a", reviewer)
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        values["RUN_DIR"] = "/run"
+        orchestrator = render_file(PROMPTS_DIR / "orchestrator.md", values)
         rule = orchestrator[orchestrator.index("       - a reviewer:"):orchestrator.index("       - the fixer:")]
         self.assertIn("`git worktree add` counts as a write into the repository, even with a path under the scratch directory", rule)
+        # a reviewer refused for `git worktree add <scratch>/copy` already had its copy under scratch; no backticks
+        # in the message: the orchestrator runs it in a shell, inside double quotes
+        self.assertIn('`herdr agent prompt <name> "Do not write into the repository or outside your scratch directory, except'
+                      ' your review file. Put experiments under /run/scratch/<profile>/. Copy the repository with git clone,'
+                      ' never with git worktree add."`', rule)
 
     def test_the_worktree_steps_say_how_a_quoted_name_is_written(self):
         text = reviewer_steps("worktree", "abc123", [], [UntrackedFile("Icon\r", 0)], Path("/run/uncommitted.txt"), Path("/run/untracked.txt"))
