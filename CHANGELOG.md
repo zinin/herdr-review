@@ -25,17 +25,18 @@ All notable changes to herdr-review will be documented here.
   `--settings '{"enableAllProjectMcpServers": true, "attribution": {"commit": ""}}'` unless they pass
   their own `--settings`, so the dialog does not appear and the agents get every MCP server; an agent
   that still stops at it leaves the run with the reason, also where a narrow pane of the grid layout
-  wraps the dialog's text. The empty `attribution.commit` keeps Claude Code's trailer out of fix commits.
+  wraps the dialog's text. The empty `attribution.commit` keeps Claude Code's trailer out of fix
+  commits.
 - The fixer never deletes, moves, renames or commits the owner's uncommitted files; a fix inside one
   is applied and left uncommitted. In a review of the commits, the orchestrator dismisses findings
   about the owner's uncommitted files outside the change.
 - Fix commits follow the repository's own commit style instead of fixed `review:` subjects; the
   orchestrator verifies each one by hash and subject.
 - `run finish`, `status` and the report list the commits made during the run, not every commit since
-  the merge-base; a merge of the base during the run is listed as its merge commit, without the
-  base's commits. When the branch was rewritten during the run (a rebase, an amend, a reset or a
-  branch switch), git can no longer tell those apart, and they list the fixer's commits as the
-  orchestrator noted them from its reports.
+  the merge-base. A merge commit that brings the base in during the run is listed alone, without the
+  base's commits; a fast-forward to the base still lists them. When the branch was rewritten during
+  the run (a rebase, an amend, a reset or a branch switch), git can no longer tell which commits are
+  the run's, and they list the fixer's commits as the orchestrator noted them from its reports.
 - Drift is worded as a change of the working tree, not as a reviewer's doing: `status` says «рабочее
   дерево изменилось во время ревью», and `drift_status` holds only the `git status --short` lines
   that are new since the launch, so the owner's files uncommitted then are not reported as changed.
