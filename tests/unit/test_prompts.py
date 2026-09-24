@@ -184,6 +184,13 @@ class PromptTemplatesTest(unittest.TestCase):
         for lost in ("пропали", "пропавшую"):                                              # committed work is not lost
             self.assertNotIn(lost, text)
 
+    def test_the_drift_step_names_a_file_inside_an_untracked_directory_of_the_launch(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        text = render_file(PROMPTS_DIR / "orchestrator.md", values)
+        step = text[text.index("Then look at `drift`"):text.index("If `collect` reports zero")]
+        self.assertIn("says in one line that none is new or gone: a file appeared, changed or went inside an untracked"
+                      " directory that was already there at launch", step)     # `?? dir/` of the launch collapses it
+
     def test_the_orchestrators_fixer_rules_follow_the_scope(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
         values.update(RUN_DIR="/run", REPO="/repo", FIXER_NAME="hr-fixer")

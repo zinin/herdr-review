@@ -187,6 +187,17 @@ class CollectTest(RunnerBase):
         self.assertEqual(out["drift_status"], DRIFT_NOTHING_NEW_OR_GONE + "\n")
         self.assertIn("an edit or a revert", out["drift_status"])        # a revert is not ruled out
 
+    def test_drift_status_names_a_file_inside_an_untracked_directory_of_the_launch(self):
+        (self.repo / "notes").mkdir()
+        (self.repo / "notes" / "one.md").write_text("the owner's notes\n")
+        r = self.reviewing_since_now("untracked-dir")                    # `?? notes/`
+        (self.repo / "notes" / "new.md").write_text("written during the review\n")   # still only `?? notes/`
+        out = r.collect()
+        self.assertTrue(out["drift"])
+        self.assertEqual(out["drift_status"], DRIFT_NOTHING_NEW_OR_GONE + "\n")
+        self.assertIn("a file appeared, changed or went inside an untracked directory that was already there at launch",
+                      out["drift_status"])
+
     def test_drift_status_names_uncommitted_work_gone_since_launch(self):
         (self.repo / "a.txt").write_text("the owner's edit\n")
         r = self.reviewing_since_now("gone")

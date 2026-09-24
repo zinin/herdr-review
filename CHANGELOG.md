@@ -40,7 +40,9 @@ All notable changes to herdr-review will be documented here.
   that are new since the launch, so the owner's files uncommitted then are not reported as changed.
   A line of the launch whose path no line shows any more is listed as `gone since launch: …`:
   uncommitted work reverted, stashed or committed during the review, which the orchestrator names as
-  such. A path whose status alone changed, staged say, is listed by its new line only.
+  such. A path whose status alone changed, staged say, is listed by its new line only. When no line
+  is new or gone, `drift_status` says so in one line and names what may have changed: a file inside
+  an untracked directory of the launch, a file already uncommitted then, or a commit.
 - The launcher never asks about untracked files or startup dialogs; `--plan` is documented as a path
   or free text.
 - `config.example.yaml`: every profile offers the agent's auto mode next to yolo, one of the two
