@@ -250,6 +250,14 @@ class PromptTemplatesTest(unittest.TestCase):
         self.assertIn("its fixes count as `done` without a commit", commits)
         self.assertEqual(text.count("Commit your changes now"), 1)
 
+    def test_in_the_commits_scope_the_fixer_may_not_stage_a_path_changed_during_the_review(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        values["RUN_DIR"] = "/run"
+        text = render_file(PROMPTS_DIR / "orchestrator.md", values)
+        rule = text[text.index("       - the fixer:"):text.index("     * a question about the task")]
+        self.assertIn('staging or committing a path from `/run/uncommitted.txt` or from "Files changed during the review"'
+                      " in its task file (`git add <path>`, `git commit … -- <path>`) → refuse", rule)   # as its own rule says
+
     def test_in_the_worktree_scope_a_moved_head_is_not_blamed_on_the_fixer(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
         values["REPO"] = "/repo"
