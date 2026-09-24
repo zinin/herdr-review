@@ -224,6 +224,17 @@ class LaunchTest(unittest.TestCase):
         res = launch(LaunchOptions(scope="commits"), self.cfg, FakeHerdr(), ENV, self.repo, self.runner, which=which_ok, run_id="hrcommits")
         self.assertEqual(res["scope"], "commits")
 
+    def test_the_fixer_skeletons_carry_the_commit_rule_of_the_scope(self):
+        (self.repo / "new.py").write_text("x\n")
+        worktree = launch(LaunchOptions(scope="worktree"), self.cfg, self.herdr, ENV, self.repo, self.runner, which=which_ok, run_id="hrwork")
+        orch = (Path(worktree["run_dir"]) / "orchestrator.md").read_text()
+        self.assertEqual(orch.count("Commit nothing. The change under review is uncommitted work"), 2)   # both skeletons
+        self.assertNotIn("git commit --only", orch)
+        commits = launch(LaunchOptions(scope="commits"), self.cfg, FakeHerdr(), ENV, self.repo, self.runner, which=which_ok, run_id="hrcommits")
+        orch = (Path(commits["run_dir"]) / "orchestrator.md").read_text()
+        self.assertNotIn("Commit nothing.", orch)
+        self.assertEqual(orch.count("git commit --only -F"), 2)
+
     def test_commits_scope_without_commits_is_refused(self):
         git(self.repo, "switch", "-q", "master")
         git(self.repo, "switch", "-q", "-c", "wip")

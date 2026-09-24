@@ -87,6 +87,17 @@ def reviewer_steps(scope: str, merge_base: str, uncommitted: list[str], untracke
     }).strip()
 
 
+def fixer_skeleton(kind: str, scope: str, run_dir: Path | str) -> str:
+    """The fixer's task skeleton, `auto` or `decision`, with the commit rules of <scope>. In scope
+    `worktree` the change is uncommitted work and the fixer commits nothing: the rule reaches it in the
+    skeleton itself, not through the orchestrator's memory."""
+    values = {"RUN_DIR": str(run_dir)}
+    rules = f"fixer-commit-{kind}.md" if scope == "commits" else "fixer-commit-none.md"
+    return render_file(PROMPTS_DIR / f"fixer-{kind}.md", {
+        **values, "COMMIT_RULES": render_file(PROMPTS_DIR / rules, values).strip(),
+    })
+
+
 def orchestrator_scope(scope: str, merge_base: str) -> str:
     """The scope line of the orchestrator's run facts."""
     if scope == "commits":

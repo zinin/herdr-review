@@ -17,7 +17,7 @@ from .config import Config, is_secretish
 from .dialogs import mcp_refusal, resolve_startup_dialog, startup_args
 from .herdr import Herdr, HerdrResult
 from .render import render_file
-from .scope import ScopeError, orchestrator_scope, resolve_scope, reviewer_steps, untracked_line
+from .scope import ScopeError, fixer_skeleton, orchestrator_scope, resolve_scope, reviewer_steps, untracked_line
 from .status import RunStatus
 
 RUN_ID_ALPHABET = string.ascii_lowercase + string.digits
@@ -262,8 +262,8 @@ def launch(
             "CHECKIN_SEC": cfg.settings.checkin_sec,
             "DESCRIPTION": description,
             "PLAN_REFERENCE": plan_ref,
-            "FIXER_AUTO_SKELETON": render_file(PROMPTS_DIR / "fixer-auto.md", {"RUN_DIR": str(run_dir)}),
-            "FIXER_DECISION_SKELETON": render_file(PROMPTS_DIR / "fixer-decision.md", {"RUN_DIR": str(run_dir)}),
+            "FIXER_AUTO_SKELETON": fixer_skeleton("auto", scope, run_dir),
+            "FIXER_DECISION_SKELETON": fixer_skeleton("decision", scope, run_dir),
         })
         (run_dir / "orchestrator.md").write_text(orch_text, encoding="utf-8")
         status = RunStatus.create(run_dir, run_id=run_id, repo=str(repo), branch=branch, base=base, merge_base=mb, autodecide=autodecide, layout=layout)

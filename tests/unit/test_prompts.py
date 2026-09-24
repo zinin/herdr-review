@@ -2,12 +2,17 @@ import unittest
 
 from herdr_review import PROMPTS_DIR
 from herdr_review.render import placeholders, render_file
+from herdr_review.scope import fixer_skeleton
 
+NO_COMMIT = "Commit nothing. The change under review is uncommitted work"
 EXPECTED = {
     "terminal.md": {"FILE"},
     "reviewer.md": {"DESCRIPTION", "PLAN_REFERENCE", "REPO", "BASE_REF", "MERGE_BASE", "RESULT_PATH", "REVIEWER", "SCOPE_STEPS", "SCRATCH_DIR"},
-    "fixer-auto.md": {"RUN_DIR"},
-    "fixer-decision.md": {"RUN_DIR"},
+    "fixer-auto.md": {"RUN_DIR", "COMMIT_RULES"},
+    "fixer-decision.md": {"RUN_DIR", "COMMIT_RULES"},
+    "fixer-commit-auto.md": {"RUN_DIR"},
+    "fixer-commit-decision.md": {"RUN_DIR"},
+    "fixer-commit-none.md": set(),
     "scope-commits.md": {"MERGE_BASE", "UNCOMMITTED"},
     "scope-worktree.md": {"MERGE_BASE", "UNTRACKED"},
     "orchestrator.md": {
@@ -45,11 +50,27 @@ class PromptTemplatesTest(unittest.TestCase):
         self.assertIn("Apart from your review file", text)
 
     def test_fixer_skeletons_mention_report_and_done(self):
-        for name in ("fixer-auto.md", "fixer-decision.md"):
-            text = render_file(PROMPTS_DIR / name, {"RUN_DIR": "/run"})
+        for kind in ("auto", "decision"):
+            text = fixer_skeleton(kind, "commits", "/run")
             self.assertIn("/run/", text)
             self.assertIn("DONE", text)
             self.assertIn("Do not push", text)
+
+    def test_in_the_worktree_scope_the_fixer_commits_nothing(self):
+        for kind in ("auto", "decision"):
+            with self.subTest(kind=kind):
+                worktree = fixer_skeleton(kind, "worktree", "/run")
+                self.assertIn(NO_COMMIT, worktree)
+                self.assertIn("applied, not committed: the review covers uncommitted work", worktree)
+                self.assertNotIn("git commit", worktree)
+                self.assertNotIn("git add <file>", worktree)
+                self.assertIn(f"/run/fix-{'auto' if kind == 'auto' else '<ORCHESTRATOR: n>'}-report.md", worktree)
+                self.assertNotIn("{", worktree)
+                commits = fixer_skeleton(kind, "commits", "/run")
+                self.assertNotIn(NO_COMMIT, commits)
+                self.assertNotIn("the review covers uncommitted work", commits)
+                self.assertIn("git commit --only -F /run/fix-", commits)
+                self.assertNotIn("{", commits)
 
     def test_orchestrator_prompt_renders_and_names_every_subcommand(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
@@ -76,7 +97,7 @@ class PromptTemplatesTest(unittest.TestCase):
     def test_fixer_skeletons_protect_the_users_files_and_follow_the_repository_style(self):
         for name, message in (("fixer-auto.md", "/run/fix-auto-commit.txt"), ("fixer-decision.md", "/run/fix-<ORCHESTRATOR: n>-commit.txt")):
             with self.subTest(name=name):
-                text = render_file(PROMPTS_DIR / name, {"RUN_DIR": "/run"})
+                text = fixer_skeleton(name[len("fixer-"):-len(".md")], "commits", "/run")
                 self.assertIn("/run/uncommitted.txt", text)
                 self.assertIn("has no copy in git", text)
                 self.assertIn("applied, not committed", text)
@@ -108,6 +129,7 @@ class PromptTemplatesTest(unittest.TestCase):
             "применено, не закоммичено", "log --oneline v..HEAD", "rev-parse HEAD",
             "/run/reviews/<profile>.md", "except your review file", "everything else its task file asks for",
             'cursor is on "Quit"', "--name-only", "the user went on editing their own files",
+            "In scope `worktree` the fixer commits nothing", "применено, не закоммичено: ревью незакоммиченной работы — закоммитьте сами",
         ):
             self.assertIn(phrase, text)
         self.assertNotIn("--stat", text)

@@ -1,0 +1,1 @@
+Commit nothing. The change under review is uncommitted work, so a fix committed on its own could leave HEAD without the code it builds on, failing its own tests. Stage nothing (no `git add`), commit nothing, and do not push. Apply each fix in full and report it as `applied, not committed: the review covers uncommitted work`; the report's commit line is `no commit`.

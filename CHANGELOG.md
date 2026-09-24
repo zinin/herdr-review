@@ -9,7 +9,8 @@ All notable changes to herdr-review will be documented here.
   branch's commits (`git diff <merge-base> HEAD`), or the working tree when nothing is committed. The
   owner's uncommitted edits and untracked files stay out of a review of the commits and are listed in
   `<run_dir>/uncommitted.txt`; the launch summary says so. In the working-tree scope the reviewers get
-  the untracked files as a list, with binary and large ones marked to skip.
+  the untracked files as a list, with binary and large ones marked to skip, and the fixer commits
+  nothing: every fix is applied and left for the owner to commit.
 - `herdr-review close`: closes every tab and pane of a finished run; `--force` for one in progress.
   It runs only from the herdr session the run was launched in, and leaves open a tab whose ID now
   names another tab.
