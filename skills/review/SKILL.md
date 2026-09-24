@@ -65,4 +65,4 @@ Exit 1 → show stderr verbatim. Two cases you can help with:
 
 «Как там ревью?» → `"$HR" status --run latest`, relay the output. `latest` is resolved per repository: run it from the repository under review, or pass that run's directory as `--run`. The orchestrator's tab is `rv-<run_id>: orch`; disputed issues are answered there.
 
-«Закрой вкладки ревью» → `"$HR" close --run latest`, relay the output. It refuses a run that is still in progress; pass `--force` only when the user asks for it. After a failed launch `latest` still points at the previous run: pass the `Run directory:` from the launch error instead.
+«Закрой вкладки ревью» → `"$HR" close --run latest`, relay the output. It refuses a run that is still in progress; pass `--force` only when the user asks for it. It also refuses outside the herdr session the run was launched in; your own pane, where you launched it, is in that session. After a failed launch `latest` still points at the previous run: pass the `Run directory:` from the launch error instead.

@@ -236,6 +236,16 @@ class FinishTest(RunnerBase):
         self.assertEqual(sorted(out["closed"]), ["w1:p2", "w1:p3"])
         self.assertEqual(self.herdr.calls_named("tab_close"), [])
 
+    def test_finish_leaves_open_a_tab_id_that_now_names_someone_elses_tab(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",), close=True)
+        r = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None)
+        r.start_reviewers()
+        r.start_fixer()
+        self.herdr.tab_labels["w1:t2"] = "build"
+        out = r.finish([])
+        self.assertEqual(out["closed"], ["w1:t3"])
+        self.assertNotIn(("tab_close", "w1:t2"), self.herdr.calls)
+
     def test_finish_does_not_report_failed_close_as_closed(self):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",), close=True)
         r = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None)

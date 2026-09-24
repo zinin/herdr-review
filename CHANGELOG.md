@@ -11,6 +11,8 @@ All notable changes to herdr-review will be documented here.
   `<run_dir>/uncommitted.txt`; the launch summary says so. In the working-tree scope the reviewers get
   the untracked files as a list, with binary and large ones marked to skip.
 - `herdr-review close`: closes every tab and pane of a finished run; `--force` for one in progress.
+  It runs only from the herdr session the run was launched in, and leaves open a tab whose ID now
+  names another tab.
 - A scratch directory per reviewer, `<run_dir>/scratch/<profile>/`, for its experiments; `run finish`
   deletes it.
 - The runner answers the trust dialogs of Codex and Grok, as it answers Claude Code's.

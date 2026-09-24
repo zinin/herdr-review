@@ -116,6 +116,16 @@ class LaunchTest(unittest.TestCase):
         self.assertEqual(res["hints"]["focus"], "herdr agent focus hrtest-orch")
         self.assertEqual(stat.S_IMODE(run_dir.stat().st_mode), 0o700)
 
+    def test_the_herdr_session_of_the_launch_is_recorded(self):
+        socket = "/home/u/.config/herdr/sessions/ai/herdr.sock"
+        environ = {**ENV, "HERDR_SESSION": "ai", "HERDR_SOCKET_PATH": socket}
+        res = launch(LaunchOptions(), self.cfg, self.herdr, environ, self.repo, self.runner, which=which_ok, run_id="hrtest")
+        run_json = json.loads((Path(res["run_dir"]) / "run.json").read_text())
+        self.assertEqual((run_json["herdr_session"], run_json["herdr_socket_path"]), ("ai", socket))
+        res = launch(LaunchOptions(), self.cfg, FakeHerdr(), ENV, self.repo, self.runner, which=which_ok, run_id="hrbare")
+        run_json = json.loads((Path(res["run_dir"]) / "run.json").read_text())
+        self.assertEqual((run_json["herdr_session"], run_json["herdr_socket_path"]), (None, None))
+
     def test_masks_raw_env_var_values_not_only_expanded_profile_env(self):
         raw = {
             "profiles": {

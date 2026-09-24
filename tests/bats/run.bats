@@ -207,12 +207,30 @@ teardown() { teardown_env; }
   RUN="$(run_dir_of)"
   run "$HR" run start-reviewers --run "$RUN"
   run "$HR" run finish --run "$RUN"
-  echo '{"close": {"w1:t3": {"code": "tab_not_found", "message": "tab w1:t3 not found"}}}' > "$FAKE_HERDR_SCENARIO"
-  run "$HR" close --json
-  [ "$status" -eq 0 ]
-  json_has "$output" 'd["already_closed"]==["w1:t3"] and "w1:t4" in d["closed"]'
+  "$HERDR_BIN" tab close w1:t3                        # by hand
   echo '{"close": {"w1:t4": {"code": "server_error", "message": "boom"}}}' > "$FAKE_HERDR_SCENARIO"
   run "$HR" close
   [ "$status" -eq 1 ]
+  [[ "$output" == *"уже закрыты: w1:t3"* ]]
   [[ "$output" == *"не удалось закрыть w1:t4: server_error: boom"* ]]
+  echo '{}' > "$FAKE_HERDR_SCENARIO"
+  run "$HR" close --json
+  [ "$status" -eq 0 ]
+  json_has "$output" 'd["closed"]==["w1:t4"] and "w1:t3" in d["already_closed"] and d["failed"]=={}'
+}
+
+@test "close: refuses a caller in another herdr session and leaves another run's tab open" {
+  run "$HR" launch --json
+  RUN="$(run_dir_of)"
+  run "$HR" run start-reviewers --run "$RUN"
+  run "$HR" run finish --run "$RUN"
+  HERDR_SESSION=other HERDR_SOCKET_PATH="$TMP/herdr/sessions/other/herdr.sock" run "$HR" close
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"was started in herdr session 'test'; run close from a pane of that session"* ]]
+  [ "$(grep -c 'tab close' "$FAKE_HERDR_LOG")" -eq 0 ]
+  echo '{"labels": {"w1:t3": "build"}}' > "$FAKE_HERDR_SCENARIO"   # the ID now names someone else's tab
+  run "$HR" close --json
+  [ "$status" -eq 0 ]
+  json_has "$output" 'd["already_closed"]==["w1:t3"] and "w1:t4" in d["closed"]'
+  [ "$(grep -c 'tab close w1:t3' "$FAKE_HERDR_LOG")" -eq 0 ]
 }

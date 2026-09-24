@@ -72,6 +72,7 @@ class RunnerBase(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.repo = make_repo(self.root)
         self.herdr = FakeHerdr()
+        self.herdr.tab_labels["w1:t1"] = "rv-hrtest: orch"      # the orchestrator's tab, as launch opened it for make_run
         self.cfg = parse_config(RAW, {})
         patcher = mock.patch("herdr_review.runner.load_config", return_value=self.cfg)
         patcher.start()

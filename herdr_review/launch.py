@@ -215,6 +215,9 @@ def launch(
             "layout": layout,
             "checkin_sec": cfg.settings.checkin_sec,
             "close_agents_on_finish": cfg.settings.close_agents_on_finish,
+            # herdr IDs such as `w1:t2` are per server: `close` must run in this session to mean these tabs.
+            "herdr_session": environ.get("HERDR_SESSION") or None,
+            "herdr_socket_path": environ.get("HERDR_SOCKET_PATH") or None,
             "workspace_id": workspace_id,
             "reviewers": reviewers_spec,
             "orchestrator": orch,

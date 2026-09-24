@@ -129,6 +129,10 @@ class Herdr:
     def pane_rename(self, pane: str, label: str) -> HerdrResult:
         return self.run("pane", "rename", pane, label, timeout=30)
 
+    def tab_get(self, tab: str) -> HerdrResult:
+        """`result` holds `{"tab": {"tab_id": …, "label": …, …}}`; a missing tab is error `tab_not_found`."""
+        return self.run("tab", "get", tab, timeout=30)
+
     def tab_close(self, tab: str) -> HerdrResult:
         return self.run("tab", "close", tab, timeout=30)
 

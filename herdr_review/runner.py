@@ -8,7 +8,7 @@ import shutil
 import stat
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 from . import PROMPTS_DIR, gitutil
 from .config import ConfigError, is_secretish, load_config
@@ -61,6 +61,11 @@ class RunnerError(Exception):
 def retry_text(path: str, why: str, prompt: str | None = None) -> str:
     hint = f" Read {prompt} and follow it exactly." if prompt else ""
     return f"You have not written a valid review to {path} ({why}).{hint} Write your complete review there now, in the required format, and reply DONE."
+
+
+def not_found(r: HerdrResult) -> bool:
+    """herdr answered that the tab, pane or agent does not exist; `herdr_not_found` is the binary missing."""
+    return bool(r.error_code) and r.error_code.endswith("not_found") and r.error_code not in HERDR_ERROR_CODES
 
 
 def response_id(result: object, *keys: str) -> str | None:
@@ -742,24 +747,65 @@ class Runner:
                 targets.append((a["pane"], False))
         return targets
 
+    def _check_tab(self, tab: str, who: str) -> str:
+        """"ours" while herdr still shows <tab> under this run's label; "gone" when herdr no longer has it or
+        the ID now names someone else's tab (a restarted server reissues IDs); otherwise why herdr could not tell."""
+        r = self.herdr.tab_get(tab)
+        if not r.ok:
+            return "gone" if not_found(r) else f"{r.error_code}: {r.message}"
+        info = (r.result or {}).get("tab")
+        if not isinstance(info, dict):
+            return f"unexpected `tab get` response: {(r.text or '')[:300]}"
+        label = info.get("label")
+        if isinstance(label, str) and label.startswith(f"rv-{self.run_id}:"):
+            return "ours"
+        self.log(f"{who}: {tab} is now labelled {label!r}, not a tab of this run; left open")
+        return "gone"
+
     def _close_all(self, targets: list[tuple[str, bool]], who: str) -> tuple[list[str], list[str], dict[str, str]]:
-        """Close each target: (closed, already closed, failed with the reason)."""
+        """Close each target: (closed, already closed, failed with the reason). A tab is closed only while
+        it is still this run's; a pane of the grid layout lives inside the orchestrator's tab."""
         closed: list[str] = []
         gone: list[str] = []
         failed: dict[str, str] = {}
         for ident, is_tab in targets:
+            if is_tab:
+                verdict = self._check_tab(ident, who)
+                if verdict == "gone":
+                    gone.append(ident)
+                    continue
+                if verdict != "ours":
+                    failed[ident] = verdict
+                    self.log(f"{who}: cannot check {ident}: {verdict}")
+                    continue
             r = self.herdr.tab_close(ident) if is_tab else self.herdr.pane_close(ident)
             if r.ok:
                 closed.append(ident)
-            elif r.error_code and r.error_code.endswith("not_found") and r.error_code not in HERDR_ERROR_CODES:
+            elif not_found(r):
                 gone.append(ident)
             else:
                 failed[ident] = f"{r.error_code}: {r.message}"
                 self.log(f"{who}: close {ident} failed: {r.error_code}: {r.message}")
         return closed, gone, failed
 
-    def close(self, force: bool = False) -> dict:
-        """Close every tab and pane the run opened. A run in progress is refused unless forced."""
+    def _check_session(self, environ: Mapping[str, str]) -> None:
+        """Refuse a caller outside the herdr session the run was launched in: tab IDs such as `w1:t2` are
+        per server, so from there they name that session's tabs. A caller that names no session could be
+        talking to any of them. A run launched before the session was recorded is not checked."""
+        socket, session = self.run.get("herdr_socket_path"), self.run.get("herdr_session")
+        if socket:
+            same = environ.get("HERDR_SOCKET_PATH") == socket
+        elif session:
+            same = environ.get("HERDR_SESSION") == session
+        else:
+            return
+        if not same:
+            raise RunnerError(f"run {self.run_id} was started in herdr session '{session or socket}'; run close from a pane of that session")
+
+    def close(self, force: bool = False, environ: Mapping[str, str] | None = None) -> dict:
+        """Close every tab and pane the run opened. A run in progress is refused unless forced.
+        <environ> is the caller's environment: its herdr session must be the run's."""
+        self._check_session({} if environ is None else environ)
         phase = self.status.data.get("phase")
         if phase not in ("finished", "aborted") and not force:
             raise RunnerError(f"run {self.run_id} is still in phase {phase}; closing its tabs stops its agents — pass --force")

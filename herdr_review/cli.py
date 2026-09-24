@@ -248,7 +248,7 @@ def cmd_status(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
 
 def cmd_close(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     run_dir = resolve_status_run_dir(status_run_spec(args), environ, Path.cwd())
-    result = Runner(run_dir).close(force=args.force)
+    result = Runner(run_dir).close(force=args.force, environ=environ)
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:

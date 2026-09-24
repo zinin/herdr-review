@@ -67,6 +67,18 @@ class HerdrClientTest(unittest.TestCase):
         with mock.patch("subprocess.run", return_value=completed(1, "", err)):
             self.assertIsNone(self.client.agent_read("hr1-codex"))
 
+    def test_tab_get_parses_the_tab_and_the_missing_tab(self):
+        found = '{"id":"cli:tab:get","result":{"tab":{"agent_status":"working","focused":true,"label":"1","number":4,"pane_count":1,"tab_id":"w1:t4","workspace_id":"w1"},"type":"tab_info"}}'
+        with mock.patch("subprocess.run", return_value=completed(0, found)) as run:
+            r = self.client.tab_get("w1:t4")
+        self.assertEqual(run.call_args.args[0], ["herdr-fake", "tab", "get", "w1:t4"])
+        self.assertTrue(r.ok)
+        self.assertEqual((r.result["tab"]["tab_id"], r.result["tab"]["label"]), ("w1:t4", "1"))
+        missing = '{"error":{"code":"tab_not_found","message":"tab w9:t99 not found"},"id":"cli:tab:get"}'
+        with mock.patch("subprocess.run", return_value=completed(1, "", missing)):
+            r = self.client.tab_get("w9:t99")
+        self.assertEqual((r.ok, r.error_code), (False, "tab_not_found"))
+
     def test_status_ok_reads_running_line(self):
         with mock.patch("subprocess.run", return_value=completed(0, "status: running\nversion: 0.9.0\n")):
             self.assertTrue(self.client.status_ok())
