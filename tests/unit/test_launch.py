@@ -218,17 +218,25 @@ class LaunchTest(unittest.TestCase):
         self.assertNotIn("zz.bin", prompt)
         self.assertIn(f"…and 6 more: `{run_dir / 'untracked.txt'}` lists them all with the same marks.", prompt)
 
-    def test_the_worktree_scope_lists_a_name_that_is_not_utf8_or_holds_a_cr_quoted(self):
+    def test_the_worktree_scope_lists_a_name_that_is_not_utf8_quoted(self):
         git(self.repo, "switch", "-q", "master")
         git(self.repo, "switch", "-q", "-c", "wip")
-        write_bytes_name(self, self.repo, b"caf\xe9.py", b"print(1)\n")
-        (self.repo / "Icon\r").write_bytes(b"")
+        write_bytes_name(self, self.repo, b"caf\xe9.py", b"print(1)\n")   # APFS refuses it
         res = self.do_launch()
-        self.assertEqual(res["untracked"], {"files": 2, "skipped": 0})
+        self.assertEqual(res["untracked"], {"files": 1, "skipped": 0})
         run_dir = Path(res["run_dir"])
-        self.assertEqual((run_dir / "untracked.txt").read_text(), '- `"Icon\\r"` (0 B)\n- `"caf\\351.py"` (9 B)\n')
-        prompt = (run_dir / "prompts" / "codex.md").read_text()
-        self.assertIn('- `"Icon\\r"` (0 B)\n- `"caf\\351.py"` (9 B)', prompt)
+        self.assertEqual((run_dir / "untracked.txt").read_text(), '- `"caf\\351.py"` (9 B)\n')
+        self.assertIn('- `"caf\\351.py"` (9 B)', (run_dir / "prompts" / "codex.md").read_text())
+
+    def test_the_worktree_scope_lists_a_name_that_holds_a_cr_quoted(self):
+        git(self.repo, "switch", "-q", "master")
+        git(self.repo, "switch", "-q", "-c", "wip")
+        (self.repo / "Icon\r").write_bytes(b"")                             # macOS's folder-icon file
+        res = self.do_launch()
+        self.assertEqual(res["untracked"], {"files": 1, "skipped": 0})
+        run_dir = Path(res["run_dir"])
+        self.assertEqual((run_dir / "untracked.txt").read_text(), '- `"Icon\\r"` (0 B)\n')
+        self.assertIn('- `"Icon\\r"` (0 B)', (run_dir / "prompts" / "codex.md").read_text())
 
     def test_the_scope_flag_overrides_the_setting(self):
         (self.repo / "new.py").write_text("x\n")

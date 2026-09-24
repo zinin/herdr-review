@@ -307,11 +307,13 @@ class GitUtilTest(unittest.TestCase):
         self.assertEqual([(f.path, f.skip) for f in gitutil.untracked_files(self.repo)],
                          [("vendor/", "nested git repository")])
 
-    def test_untracked_files_keep_a_name_that_is_not_utf8_or_holds_a_cr(self):
-        write_bytes_name(self, self.repo, b"caf\xe9.py", b"aaa\n")        # a legacy-encoded name
+    def test_untracked_files_keep_a_name_that_is_not_utf8(self):
+        write_bytes_name(self, self.repo, b"caf\xe9.py", b"aaa\n")        # a legacy-encoded name; APFS refuses it
+        self.assertEqual({f.path: f.size for f in gitutil.untracked_files(self.repo)}, {os.fsdecode(b"caf\xe9.py"): 4})
+
+    def test_untracked_files_keep_a_name_that_holds_a_cr(self):
         (self.repo / "Icon\r").write_bytes(b"icon")                        # macOS's folder-icon file
-        self.assertEqual({f.path: f.size for f in gitutil.untracked_files(self.repo)},
-                         {os.fsdecode(b"caf\xe9.py"): 4, "Icon\r": 4})
+        self.assertEqual({f.path: f.size for f in gitutil.untracked_files(self.repo)}, {"Icon\r": 4})
 
     def test_tree_hash_reads_a_name_that_is_not_utf8(self):
         path = write_bytes_name(self, self.repo, b"caf\xe9.py", b"aaa\n")
