@@ -54,6 +54,23 @@ class CloseTest(RunnerBase):
         self.assertIn("closed_at", status)
         self.assertFalse((run_dir / "scratch").exists())
 
+    def test_a_forced_close_that_leaves_a_tab_open_keeps_the_run_in_progress(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        (run_dir / "scratch" / "codex").mkdir(parents=True)
+        r = self.runner(run_dir)
+        r.start_reviewers()
+        self.herdr.close_errors["w1:t2"] = ("server_error", "boom")
+        self.assertEqual(r.close(force=True)["failed"], {"w1:t2": "server_error: boom"})
+        status = json.loads((run_dir / "status.json").read_text())
+        self.assertEqual(status["phase"], "reviewing")
+        self.assertNotIn("abort_reason", status)
+        self.assertTrue((run_dir / "scratch" / "codex").is_dir())
+        self.assertIn("close --force: 1 of 2 did not close; the run stays in phase reviewing", (run_dir / "runner.log").read_text())
+        del self.herdr.close_errors["w1:t2"]
+        r.close(force=True)                                   # the retry closes the rest and ends the run
+        self.assertEqual(json.loads((run_dir / "status.json").read_text())["phase"], "aborted")
+        self.assertFalse((run_dir / "scratch").exists())
+
     def test_a_forced_close_of_a_finished_run_keeps_it_finished(self):
         run_dir = self.finished_run()
         self.runner(run_dir).close(force=True)

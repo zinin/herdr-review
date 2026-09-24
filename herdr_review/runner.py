@@ -763,11 +763,16 @@ class Runner:
             targets.append((orch["tab"], True))
         closed, gone, failed = self._close_all(targets, "close")
         if force and phase not in ("finished", "aborted"):
-            # Its agents are gone: the run ends here, and no later launch may count it as unfinished.
-            self.status.set("abort_reason", "closed with --force")
-            self.status.set("waiting_for_user", False)
-            self.status.set_phase("aborted")
-            self._remove_scratch()
+            if failed:
+                # An agent whose tab did not close may still be working: the run keeps its phase and its
+                # scratch/, so a later launch still warns about it and another close --force can finish the job.
+                self.log(f"close --force: {len(failed)} of {len(targets)} did not close; the run stays in phase {phase}")
+            else:
+                # Its agents are gone: the run ends here, and no later launch may count it as unfinished.
+                self.status.set("abort_reason", "closed with --force")
+                self.status.set("waiting_for_user", False)
+                self.status.set_phase("aborted")
+                self._remove_scratch()
         self.status.set("closed_at", now_iso())
         self.status.save()
         return {"closed": closed, "already_closed": gone, "failed": failed}
