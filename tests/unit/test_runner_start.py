@@ -7,10 +7,12 @@ from unittest import mock
 
 from herdr_review import PROMPTS_DIR
 from herdr_review.config import parse_config
+from herdr_review.dialogs import MCP_REFUSAL
 from herdr_review.herdr import HerdrResult
 from herdr_review.runner import Runner, RunnerError, check_review_file
 from herdr_review.status import RunStatus
 from tests.unit.fakeherdr import FakeHerdr
+from tests.unit.test_dialogs import MCP_MANY, MCP_ONE
 
 RAW = {
     "profiles": {
@@ -234,6 +236,21 @@ class StartReviewersTest(RunnerBase):
         self.assertIn("MCP servers found", status["agents"]["hrtest-claude-opus"]["last_screen"])
         self.assertIn(("tab_rename", "w1:t2", "rv-hrtest: claude-opus ✗"), self.herdr.calls)
 
+    def test_an_mcp_dialog_herdr_calls_idle_fails_the_reviewer_without_a_key(self):
+        for i, screen in enumerate((MCP_ONE, MCP_MANY)):
+            with self.subTest(screen=screen.splitlines()[0]):
+                herdr = FakeHerdr()                                  # agent start succeeds
+                herdr.screens["hrtest-claude-opus"] = screen
+                herdr.pane_screens["w1:p2"] = screen
+                run_dir = make_run(self.root / str(i), self.repo, reviewers=("claude-opus",))
+                out = Runner(run_dir, herdr=herdr, poll_sec=0, sleep=lambda s: None).start_reviewers()
+                a = out["agents"]["hrtest-claude-opus"]
+                self.assertEqual((a["state"], a["reason"]), ("failed", MCP_REFUSAL))
+                self.assertEqual(herdr.calls_named("agent_send_keys"), [])
+                self.assertEqual(herdr.calls_named("agent_prompt"), [])
+                status = json.loads((run_dir / "status.json").read_text())
+                self.assertIn("MCP server", status["agents"]["hrtest-claude-opus"]["last_screen"])
+
     def test_codex_trust_dialog_resolved_then_prompted(self):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",))
         self.herdr.start_errors["hrtest-codex"] = ("agent_not_ready", "blocked during startup")
@@ -308,6 +325,15 @@ class PromptFailFixerTest(RunnerBase):
         self.assertEqual(self.r.status.agent("hrtest-fixer")["state"], "working")
         with self.assertRaises(RunnerError):
             self.r.start_fixer()                   # already started
+
+    def test_an_mcp_dialog_herdr_calls_idle_fails_the_fixer_without_a_key(self):
+        self.herdr.screens["hrtest-fixer"] = MCP_MANY                    # agent start succeeds
+        self.herdr.pane_screens["w1:p3"] = MCP_MANY
+        out = self.r.start_fixer()
+        self.assertEqual((out["state"], out["reason"]), ("failed", MCP_REFUSAL))
+        self.assertEqual(self.herdr.calls_named("agent_send_keys"), [])
+        self.assertEqual([c for c in self.herdr.calls_named("agent_prompt") if c[1] == "hrtest-fixer"], [])
+        self.assertIn("MCP servers found", self.r.status.agent("hrtest-fixer")["last_screen"])
 
     def test_fixer_tab_is_marked_only_after_it_finishes_a_task(self):
         self.r.start_fixer()

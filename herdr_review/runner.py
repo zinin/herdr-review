@@ -12,7 +12,7 @@ from typing import Callable
 
 from . import PROMPTS_DIR, gitutil
 from .config import ConfigError, is_secretish, load_config
-from .dialogs import SCREEN_LINES, resolve_startup_dialog
+from .dialogs import SCREEN_LINES, mcp_refusal, resolve_startup_dialog
 from .herdr import Herdr, HerdrResult
 from .layout import fixer_split, plan_grid
 from .render import render_file
@@ -334,20 +334,27 @@ class Runner:
     def _start_agent(self, name: str, spec: dict, pane: str) -> None:
         r = self.herdr.agent_start(name, spec["kind"], pane, spec["args"])
         if r.ok:
-            self._set_state(name, "idle")
-            return
-        if r.error_code == "agent_not_ready":
+            # herdr 0.9.0 takes Claude Code's MCP dialog with several servers for an idle agent:
+            # look before a prompt is typed into it.
+            refusal = mcp_refusal(self.herdr, name)
+            if refusal is None:
+                self._set_state(name, "idle")
+                return
+        elif r.error_code == "agent_not_ready":
             outcome = resolve_startup_dialog(self.herdr, name)
             if outcome.resolved:
                 self.log(f"{name}: startup dialog resolved automatically")
                 self._set_state(name, "idle")
-            elif outcome.refusal:
-                self.log(f"{name}: startup dialog refused: {outcome.refusal}")
-                self._set_state(name, "failed", reason=outcome.refusal, last_screen=self._pane_screen(pane))
-            else:
+                return
+            if not outcome.refusal:
                 self._set_state(name, "blocked-start", reason=r.message)
+                return
+            refusal = outcome.refusal
+        else:
+            self._set_state(name, "failed", reason=f"{r.error_code}: {r.message}", last_screen=self._pane_screen(pane))
             return
-        self._set_state(name, "failed", reason=f"{r.error_code}: {r.message}", last_screen=self._pane_screen(pane))
+        self.log(f"{name}: startup dialog refused: {refusal}")
+        self._set_state(name, "failed", reason=refusal, last_screen=self._pane_screen(pane))
 
     def _apply_prompt_result(self, name: str, r: HerdrResult) -> None:
         a = self.status.agent(name)

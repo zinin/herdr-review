@@ -14,7 +14,7 @@ from typing import Callable, Mapping
 
 from . import PROMPTS_DIR, __version__, gitutil
 from .config import Config, is_secretish
-from .dialogs import resolve_startup_dialog, startup_args
+from .dialogs import mcp_refusal, resolve_startup_dialog, startup_args
 from .herdr import Herdr, HerdrResult
 from .render import render_file
 from .scope import ScopeError, orchestrator_scope, resolve_scope, reviewer_steps, untracked_line
@@ -304,17 +304,23 @@ def launch(
         status.save()
 
         r = herdr.agent_start(orch["name"], orch["kind"], pane_id, orch["args"])
-        if not r.ok and r.error_code == "agent_not_ready":
+        refusal = None
+        if r.ok:
+            # herdr 0.9.0 takes Claude Code's MCP dialog with several servers for an idle agent:
+            # look before the prompt is typed into it.
+            refusal = mcp_refusal(herdr, orch["name"])
+        elif r.error_code == "agent_not_ready":
             outcome = resolve_startup_dialog(herdr, orch["name"])
             if outcome.resolved:
                 log("orchestrator startup dialog resolved automatically")
                 r = HerdrResult(True, 0)
-            elif outcome.refusal:
-                raise LaunchError(
-                    f"orchestrator '{orch_profile}' failed to start: {outcome.refusal}\n"
-                    f"Tab {tab_id} is left open for inspection.\n"
-                    f"Run directory: {run_dir}"
-                )
+            refusal = outcome.refusal
+        if refusal:
+            raise LaunchError(
+                f"orchestrator '{orch_profile}' failed to start: {refusal}\n"
+                f"Tab {tab_id} is left open for inspection.\n"
+                f"Run directory: {run_dir}"
+            )
         if not r.ok:
             screen = herdr.pane_read(pane_id) or ""
             raise LaunchError(

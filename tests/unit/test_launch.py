@@ -8,10 +8,11 @@ from pathlib import Path
 from unittest import mock
 
 from herdr_review.config import parse_config
-from herdr_review.dialogs import CLAUDE_SESSION_SETTINGS
+from herdr_review.dialogs import CLAUDE_SESSION_SETTINGS, MCP_REFUSAL
 from herdr_review.herdr import Herdr
 from herdr_review.launch import LaunchError, LaunchOptions, _unfinished_runs, launch, new_run_id, project_slug, resolve_selection
 from tests.unit.fakeherdr import FakeHerdr
+from tests.unit.test_dialogs import MCP_MANY, MCP_ONE
 
 RAW = {
     "profiles": {
@@ -456,6 +457,23 @@ class LaunchTest(unittest.TestCase):
         self.assertEqual(self.herdr.calls_named("agent_send_keys"), [])
         run_dir = next((self.root / "runs").glob("*/*-hrtest"))
         self.assertEqual(json.loads((run_dir / "status.json").read_text())["phase"], "aborted")
+
+    def test_an_mcp_dialog_herdr_calls_idle_aborts_the_launch_without_a_key(self):
+        for i, screen in enumerate((MCP_ONE, MCP_MANY)):
+            with self.subTest(screen=screen.splitlines()[0]):
+                herdr = FakeHerdr()                                  # agent start succeeds
+                herdr.screens[f"hrmcp{i}-orch"] = screen
+                with self.assertRaises(LaunchError) as ctx:
+                    launch(LaunchOptions(), self.cfg, herdr, ENV, self.repo, self.runner, which=which_ok, run_id=f"hrmcp{i}")
+                message = str(ctx.exception)
+                self.assertIn(f"failed to start: {MCP_REFUSAL}", message)
+                self.assertIn("Tab w1:t2 is left open for inspection", message)
+                self.assertIn("Run directory:", message)
+                self.assertEqual(herdr.calls_named("agent_send_keys"), [])
+                self.assertEqual(herdr.calls_named("agent_prompt"), [])
+                self.assertEqual(herdr.calls_named("tab_close"), [])
+                run_dir = next((self.root / "runs").glob(f"*/*-hrmcp{i}"))
+                self.assertEqual(json.loads((run_dir / "status.json").read_text())["phase"], "aborted")
 
 
 if __name__ == "__main__":

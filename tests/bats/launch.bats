@@ -113,6 +113,16 @@ teardown() { teardown_env; }
   ! grep -q 'agent send-keys' "$FAKE_HERDR_LOG"
 }
 
+@test "launch: the MCP dialog herdr calls idle is refused too" {
+  echo '{"screens": {"*-orch": "2 new MCP servers found in this project\nSelect any you wish to enable.\n❯ [✔] one\n  [✔] two\nSpace to select · Esc to reject all\n"}}' > "$FAKE_HERDR_SCENARIO"
+  run "$HR" launch
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"failed to start: Claude Code asks to approve"* ]]
+  [[ "$output" == *"Tab w1:t2 is left open"* ]]
+  [ "$(grep -c 'agent send-keys' "$FAKE_HERDR_LOG")" -eq 0 ]
+  [ "$(grep -c 'agent prompt' "$FAKE_HERDR_LOG")" -eq 0 ]
+}
+
 @test "launch: a dirty tree is left out of a review of the commits" {
   echo edited > a.txt; mkdir notes; echo x > notes/one.md
   run "$HR" launch

@@ -73,6 +73,21 @@ def recognize(screen: str) -> tuple[str, tuple[str, ...] | None] | None:
     return None
 
 
+def _screen_dialog(herdr, name: str) -> tuple[str, tuple[str, ...] | None] | None:
+    """The known dialog on <name>'s visible screen; None for any other screen and for a failed read."""
+    return recognize(herdr.agent_read(name, source="visible", lines=SCREEN_LINES) or "")
+
+
+def mcp_refusal(herdr, name: str) -> str | None:
+    """MCP_REFUSAL when Claude Code's MCP approval dialog is on <name>'s screen, else None.
+
+    herdr 0.9.0 takes that dialog with several servers for an idle agent, so `agent start` succeeds
+    while it is up. Only this dialog is looked for: herdr judged the agent ready, and answering what
+    looks like a trust dialog's lingering text could type into a live input."""
+    found = _screen_dialog(herdr, name)
+    return MCP_REFUSAL if found is not None and found[0] == "claude-mcp" else None
+
+
 def resolve_startup_dialog(herdr, name: str) -> DialogOutcome:
     """Answer the trust dialogs of Claude Code, Codex and Grok; refuse Claude Code's MCP approval dialog."""
     answered = False
