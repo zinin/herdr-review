@@ -1,5 +1,6 @@
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -115,7 +116,7 @@ class PromptTemplatesTest(unittest.TestCase):
                 commits = fixer_skeleton(kind, "commits", "/run")
                 self.assertNotIn(NO_COMMIT, commits)
                 self.assertNotIn("the review covers uncommitted work", commits)
-                self.assertIn("git commit --only -F /run/fix-", commits)
+                self.assertIn('git commit --only -F "/run/fix-', commits)
                 self.assertNotIn("{", commits)
 
     def test_the_worktree_commit_rule_leaves_the_skip_rule_in_force(self):
@@ -160,7 +161,7 @@ class PromptTemplatesTest(unittest.TestCase):
                 self.assertIn("git status --porcelain --untracked-files=all -- <file>", text)   # whatever status.showUntrackedFiles says
                 self.assertNotIn("git status --porcelain -- <file>", text)
                 self.assertIn("holds the user's uncommitted work; left to the user", text)
-                self.assertIn(f"git commit --only -F {message} --", text)
+                self.assertIn(f'git commit --only -F "{message}" --', text)
                 self.assertIn("git log -n 20", text)
                 self.assertIn("Do not mention the review", text)
                 self.assertIn("Add no trailers", text)
@@ -184,6 +185,15 @@ class PromptTemplatesTest(unittest.TestCase):
                     self.assertIn("Only then write the commit message, for the fixes still marked `done`", text)
                     self.assertIn("one line per fix still marked `done`", text)
                     self.assertLess(text.index("then decide what to commit"), text.index("write the commit message"))
+
+    def test_the_fixers_commit_command_keeps_a_message_path_with_a_space_whole(self):
+        for kind, message in (("auto", "fix-auto-commit.txt"), ("decision", "fix-<ORCHESTRATOR: n>-commit.txt")):
+            with self.subTest(kind=kind):
+                text = fixer_skeleton(kind, "commits", "/my runs/hr1")
+                commands = re.findall(r"`(git commit --only -F [^`]*)`", text)
+                self.assertEqual(len(commands), 1)
+                args = shlex.split(commands[0])
+                self.assertEqual(args[args.index("-F") + 1], f"/my runs/hr1/{message}")
 
     def test_orchestrator_prompt_names_the_dialogs_and_protects_the_users_files(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
