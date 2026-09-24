@@ -90,6 +90,18 @@ class StartupDialogTest(unittest.TestCase):
                 self.assertEqual(resolve_startup_dialog(h, "hr1-grok"), DialogOutcome(resolved=False))
                 self.assertEqual(h.calls_named("agent_send_keys"), [("agent_send_keys", "hr1-grok", ("y",))])
 
+    def test_a_failed_read_after_an_idle_wait_is_not_a_checked_screen(self):
+        for waits, reads in (
+            ([True], [CLAUDE_TRUST_ON_YES, None]),                    # idle, then the look fails
+            ([False, True], [CLAUDE_TRUST_ON_YES, None, None]),       # the extra wait sees idle, its look fails too
+        ):
+            with self.subTest(waits=waits):
+                h = FakeHerdr()
+                h.wait_results["hr1-orch"] = list(waits)
+                h.reads["hr1-orch"] = list(reads)
+                self.assertEqual(resolve_startup_dialog(h, "hr1-orch"), DialogOutcome(resolved=False))
+                self.assertEqual(h.calls_named("agent_send_keys"), [("agent_send_keys", "hr1-orch", ("enter",))])
+
     def test_an_mcp_dialog_after_the_extra_wait_is_refused(self):
         h = FakeHerdr()
         h.wait_results["hr1-rv"] = [False, True]            # the answer's wait times out; the extra one sees idle

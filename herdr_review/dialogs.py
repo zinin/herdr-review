@@ -73,9 +73,14 @@ def recognize(screen: str) -> tuple[str, tuple[str, ...] | None] | None:
     return None
 
 
+def _screen(herdr, name: str) -> str | None:
+    """<name>'s visible screen; None when herdr could not read it."""
+    return herdr.agent_read(name, source="visible", lines=SCREEN_LINES)
+
+
 def _screen_dialog(herdr, name: str) -> tuple[str, tuple[str, ...] | None] | None:
     """The known dialog on <name>'s visible screen; None for any other screen and for a failed read."""
-    return recognize(herdr.agent_read(name, source="visible", lines=SCREEN_LINES) or "")
+    return recognize(_screen(herdr, name) or "")
 
 
 def mcp_refusal(herdr, name: str) -> str | None:
@@ -90,12 +95,14 @@ def mcp_refusal(herdr, name: str) -> str | None:
 
 def _settle(herdr, name: str) -> tuple[tuple[str, tuple[str, ...] | None] | None, bool]:
     """Wait for <name> to turn idle after an answer, then look at its screen: (the dialog on it, whether
-    the agent turned idle). A wait that failed other than by timing out leaves no settled screen to
-    look at: (None, False), and nothing more is sent."""
+    the agent turned idle and its screen was read). A wait that failed other than by timing out leaves
+    no settled screen to look at: (None, False), and nothing more is sent. So does a last read that
+    failed: it checked nothing, so the agent is not resolved on it."""
     waited = herdr.agent_wait(name, until="idle", timeout_ms=WAIT_MS)
     if not waited.ok and waited.error_code != "timeout":
         return None, False
-    found = _screen_dialog(herdr, name)
+    screen = _screen(herdr, name)
+    found = recognize(screen or "")
     if found is None and not waited.ok:
         # The answered dialog is gone after a timed-out wait: the agent may only be slow to turn idle
         # (project MCP servers starting), so give it one more wait, and look again after it: herdr
@@ -103,8 +110,9 @@ def _settle(herdr, name: str) -> tuple[tuple[str, tuple[str, ...] | None] | None
         waited = herdr.agent_wait(name, until="idle", timeout_ms=WAIT_MS)
         if not waited.ok and waited.error_code != "timeout":
             return None, False
-        found = _screen_dialog(herdr, name)
-    return found, waited.ok
+        screen = _screen(herdr, name)
+        found = recognize(screen or "")
+    return found, waited.ok and screen is not None
 
 
 def resolve_startup_dialog(herdr, name: str) -> DialogOutcome:
@@ -112,7 +120,7 @@ def resolve_startup_dialog(herdr, name: str) -> DialogOutcome:
 
     Each dialog is answered at most once: seen again on any later look, it is stale text or stuck, and a
     second key could pick "No, exit" or "Quit" or land in a live input. The agent is resolved only when
-    it turned idle and the look after that found no dialog."""
+    it turned idle and the look after that read its screen and found no dialog."""
     answered: set[str] = set()
     idle = False
     found = _screen_dialog(herdr, name)
