@@ -127,6 +127,11 @@ class CliParsingTest(unittest.TestCase):
         worktree = {"scope": "worktree", "base": "master", "uncommitted": ["?? new.py"], "untracked": {"files": 3, "skipped": 1}}
         self.assertEqual(scope_lines(worktree), [
             "  объём:        рабочее дерево — коммиты и незакоммиченное; неотслеживаемых файлов у ревьюеров: 3, из них пропущено: 1",
+            "  фиксы:        останутся незакоммиченными — закоммитите их сами",
+        ])
+        self.assertEqual(scope_lines({**worktree, "uncommitted": [" M a.txt"], "untracked": {"files": 0, "skipped": 0}}), [
+            "  объём:        рабочее дерево — коммиты и незакоммиченное",
+            "  фиксы:        останутся незакоммиченными — закоммитите их сами",
         ])
 
     def test_close_parses(self):

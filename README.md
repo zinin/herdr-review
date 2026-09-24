@@ -155,7 +155,7 @@ With a preset or `reviewers=` the skill asks nothing. Without either it asks fou
 /herdr-review:review reviewers=codex,grok orchestrator=claude-opus fixer=claude-opus BASE_BRANCH=develop
 ```
 
-The skill prints the run directory, the orchestrator's agent name, what is under review and what stays out of it, and the two commands to watch it (`herdr agent focus <name>`, `herdr-review status latest`), then ends its turn. The run continues in the orchestrator's tab.
+The skill prints the run directory, the orchestrator's agent name, what is under review and what stays out of it, that the fixes stay uncommitted for you to commit when the working tree is under review, and the two commands to watch it (`herdr agent focus <name>`, `herdr-review status latest`), then ends its turn. The run continues in the orchestrator's tab.
 
 ### `auto-decide` — stop answering
 

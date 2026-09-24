@@ -179,7 +179,8 @@ def scope_lines(result: dict) -> list[str]:
         line += f"; неотслеживаемых файлов у ревьюеров: {untracked['files']}"
         if untracked.get("skipped"):
             line += f", из них пропущено: {untracked['skipped']}"
-    return [line]
+    # The fixer commits nothing in this scope: the change under review is uncommitted work.
+    return [line, "  фиксы:        останутся незакоммиченными — закоммитите их сами"]
 
 
 def cmd_launch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
