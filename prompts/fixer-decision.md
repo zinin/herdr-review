@@ -13,7 +13,7 @@ Decision: <ORCHESTRATOR: the chosen variant, described precisely enough to imple
 
 ## Uncommitted before the review
 
-{RUN_DIR}/uncommitted.txt lists what `git status --short` showed when the review started: the user's uncommitted edits and untracked files. An entry ending in `/` covers everything under that directory. They are the user's own work. Each entry is a `git status --short` line: two status letters, then the path, in double quotes with C escapes when it holds a space or a special character, and `old -> new` for a rename; `git … --name-only` prints a path that only holds spaces without quotes, so compare paths, not their quoting.
+{RUN_DIR}/uncommitted.txt lists what `git status --short` showed when the review started: the user's uncommitted edits and untracked files. An entry whose path ends in `/` covers everything under that directory. They are the user's own work. Each entry is a `git status --short` line: a two-character status such as `??` or ` M`, a space, then the path — in double quotes with C escapes when it holds a space or another special character, and `old -> new` for a rename. `git … --name-only` leaves a path unquoted when a space is its only special character, so compare paths, not their quoting: `?? "my notes/"` is the untracked directory `my notes/`.
 
 ## Rules
 

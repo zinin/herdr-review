@@ -216,9 +216,18 @@ class PromptTemplatesTest(unittest.TestCase):
                 texts[f"fixer-{kind} ({scope})"] = fixer_skeleton(kind, scope, "/run")
         for name, text in texts.items():
             with self.subTest(name=name):
-                self.assertIn("Each entry is a `git status --short` line: two status letters, then the path", text)
-                # `git status --short` quotes `my notes.md`, `git … --name-only` does not
-                self.assertIn("prints a path that only holds spaces without quotes, so compare paths, not their quoting", text)
+                # git prints a quoted untracked directory as `?? "my notes/"`: the path ends in `/`, the entry does not
+                self.assertRegex(text, "[Aa]n entry whose path ends in `/` covers everything under that directory")
+                self.assertIn("Each entry is a `git status --short` line: a two-character status such as `??` or ` M`, a"
+                              " space, then the path — in double quotes with C escapes when it holds a space or another"
+                              " special character, and `old -> new` for a rename.", text)
+                # `git status --short` quotes `my notes/`, `git … --name-only` does not
+                self.assertIn("`git … --name-only` leaves a path unquoted when a space is its only special character, so"
+                              " compare paths, not their quoting: `?? \"my notes/\"` is the untracked directory `my notes/`.",
+                              text)
+                self.assertNotRegex(text, "[Aa]n entry ending in `/`")
+                for old in ("two status letters", "a path that only holds spaces"):        # `??`, ` M`; a path of spaces
+                    self.assertNotIn(old, text)
 
     def test_the_drift_step_names_uncommitted_work_gone_since_launch(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
