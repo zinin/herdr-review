@@ -52,6 +52,9 @@ LIVE_STATUSES = ("idle", "working", "blocked", "done", "unknown")
 # the agent, so they must never take one out of the run.
 HERDR_ERROR_CODES = ("herdr_not_found", "herdr_failed", "timeout")
 OBSERVE_ATTEMPTS = 3
+# close --force reads status.json again after every round of closes, for the tabs a live orchestrator opened
+# meanwhile; past this many rounds, a tab that still appears is left open for another close --force.
+CLOSE_ROUNDS = 3
 # drift_status when the tree changed but no `git status --short` line is new or gone since launch.
 DRIFT_NOTHING_NEW_OR_GONE = (
     "no line of `git status --short` is new or gone since launch: the content of a file that was already uncommitted"
@@ -859,21 +862,32 @@ class Runner:
         own += [t for t in first if t[0] == own_tab]
         first = [t for t in first if t[0] != own_tab]
         close_these(first)
-        # What it did meanwhile is on disk: a fixer it started is among the agents there.
-        self._reload()
-        # In the grid layout every agent is a pane of the orchestrator's tab: closing that tab closes them all.
-        agents = self._agent_targets() if self.layout == "tabs" else []
-        own += [t for t in agents if t[0] == own_tab]
-        others = [t for t in agents if t[0] != own_tab]
-        close_these(others)
-        # And so is a phase it set: a `run finish` that landed while its tab closed stays finished.
-        self._reload()
+        handled = {ident for ident, _ in first + own}
+        rounds = 0
+        while True:
+            # What it did meanwhile is on disk: a fixer it started is among the agents there, and so is a phase
+            # it set. It can start the fixer while any tab closes, so every round of closes ends in a read.
+            self._reload()
+            # In the grid layout every agent is a pane of the orchestrator's tab: closing that tab closes them all.
+            agents = self._agent_targets() if self.layout == "tabs" else []
+            new = [t for t in agents if t[0] not in handled]
+            if not new:
+                break
+            handled.update(ident for ident, _ in new)
+            own += [t for t in new if t[0] == own_tab]
+            others = [t for t in new if t[0] != own_tab]
+            if rounds == CLOSE_ROUNDS:
+                failed.update((ident, "opened while close ran; not closed") for ident, _ in others)
+                break
+            rounds += 1
+            close_these(others)
+        # The last read decides: a `run finish` that landed while a tab closed stays finished.
         phase = self.status.data.get("phase")
         if force and phase not in ("finished", "aborted"):
             if failed:
                 # An agent whose tab did not close may still be working: the run keeps its phase and its
                 # scratch/, so a later launch still warns about it and another close --force can finish the job.
-                self.log(f"close --force: {len(failed)} of {len(first) + len(others)} did not close; the run stays in phase {phase}")
+                self.log(f"close --force: {len(failed)} of {len(closed) + len(gone) + len(failed)} did not close; the run stays in phase {phase}")
             else:
                 # Its agents are gone: the run ends here, and no later launch may count it as unfinished.
                 # The caller's own tab does not count: the user is at a shell there, not an agent.

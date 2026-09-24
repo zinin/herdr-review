@@ -112,6 +112,33 @@ class CloseTest(RunnerBase):
         self.assertEqual(out["closed"], ["w1:t1", "w1:t2", status["agents"]["hrtest-fixer"]["tab"]])
         self.assertEqual(status["phase"], "aborted")
 
+    def test_a_fixer_started_while_a_reviewers_tab_closes_is_closed_too(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        self.runner(run_dir).start_reviewers()
+        orchestrator = self.runner(run_dir)                  # its `run start-fixer` was already under way
+        self.herdr.on_close["w1:t2"] = orchestrator.start_fixer
+        out = self.runner(run_dir).close(force=True)
+        status = json.loads((run_dir / "status.json").read_text())
+        fixer = status["agents"]["hrtest-fixer"]["tab"]
+        self.assertEqual(out, {"closed": ["w1:t1", "w1:t2", fixer], "already_closed": [], "failed": {}})
+        self.assertEqual(status["phase"], "aborted")
+
+    def test_tabs_that_keep_opening_while_close_runs_keep_the_run_in_progress(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        self.runner(run_dir).start_reviewers()
+
+        def one_more():                                      # every close opens another agent's tab
+            tab = self.herdr.tab_create("w1", self.repo, "rv-hrtest: extra", {}).result["tab"]["tab_id"]
+            RunStatus.load(run_dir).add_agent(f"hrtest-{tab}", role="reviewer", profile="codex", kind="codex", tab=tab, pane=None)
+            self.herdr.on_close[tab] = one_more
+
+        self.herdr.on_close["w1:t2"] = one_more
+        out = self.runner(run_dir).close(force=True)
+        self.assertEqual(out["closed"], ["w1:t1", "w1:t2", "w1:t3", "w1:t4"])       # three rounds after the orchestrator's
+        self.assertEqual(out["failed"], {"w1:t5": "opened while close ran; not closed"})
+        self.assertNotIn(("tab_close", "w1:t5"), self.herdr.calls)
+        self.assertEqual(json.loads((run_dir / "status.json").read_text())["phase"], "reviewing")
+
     def test_a_run_the_orchestrator_finishes_while_its_tab_closes_stays_finished(self):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",))
         self.runner(run_dir).start_reviewers()
