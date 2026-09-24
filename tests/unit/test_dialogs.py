@@ -92,8 +92,8 @@ class StartupDialogTest(unittest.TestCase):
 
     def test_a_failed_read_after_an_idle_wait_is_not_a_checked_screen(self):
         for waits, reads in (
-            ([True], [CLAUDE_TRUST_ON_YES, None]),                    # idle, then the look fails
-            ([False, True], [CLAUDE_TRUST_ON_YES, None, None]),       # the extra wait sees idle, its look fails too
+            ([True], [CLAUDE_TRUST_ON_YES, None]),                        # idle, then the look fails
+            ([False, True], [CLAUDE_TRUST_ON_YES, CLAUDE_IDLE, None]),    # a clean look; the extra wait sees idle, its look fails
         ):
             with self.subTest(waits=waits):
                 h = FakeHerdr()
@@ -101,6 +101,14 @@ class StartupDialogTest(unittest.TestCase):
                 h.reads["hr1-orch"] = list(reads)
                 self.assertEqual(resolve_startup_dialog(h, "hr1-orch"), DialogOutcome(resolved=False))
                 self.assertEqual(h.calls_named("agent_send_keys"), [("agent_send_keys", "hr1-orch", ("enter",))])
+
+    def test_after_the_extra_wait_only_its_own_look_counts(self):
+        h = FakeHerdr()
+        h.wait_results["hr1-orch"] = [False, True]
+        h.reads["hr1-orch"] = [CLAUDE_TRUST_ON_YES, None, CLAUDE_IDLE]    # the look after the timed-out wait fails, the extra one reads
+        self.assertEqual(resolve_startup_dialog(h, "hr1-orch"), DialogOutcome(resolved=True))
+        self.assertEqual(h.calls_named("agent_send_keys"), [("agent_send_keys", "hr1-orch", ("enter",))])
+        self.assertEqual(len(h.calls_named("agent_read")), 3)
 
     def test_an_mcp_dialog_after_the_extra_wait_is_refused(self):
         h = FakeHerdr()
