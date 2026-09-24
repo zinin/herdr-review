@@ -1,9 +1,11 @@
 import unittest
+from pathlib import Path
 
 from herdr_review import PROMPTS_DIR
+from herdr_review.gitutil import UntrackedFile
 from herdr_review.render import placeholders, render_file
 from herdr_review.runner import DRIFT_GONE
-from herdr_review.scope import fixer_skeleton
+from herdr_review.scope import fixer_skeleton, reviewer_steps
 
 NO_COMMIT = "Commit nothing. The change under review is uncommitted work"
 EXPECTED = {
@@ -49,6 +51,13 @@ class PromptTemplatesTest(unittest.TestCase):
         self.assertIn("gitignored", text)
         self.assertNotIn("git ls-files --others", text)
         self.assertIn("Apart from your review file", text)
+
+    def test_the_worktree_steps_say_how_a_quoted_name_is_written(self):
+        text = reviewer_steps("worktree", "abc123", [], [UntrackedFile("Icon\r", 0)], Path("/run/uncommitted.txt"), Path("/run/untracked.txt"))
+        self.assertIn("- `\"Icon\\r\"` (0 B)", text)
+        self.assertIn("A name in double quotes is written the way git quotes a path, with C escapes and each byte that is not"
+                      " UTF-8 as three-digit octal; in a shell, `$'…'` with the same escapes names the file: `$'caf\\351.py'`,"
+                      " `$'Icon\\r'`.", text)
 
     def test_fixer_skeletons_mention_report_and_done(self):
         for kind in ("auto", "decision"):
