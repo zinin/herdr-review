@@ -2,7 +2,7 @@
 
 All notable changes to herdr-review will be documented here.
 
-## [Unreleased]
+## [0.2.0] - 2026-09-24
 
 ### Added
 - `settings.scope`, `launch --scope` and the skill argument `scope=`: the change under review is the

@@ -1,6 +1,6 @@
 {
   "name": "herdr-review",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "displayName": "Herdr Review",
   "description": "Multi-agent code review orchestrated inside herdr: visible reviewers, an orchestrator agent, a fixer agent",
   "author": {
