@@ -12,7 +12,7 @@ from herdr_review.herdr import HerdrResult
 from herdr_review.runner import Runner, RunnerError, check_review_file
 from herdr_review.status import RunStatus
 from tests.unit.fakeherdr import FakeHerdr
-from tests.unit.test_dialogs import CLAUDE_IDLE, MCP_MANY, MCP_ONE
+from tests.unit.test_dialogs import CLAUDE_IDLE, MCP_MANY, MCP_MANY_NARROW, MCP_ONE
 
 RAW = {
     "profiles": {
@@ -263,6 +263,16 @@ class StartReviewersTest(RunnerBase):
                 self.assertEqual(herdr.calls_named("agent_prompt"), [])
                 status = json.loads((run_dir / "status.json").read_text())
                 self.assertIn("MCP server", status["agents"]["hrtest-claude-opus"]["last_screen"])
+
+    def test_an_mcp_dialog_a_narrow_pane_wraps_fails_the_reviewer_without_a_prompt(self):
+        run_dir = make_run(self.root, self.repo, layout="grid", reviewers=("claude-opus",))
+        self.herdr.screens["hrtest-claude-opus"] = MCP_MANY_NARROW             # agent start succeeds
+        self.herdr.pane_screens["w1:p2"] = MCP_MANY_NARROW
+        out = self.runner(run_dir).start_reviewers()
+        a = out["agents"]["hrtest-claude-opus"]
+        self.assertEqual((a["state"], a["reason"]), ("failed", MCP_REFUSAL))
+        self.assertEqual(self.herdr.calls_named("agent_send_keys"), [])
+        self.assertEqual(self.herdr.calls_named("agent_prompt"), [])
 
     def test_a_screen_herdr_cannot_read_after_the_start_gets_no_prompt(self):
         run_dir = make_run(self.root, self.repo, reviewers=("claude-opus",))

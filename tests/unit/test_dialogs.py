@@ -19,6 +19,45 @@ CODEX_TRUST_ON_TRUST = "Trust this folder? Codex can read, edit, and run files h
 CODEX_TRUST_ON_QUIT = "Trust this folder? Codex can read, edit, and run files here.\n  1. Trust and continue\n› 2. Quit\n"
 GROK_TRUST = "Do you trust the contents of this directory?\n  Yes, proceed   y\n  No, quit   n\n"
 CLAUDE_IDLE = "❯ \n  ⏵⏵ auto mode on (shift+tab to cycle)\n"
+# A narrow pane of the grid layout wraps a dialog's phrase over two lines, inside the dialog's box.
+MCP_ONE_NARROW = (
+    "╭──────────────────────────────╮\n"
+    "│ New MCP server found in this │\n"
+    "│ project: dummy               │\n"
+    "│   Use this MCP server        │\n"
+    "│ ❯ Continue without using     │\n"
+    "│   this MCP server            │\n"
+    "╰──────────────────────────────╯\n"
+)
+MCP_MANY_NARROW = (
+    "╭─────────────────────────╮\n"
+    "│ 2 new MCP servers found │\n"
+    "│ in this project         │\n"
+    "│ Select any you wish to  │\n"
+    "│ enable.                 │\n"
+    "│ ❯ [✔] one               │\n"
+    "│   [✔] two               │\n"
+    "│   Enable selected       │\n"
+    "╰─────────────────────────╯\n"
+)
+GROK_TRUST_NARROW = (
+    "╭───────────────────────────╮\n"
+    "│ Do you trust the contents │\n"
+    "│ of this directory?        │\n"
+    "│   Yes, proceed   y        │\n"
+    "│   No, quit   n            │\n"
+    "╰───────────────────────────╯\n"
+)
+CLAUDE_TRUST_NARROW_ON_YES = (                          # the wrap leaves the cursor line without its option's words
+    "╭──────────────╮\n"
+    "│ Quick safety │\n"
+    "│ check …      │\n"
+    "│ ❯ Yes, I     │\n"
+    "│   trust this │\n"
+    "│   folder     │\n"
+    "│   No, exit   │\n"
+    "╰──────────────╯\n"
+)
 
 
 class StartupDialogTest(unittest.TestCase):
@@ -170,6 +209,21 @@ class StartupDialogTest(unittest.TestCase):
         self.assertTrue(resolve_startup_dialog(h, "hr1-grok").resolved)
         self.assertEqual(h.calls_named("agent_send_keys"), [("agent_send_keys", "hr1-grok", ("y",))])
 
+    def test_a_dialog_a_narrow_pane_wraps_is_refused_or_answered_as_usual(self):
+        h = FakeHerdr()
+        h.screens["hr1-rv"] = MCP_ONE_NARROW
+        self.assertEqual(resolve_startup_dialog(h, "hr1-rv"), DialogOutcome(resolved=False, refusal=MCP_REFUSAL))
+        self.assertEqual(h.calls_named("agent_send_keys"), [])
+        h.screens["hr1-grok"] = GROK_TRUST_NARROW
+        self.assertTrue(resolve_startup_dialog(h, "hr1-grok").resolved)
+        self.assertEqual(h.calls_named("agent_send_keys"), [("agent_send_keys", "hr1-grok", ("y",))])
+
+    def test_a_cursor_line_the_wrap_left_without_its_option_gets_no_key(self):
+        h = FakeHerdr()
+        h.screens["hr1-orch"] = CLAUDE_TRUST_NARROW_ON_YES
+        self.assertEqual(resolve_startup_dialog(h, "hr1-orch"), DialogOutcome(resolved=False))   # blocked-start, as for any unknown layout
+        self.assertEqual(h.calls_named("agent_send_keys"), [])
+
 
 class MCPCheckTest(unittest.TestCase):
     def test_the_screen_after_a_start_is_read_once_more_and_never_passed_unread(self):
@@ -188,6 +242,11 @@ class MCPCheckTest(unittest.TestCase):
                 self.assertEqual(len(h.calls_named("agent_read")), len(reads))
                 self.assertEqual(h.calls_named("agent_send_keys"), [])
 
+    def test_an_mcp_dialog_a_narrow_pane_wraps_is_refused(self):
+        h = FakeHerdr()
+        h.screens["hr1-rv"] = MCP_MANY_NARROW
+        self.assertEqual(mcp_check(h, "hr1-rv"), DialogOutcome(resolved=False, refusal=MCP_REFUSAL))
+
 
 class RecognizeTest(unittest.TestCase):
     def test_known_dialogs(self):
@@ -197,6 +256,12 @@ class RecognizeTest(unittest.TestCase):
         self.assertEqual(recognize(CODEX_TRUST_ON_TRUST), ("codex-trust", ("enter",)))
         self.assertEqual(recognize(GROK_TRUST), ("grok-trust", ("y",)))
         self.assertEqual(recognize(CLAUDE_TRUST_ON_NO + MCP_ONE), ("claude-mcp", None))
+
+    def test_a_phrase_a_narrow_pane_wraps_inside_the_box(self):
+        self.assertEqual(recognize(MCP_ONE_NARROW), ("claude-mcp", None))
+        self.assertEqual(recognize(MCP_MANY_NARROW), ("claude-mcp", None))
+        self.assertEqual(recognize(GROK_TRUST_NARROW), ("grok-trust", ("y",)))
+        self.assertEqual(recognize(CLAUDE_TRUST_NARROW_ON_YES), ("claude-trust", None))   # the cursor is read from the raw lines
 
     def test_a_cursor_glyph_on_an_unrelated_line_above_the_options(self):
         self.assertEqual(recognize("› Ask Codex to do anything\n" + CODEX_TRUST_ON_QUIT), ("codex-trust", ("up", "enter")))

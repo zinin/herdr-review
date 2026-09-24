@@ -30,6 +30,9 @@ CODEX_TRUST = re.compile(r"trust and continue", re.IGNORECASE)
 CODEX_NO = re.compile(r"\bquit\b", re.IGNORECASE)
 # Grok: "Do you trust the contents of this directory?" — the key next to "Yes, proceed" is y.
 GROK_TRUST = re.compile(r"do you trust the contents of this directory", re.IGNORECASE)
+# A narrow pane of the grid layout wraps a dialog's phrase over two lines, inside the dialog's box.
+BOX_DRAWING = re.compile("[\u2500-\u257f]")
+WHITESPACE = re.compile(r"\s+")
 MAX_DIALOGS = 3          # Claude Code shows the trust dialog first and the MCP dialog after it
 WAIT_MS = 30000
 SCREEN_LINES = 60
@@ -62,16 +65,26 @@ def _cursor_keys(screen: str, cursor: str, yes: re.Pattern, no: re.Pattern, back
     return None
 
 
+def _flat(screen: str) -> str:
+    """<screen> as one line for the phrase searches: box-drawing characters dropped, and every run of
+    whitespace, line breaks included, one space."""
+    return WHITESPACE.sub(" ", BOX_DRAWING.sub("", screen))
+
+
 def recognize(screen: str) -> tuple[str, tuple[str, ...] | None] | None:
     """(dialog, keys) for a known startup dialog, None for any other screen. The keys are None for the
-    dialog the runner never answers and for a known dialog whose cursor layout it does not know."""
-    if MCP_DIALOG.search(screen):
+    dialog the runner never answers and for a known dialog whose cursor layout it does not know.
+
+    The phrases are searched in the flattened screen, so a phrase a narrow pane wraps is still found; the
+    cursor is read from the raw lines, and a cursor line the wrap left without its option's words gets no key."""
+    flat = _flat(screen)
+    if MCP_DIALOG.search(flat):
         return "claude-mcp", None
-    if CLAUDE_TRUST.search(screen):
+    if CLAUDE_TRUST.search(flat):
         return "claude-trust", _cursor_keys(screen, CLAUDE_CURSOR, CLAUDE_TRUST, CLAUDE_NO, "down")
-    if CODEX_TRUST.search(screen):
+    if CODEX_TRUST.search(flat):
         return "codex-trust", _cursor_keys(screen, CODEX_CURSOR, CODEX_TRUST, CODEX_NO, "up")
-    if GROK_TRUST.search(screen):
+    if GROK_TRUST.search(flat):
         return "grok-trust", ("y",)
     return None
 

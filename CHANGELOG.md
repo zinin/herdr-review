@@ -24,8 +24,8 @@ All notable changes to herdr-review will be documented here.
   repository's `.claude/settings.local.json`. Profiles of kind `claude` start with
   `--settings '{"enableAllProjectMcpServers": true, "attribution": {"commit": ""}}'` unless they pass
   their own `--settings`, so the dialog does not appear and the agents get every MCP server; an agent
-  that still stops at it leaves the run with the reason. The empty `attribution.commit` keeps Claude
-  Code's trailer out of fix commits.
+  that still stops at it leaves the run with the reason, also where a narrow pane of the grid layout
+  wraps the dialog's text. The empty `attribution.commit` keeps Claude Code's trailer out of fix commits.
 - The fixer never deletes, moves, renames or commits the owner's uncommitted files; a fix inside one
   is applied and left uncommitted. In a review of the commits, the orchestrator dismisses findings
   about the owner's uncommitted files outside the change.
