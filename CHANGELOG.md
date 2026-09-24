@@ -10,7 +10,8 @@ All notable changes to herdr-review will be documented here.
   owner's uncommitted edits and untracked files stay out of a review of the commits and are listed in
   `<run_dir>/uncommitted.txt`; the launch summary says so. In the working-tree scope the reviewers get
   the untracked files as a list, with binary and large ones marked to skip, and the fixer commits
-  nothing: every fix is applied and left for the owner to commit.
+  nothing: every fix it applies is left for the owner to commit, and a fix that would delete, move or
+  rename one of the owner's uncommitted files is still skipped.
 - `herdr-review close`: closes every tab and pane of a finished run; `--force` for one in progress.
   It runs only from the herdr session the run was launched in, and leaves open a tab whose ID now
   names another tab.
