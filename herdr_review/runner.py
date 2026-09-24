@@ -56,11 +56,11 @@ OBSERVE_ATTEMPTS = 3
 # meanwhile; past this many rounds, a tab that still appears is left open for another close --force.
 CLOSE_ROUNDS = 3
 # drift_status when the tree changed but no `git status --short` line is new or gone since launch. An untracked
-# directory shows as one `?? dir/` line, so a file that appears, changes or goes inside it adds no line.
+# directory shows as one `?? dir/` line, so a file that appears, changes or is deleted inside it adds no line.
 DRIFT_NOTHING_NEW_OR_GONE = (
-    "no line of `git status --short` is new or gone since launch: a file appeared, changed or went inside an untracked"
-    " directory that was already there at launch, the content of a file that was already uncommitted at launch"
-    " changed — an edit or a revert, by an agent or by the user — or a commit landed"
+    "no line of `git status --short` is new or gone since launch: a file appeared, changed or was deleted inside an"
+    " untracked directory that was already there at launch, the content of a file that was already uncommitted at"
+    " launch changed — an edit or a revert, by an agent or by the user — or a commit landed"
 )
 # How drift_status marks a line of the launch whose path no line shows now: uncommitted work reverted,
 # stashed or committed.

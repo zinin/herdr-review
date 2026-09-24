@@ -250,8 +250,9 @@ class PromptTemplatesTest(unittest.TestCase):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
         text = render_file(PROMPTS_DIR / "orchestrator.md", values)
         step = text[text.index("Then look at `drift`"):text.index("If `collect` reports zero")]
-        self.assertIn("says in one line that none is new or gone: a file appeared, changed or went inside an untracked"
-                      " directory that was already there at launch", step)     # `?? dir/` of the launch collapses it
+        self.assertIn("says in one line that none is new or gone: a file appeared, changed or was deleted inside an"
+                      " untracked directory that was already there at launch", step)   # `?? dir/` of the launch collapses it
+        self.assertNotIn("went inside", text)                                          # it read as "entered"
 
     def test_phase_3_verifies_a_file_with_uncommitted_edits_against_the_reviewed_commits(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}

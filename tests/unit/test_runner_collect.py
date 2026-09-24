@@ -195,8 +195,9 @@ class CollectTest(RunnerBase):
         out = r.collect()
         self.assertTrue(out["drift"])
         self.assertEqual(out["drift_status"], DRIFT_NOTHING_NEW_OR_GONE + "\n")
-        self.assertIn("a file appeared, changed or went inside an untracked directory that was already there at launch",
-                      out["drift_status"])
+        self.assertIn("a file appeared, changed or was deleted inside an untracked directory that was already there at"
+                      " launch", out["drift_status"])
+        self.assertNotIn("went inside", out["drift_status"])               # it read as "entered"
 
     def test_drift_status_names_uncommitted_work_gone_since_launch(self):
         (self.repo / "a.txt").write_text("the owner's edit\n")
