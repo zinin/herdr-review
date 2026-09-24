@@ -404,6 +404,24 @@ class FinishTest(RunnerBase):
         self.assertIn("recording the orchestrator's --commits", log)
         self.assertNotIn("does not match", log)
 
+    def test_a_merge_of_the_base_during_the_run_brings_none_of_the_bases_commits(self):
+        git(self.repo, "switch", "-q", "-c", "feat")
+        run_dir = self.reviewed_run(2, launched_now=True)       # two branch commits, then the launch
+        git(self.repo, "switch", "-q", "master")
+        for i in range(3):                                      # master moves on by three commits
+            (self.repo / f"m{i}.txt").write_text("master moves on\n")
+            git(self.repo, "add", f"m{i}.txt")
+            git(self.repo, "commit", "-q", "-m", f"master moves on {i}")
+        git(self.repo, "switch", "-q", "feat")
+        git(self.repo, "merge", "-q", "--no-ff", "--no-edit", "master")   # the owner merges the base during the run
+        merge = short(self.repo)
+        (self.repo / "a.txt").write_text("fixed during the run\n")
+        git(self.repo, "commit", "-q", "-am", "fix during the run")
+        fix = short(self.repo)
+        out = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([fix])
+        self.assertEqual(out["commits"], [fix, merge])          # the owner's merge is a commit of the run; master's three are not
+        self.assertIn("коммитов 2", self.herdr.calls_named("notification_show")[-1][2])
+
     def test_a_subject_with_a_cr_a_form_feed_and_a_line_separator_is_one_commit(self):
         run_dir = self.reviewed_run(0, launched_now=True)
         (self.repo / "a.txt").write_text("fixed during the run\n")

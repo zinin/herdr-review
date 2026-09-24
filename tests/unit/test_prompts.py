@@ -145,7 +145,7 @@ class PromptTemplatesTest(unittest.TestCase):
         for phrase in (
             "new MCP servers found in this project", "not even with Esc", "Trust and continue", "Grok — `y`",
             "/run/uncommitted.txt", "/run/scratch/<profile>/", "вне изменения: ваш незакоммиченный файл",
-            "применено, не закоммичено", "log --oneline v..HEAD", "rev-parse HEAD",
+            "применено, не закоммичено", "log --oneline --first-parent v..HEAD", "rev-parse HEAD",
             "/run/reviews/<profile>.md", "except your review file", "everything else its task file asks for",
             'cursor is on "Quit"', "--name-only", "the user went on editing their own files",
             "In scope `worktree` the fixer commits nothing", "применено, не закоммичено: ревью незакоммиченной работы — закоммитьте сами",
@@ -231,13 +231,13 @@ class PromptTemplatesTest(unittest.TestCase):
         report = text[text.index("## Phase 6"):text.index("## Red flags")]
         for phrase in (
             'git -C "/repo" merge-base --is-ancestor abc123 HEAD',
-            'git -C "/repo" log --oneline abc123..HEAD',
+            'git -C "/repo" log --oneline --first-parent abc123..HEAD',        # a merge of the base brings none of its commits
             "«ветку переписали во время прогона (rebase, amend, reset или смена ветки) — git не отделит коммиты"
             " прогона; ниже коммиты фиксера по его отчётам»",
             "the fix commits you noted from the fixer's reports — the same hashes you pass to `run finish --commits`",
         ):
             self.assertIn(phrase, report)
-        self.assertLess(report.index("merge-base --is-ancestor"), report.index("log --oneline abc123..HEAD"))
+        self.assertLess(report.index("merge-base --is-ancestor"), report.index("log --oneline --first-parent abc123..HEAD"))
 
 if __name__ == "__main__":
     unittest.main()

@@ -202,6 +202,22 @@ class GitUtilTest(unittest.TestCase):
         self.assertEqual(gitutil.commit_hashes(self.repo, "master..HEAD"), [self.short()])
         self.assertEqual(gitutil.commit_hashes(self.repo, "HEAD..HEAD"), [])
 
+    def test_commit_hashes_follow_the_first_parent_line_only(self):
+        git(self.repo, "switch", "-q", "-c", "feat")
+        (self.repo / "a.txt").write_text("two\n")
+        git(self.repo, "commit", "-q", "-am", "branch commit")
+        start = self.short()
+        git(self.repo, "switch", "-q", "master")
+        (self.repo / "b.txt").write_text("master\n")
+        git(self.repo, "add", "b.txt")
+        git(self.repo, "commit", "-q", "-m", "master commit")
+        git(self.repo, "switch", "-q", "feat")
+        git(self.repo, "merge", "-q", "--no-ff", "--no-edit", "master")
+        merge = self.short()
+        (self.repo / "a.txt").write_text("three\n")
+        git(self.repo, "commit", "-q", "-am", "after the merge")
+        self.assertEqual(gitutil.commit_hashes(self.repo, f"{start}..HEAD"), [self.short(), merge])   # not master's commit
+
     def test_is_ancestor_tells_whether_head_still_holds_a_commit(self):
         first = gitutil.head_commit(self.repo)
         (self.repo / "a.txt").write_text("two\n")

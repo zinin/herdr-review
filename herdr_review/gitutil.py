@@ -287,8 +287,9 @@ def is_ancestor(repo: Path | str, commit: str) -> bool:
 
 
 def commit_hashes(repo: Path | str, range_: str) -> list[str]:
-    """The abbreviated hashes of the commits in <range_>, newest first. git prints the hash alone, one per line: no
-    subject can split an entry, and no colour or signature line joins one even under color.ui=always and
+    """The abbreviated hashes of the commits in <range_> along the first parents, newest first: a merge of the base
+    is its merge commit, without the base's commits it brings. git prints the hash alone, one per line: no subject
+    can split an entry, and no colour or signature line joins one even under color.ui=always and
     log.showSignature=true."""
-    out = _out(repo, "log", "--format=%h", "--no-color", "--no-show-signature", range_)
+    out = _out(repo, "log", "--first-parent", "--format=%h", "--no-color", "--no-show-signature", range_)
     return [line for line in out.split("\n") if line]
