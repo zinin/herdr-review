@@ -70,7 +70,7 @@ If `collect` reports zero `collected` reviewers, go to Phase 6 and write a repor
 `"{RUNNER}" run phase aggregating --run "{RUN_DIR}"`. Read every file in `{RUN_DIR}/reviews/`. Then:
 
 1. **Deduplicate.** Two findings are one issue when they point at the same file and describe the same problem. Merge them into one entry that lists every reviewer that found it by profile name (`codex`, `claude-opus`, …). Two reviewers agreeing is corroboration; never collapse them into an anonymous entry.
-2. **Verify each issue against the code.** Open the file at the reported location. Is the issue real? Is the severity right (Critical / Important / Minor)? Could the reviewer have misread the codebase?
+2. **Verify each issue against the code.** Open the file at the reported location. In scope `commits`, verify a file listed in `{RUN_DIR}/uncommitted.txt` against `git -C "{REPO}" show HEAD:<path>`, not the working tree: the reviewers read its committed version, without the user's uncommitted edits. Is the issue real? Is the severity right (Critical / Important / Minor)? Could the reviewer have misread the codebase?
 3. **Classify** every issue into exactly one bucket:
    - **AUTO** — valid, and only one reasonable fix exists. Test: "would five competent engineers who know this codebase all make the same change?" Typical: missing error handling, wrong type, broken null check, dead code, typo, broken import, missing test for a new function, naming inconsistency.
    - **DISPUTED** — valid, but the fix involves trade-offs, several reasonable approaches, scope or architecture decisions. Test: "can I name two reasonable approaches, each with a real downside?"

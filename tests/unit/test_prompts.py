@@ -212,6 +212,14 @@ class PromptTemplatesTest(unittest.TestCase):
         self.assertIn("says in one line that none is new or gone: a file appeared, changed or went inside an untracked"
                       " directory that was already there at launch", step)     # `?? dir/` of the launch collapses it
 
+    def test_phase_3_verifies_a_file_with_uncommitted_edits_against_the_reviewed_commits(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        values.update(RUN_DIR="/run", REPO="/repo")
+        text = render_file(PROMPTS_DIR / "orchestrator.md", values)
+        aggregate = text[text.index("## Phase 3"):text.index("## Phase 4")]
+        self.assertIn('In scope `commits`, verify a file listed in `/run/uncommitted.txt` against'
+                      ' `git -C "/repo" show HEAD:<path>`, not the working tree', aggregate)
+
     def test_the_orchestrators_fixer_rules_follow_the_scope(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
         values.update(RUN_DIR="/run", REPO="/repo", FIXER_NAME="hr-fixer")
