@@ -80,6 +80,24 @@ class StartupDialogTest(unittest.TestCase):
         self.assertEqual(len(h.calls_named("agent_send_keys")), 1)
         self.assertEqual(len(h.calls_named("agent_wait")), 2)
 
+    def test_the_same_dialog_after_a_failed_or_blank_read_gets_no_second_key(self):
+        for gap in (None, ""):                              # a read that failed, a blank screen
+            with self.subTest(gap=gap):
+                h = FakeHerdr()
+                h.wait_ok = False                           # the dialog holds the agent: every wait times out
+                h.screens["hr1-grok"] = GROK_TRUST
+                h.reads["hr1-grok"] = [GROK_TRUST, gap]     # the first look, then the look after the wait
+                self.assertEqual(resolve_startup_dialog(h, "hr1-grok"), DialogOutcome(resolved=False))
+                self.assertEqual(h.calls_named("agent_send_keys"), [("agent_send_keys", "hr1-grok", ("y",))])
+
+    def test_an_mcp_dialog_after_the_extra_wait_is_refused(self):
+        h = FakeHerdr()
+        h.wait_results["hr1-rv"] = [False, True]            # the answer's wait times out; the extra one sees idle
+        h.screens["hr1-rv"] = CLAUDE_TRUST_ON_NO
+        h.screens_after_wait["hr1-rv"] = [CLAUDE_IDLE, MCP_MANY]   # the dialog herdr calls idle, up after the extra wait
+        self.assertEqual(resolve_startup_dialog(h, "hr1-rv"), DialogOutcome(resolved=False, refusal=MCP_REFUSAL))
+        self.assertEqual(h.calls_named("agent_send_keys"), [("agent_send_keys", "hr1-rv", ("down", "enter"))])
+
     def test_a_failed_wait_other_than_a_timeout_sends_no_second_key(self):
         h = FakeHerdr()
         h.wait_ok = False

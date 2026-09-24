@@ -23,6 +23,7 @@ class FakeHerdr:
         self.keep_screen_on_wait = False
         self.screens: dict[str, str] = {}
         self.screens_after_wait: dict[str, list[str]] = {}
+        self.reads: dict[str, list[str | None]] = {}        # per agent, one per agent_read (None: it fails); then screens
         self.pane_screens: dict[str, str] = {}
         self.server_running = True
 
@@ -89,6 +90,9 @@ class FakeHerdr:
 
     def agent_read(self, name, source="visible", lines=60):
         self.calls.append(("agent_read", name, source, lines))
+        queued = self.reads.get(name)
+        if queued:
+            return queued.pop(0)
         return self.screens.get(name, f"screen of {name}\n")
 
     def pane_read(self, pane, source="recent-unwrapped", lines=40):

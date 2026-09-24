@@ -88,34 +88,42 @@ def mcp_refusal(herdr, name: str) -> str | None:
     return MCP_REFUSAL if found is not None and found[0] == "claude-mcp" else None
 
 
+def _settle(herdr, name: str) -> tuple[tuple[str, tuple[str, ...] | None] | None, bool]:
+    """Wait for <name> to turn idle after an answer, then look at its screen: (the dialog on it, whether
+    the agent turned idle). A wait that failed other than by timing out leaves no settled screen to
+    look at: (None, False), and nothing more is sent."""
+    waited = herdr.agent_wait(name, until="idle", timeout_ms=WAIT_MS)
+    if not waited.ok and waited.error_code != "timeout":
+        return None, False
+    found = _screen_dialog(herdr, name)
+    if found is None and not waited.ok:
+        # The answered dialog is gone after a timed-out wait: the agent may only be slow to turn idle
+        # (project MCP servers starting), so give it one more wait, and look again after it: herdr
+        # calls the MCP dialog idle, so the wait alone proves nothing.
+        waited = herdr.agent_wait(name, until="idle", timeout_ms=WAIT_MS)
+        if not waited.ok and waited.error_code != "timeout":
+            return None, False
+        found = _screen_dialog(herdr, name)
+    return found, waited.ok
+
+
 def resolve_startup_dialog(herdr, name: str) -> DialogOutcome:
-    """Answer the trust dialogs of Claude Code, Codex and Grok; refuse Claude Code's MCP approval dialog."""
-    answered = False
-    for _ in range(MAX_DIALOGS):
-        found = recognize(herdr.agent_read(name, source="visible", lines=SCREEN_LINES) or "")
-        if found is None:
-            if answered:
-                # The answered dialog is gone after a timed-out wait: the agent may only be slow to turn
-                # idle (project MCP servers starting), so give it one more wait.
-                waited = herdr.agent_wait(name, until="idle", timeout_ms=WAIT_MS)
-                return DialogOutcome(resolved=waited.ok)
-            return DialogOutcome(resolved=False)
+    """Answer the trust dialogs of Claude Code, Codex and Grok; refuse Claude Code's MCP approval dialog.
+
+    Each dialog is answered at most once: seen again on any later look, it is stale text or stuck, and a
+    second key could pick "No, exit" or "Quit" or land in a live input. The agent is resolved only when
+    it turned idle and the look after that found no dialog."""
+    answered: set[str] = set()
+    idle = False
+    found = _screen_dialog(herdr, name)
+    while found is not None:
         dialog, keys = found
         if dialog == "claude-mcp":
             return DialogOutcome(resolved=False, refusal=MCP_REFUSAL)
-        if not keys or not herdr.agent_send_keys(name, *keys).ok:
+        if dialog in answered or len(answered) == MAX_DIALOGS or not keys:
             return DialogOutcome(resolved=False)
-        answered = True
-        waited = herdr.agent_wait(name, until="idle", timeout_ms=WAIT_MS)
-        if not waited.ok and waited.error_code != "timeout":
-            return DialogOutcome(resolved=False)       # no settled screen: a second key could answer the next dialog
-        after = recognize(herdr.agent_read(name, source="visible", lines=SCREEN_LINES) or "")
-        if after is None and waited.ok:
-            return DialogOutcome(resolved=True)
-        if after is not None and after[0] == dialog:
-            # The same dialog after any wait, idle or timed out: stale text or stuck — never a second key,
-            # which could pick "No, exit" or "Quit" or land in a live input.
+        if not herdr.agent_send_keys(name, *keys).ok:
             return DialogOutcome(resolved=False)
-        # Another dialog is answered or refused at the top of the loop; no dialog after a timed-out wait
-        # gets the extra idle wait there.
-    return DialogOutcome(resolved=False)
+        answered.add(dialog)
+        found, idle = _settle(herdr, name)
+    return DialogOutcome(resolved=idle)
