@@ -1,4 +1,9 @@
+import os
 import re
+import shutil
+import stat
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -57,11 +62,15 @@ class PromptTemplatesTest(unittest.TestCase):
         values = {k: "v" for k in EXPECTED["reviewer.md"]}
         values.update(REPO="/repo", SCRATCH_DIR="/run/scratch/codex")
         reviewer = render_file(PROMPTS_DIR / "reviewer.md", values)
-        self.assertIn("Copy the repository with `git clone /repo /run/scratch/codex/repo`.", reviewer)
-        # the flags keep the patch intact under diff.external, color.ui=always and a textconv driver
-        self.assertIn("When the change under review includes uncommitted work, bring it along with `git -C /repo diff"
-                      " --binary --no-color --no-ext-diff --no-textconv HEAD | git -C /run/scratch/codex/repo apply`, and"
-                      " copy the untracked files of the change over.", reviewer)
+        self.assertIn('Copy the repository with `git clone "/repo" "/run/scratch/codex/repo"`.', reviewer)
+        # the flags keep the patch intact under diff.external, color.ui=always, a textconv driver and diff.noprefix,
+        # and the copy exact under apply.whitespace; an empty patch, only untracked files uncommitted, applies too
+        self.assertIn('When the change under review includes uncommitted work, bring it along with `git -C "/repo" diff'
+                      ' --binary --no-color --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ HEAD'
+                      ' | git -C "/run/scratch/codex/repo" apply --allow-empty --whitespace=nowarn`, and copy the'
+                      ' untracked files of the change over.', reviewer)
+        for unquoted in ("git clone /repo", "git -C /repo ", "git -C /run/scratch/codex/repo "):   # a path with a space
+            self.assertNotIn(unquoted, reviewer)
         self.assertIn("Never use `git worktree add`: it registers the copy in the repository and can create a branch"
                       " there.", reviewer)
         # a linked worktree's `.git` is a file: git in a copy of it moves the owner's HEAD and commits on its branch
@@ -351,6 +360,94 @@ class PromptTemplatesTest(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIn(" --no-color", command)
                 self.assertIn(" --no-show-signature", command)
+
+
+# a global config under which a plain `git diff HEAD | git apply` fails
+HOSTILE_GIT_CONFIG = (
+    "[color]\n\tui = always\n"
+    "[diff]\n\texternal = echo external diff\n\tnoprefix = true\n"
+    "[apply]\n\twhitespace = error\n"
+)
+
+
+def tree_files(top: Path) -> dict[str, tuple[bool, bytes]]:
+    """Every file under <top> but `.git`, a directory in a clone and a file in a linked worktree: whether it is
+    executable, and its bytes."""
+    return {
+        path.relative_to(top).as_posix(): (bool(path.stat().st_mode & stat.S_IXUSR), path.read_bytes())
+        for path in top.rglob("*")
+        if path.relative_to(top).parts[0] != ".git" and path.is_file()
+    }
+
+
+class ReviewerCopyCommandsTest(unittest.TestCase):
+    """The reviewer's copy commands as the rendered prompt gives them, run in bash: the source is a linked worktree,
+    both paths hold a space, and the global config breaks a plain `git diff HEAD | git apply`."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        (self.root / "gitconfig").write_text(HOSTILE_GIT_CONFIG)
+        # neither the owner's git config nor a GIT_* variable of the caller reaches git
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        self.env.update(HOME=str(self.root), GIT_CONFIG_GLOBAL=str(self.root / "gitconfig"), GIT_CONFIG_NOSYSTEM="1")
+        main = self.root / "main repo"
+        main.mkdir()
+        self.git(main, "init", "-q", "-b", "master")
+        self.git(main, "config", "user.email", "t@example.com")
+        self.git(main, "config", "user.name", "T")
+        (main / "notes.txt").write_text("one\n")
+        (main / "image.bin").write_bytes(bytes(range(256)))
+        (main / "old.txt").write_text("old\n")
+        self.git(main, "add", "notes.txt", "image.bin", "old.txt")
+        self.git(main, "commit", "-q", "-m", "init")
+        self.source = self.root / "my worktree"                  # a linked worktree, on a branch with its own commit
+        self.git(main, "worktree", "add", "-q", "-b", "feat", str(self.source))
+        (self.source / "feat.txt").write_text("feat\n")
+        self.git(self.source, "add", "feat.txt")
+        self.git(self.source, "commit", "-q", "-m", "feat")
+        (self.source / "untracked.txt").write_text("not in git\n")
+
+    def git(self, repo: Path, *args: str) -> None:
+        subprocess.run(["git", "-C", str(repo), *args], env=self.env, check=True, capture_output=True)
+
+    def bash(self, command: str) -> None:
+        # pipefail: with --allow-empty, `git apply` alone would pass a failed `git diff` off as an empty patch
+        done = subprocess.run(["bash", "-o", "pipefail", "-c", command], cwd=self.root, env=self.env,
+                              capture_output=True, text=True, errors="replace")
+        self.assertEqual(done.returncode, 0, f"{command}\n{done.stdout}{done.stderr}")
+
+    def copy_the_source(self) -> Path:
+        """Copy the source with the commands of the rendered prompt, then copy its untracked file over."""
+        scratch = self.root / "scratch dir"
+        scratch.mkdir()
+        values = {k: "v" for k in EXPECTED["reviewer.md"]}
+        values.update(REPO=str(self.source), SCRATCH_DIR=str(scratch))
+        reviewer = render_file(PROMPTS_DIR / "reviewer.md", values)
+        clone = re.search(r"Copy the repository with `([^`]+)`", reviewer)
+        patch = re.search(r"bring it along with `([^`]+)`", reviewer)
+        self.assertIsNotNone(clone)
+        self.assertIsNotNone(patch)
+        self.bash(clone.group(1))
+        self.bash(patch.group(1))
+        shutil.copy2(self.source / "untracked.txt", scratch / "repo" / "untracked.txt")
+        return scratch / "repo"
+
+    def test_a_reviewers_copy_of_a_linked_worktree_equals_it(self):
+        (self.source / "notes.txt").write_text("one\ntrailing spaces   \n")       # unstaged; apply.whitespace=error
+        (self.source / "image.bin").write_bytes(bytes(reversed(range(256))))
+        self.git(self.source, "add", "image.bin")                                   # staged, binary
+        (self.source / "old.txt").unlink()
+        copy = self.copy_the_source()
+        source = tree_files(self.source)
+        self.assertEqual(sorted(source), ["feat.txt", "image.bin", "notes.txt", "untracked.txt"])
+        self.assertEqual(tree_files(copy), source)
+
+    def test_the_patch_step_passes_when_only_untracked_files_are_uncommitted(self):
+        copy = self.copy_the_source()                                              # `git diff HEAD` prints nothing
+        self.assertEqual(tree_files(copy), tree_files(self.source))
+
 
 if __name__ == "__main__":
     unittest.main()
