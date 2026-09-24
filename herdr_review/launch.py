@@ -14,9 +14,10 @@ from typing import Callable, Mapping
 
 from . import PROMPTS_DIR, __version__, gitutil
 from .config import Config, is_secretish
-from .dialogs import try_resolve_startup_dialog
+from .dialogs import MCP_UNCHECKED, mcp_check, resolve_startup_dialog, startup_args
 from .herdr import Herdr, HerdrResult
 from .render import render_file
+from .scope import ScopeError, fixer_skeleton, orchestrator_scope, resolve_scope, reviewer_steps, untracked_line
 from .status import RunStatus
 
 RUN_ID_ALPHABET = string.ascii_lowercase + string.digits
@@ -39,6 +40,7 @@ class LaunchOptions:
     layout: str | None = None
     description: str | None = None
     plan: str | None = None
+    scope: str | None = None
     focus: bool = False
 
 
@@ -86,7 +88,8 @@ def resolve_selection(cfg: Config, opts: LaunchOptions) -> tuple[list[str], str,
 
 def _reviewers_table(reviewers: list[dict], run_dir: Path) -> str:
     return "\n".join(
-        f"  - `{rv['name']}` — profile `{rv['profile']}` ({rv['kind']}); prompt `{run_dir}/prompts/{rv['profile']}.md`; result `{run_dir}/reviews/{rv['profile']}.md`"
+        f"  - `{rv['name']}` — profile `{rv['profile']}` ({rv['kind']}); prompt `{run_dir}/prompts/{rv['profile']}.md`; "
+        f"result `{run_dir}/reviews/{rv['profile']}.md`; scratch `{run_dir}/scratch/{rv['profile']}/`"
         for rv in reviewers
     )
 
@@ -110,7 +113,7 @@ def _unfinished_runs(project_dir: Path) -> list[str]:
 
 def _profile_spec(cfg: Config, profile: str, name: str) -> dict:
     p = cfg.profiles[profile]
-    return {"name": name, "profile": profile, "kind": p.kind, "args": list(p.args), "env_keys": sorted(p.env)}
+    return {"name": name, "profile": profile, "kind": p.kind, "args": startup_args(p.kind, p.args), "env_keys": sorted(p.env)}
 
 
 def launch(
@@ -157,12 +160,12 @@ def launch(
     try:
         base = opts.base or gitutil.detect_base(repo)
         mb = gitutil.merge_base(repo, base)
-    except gitutil.GitError as e:
+        head = gitutil.head_commit(repo)
+        uncommitted = gitutil.status_lines(repo)
+        scope = resolve_scope(opts.scope or cfg.settings.scope, gitutil.committed_changes(repo, mb), bool(uncommitted), base, mb)
+        untracked = gitutil.untracked_files(repo) if scope == "worktree" else []
+    except (gitutil.GitError, ScopeError) as e:
         raise LaunchError(str(e)) from e
-    if not gitutil.has_changes(repo, mb):
-        raise LaunchError(f"nothing to review: the working tree equals {base} ({mb[:12]})")
-    if gitutil.status_short(repo).strip():
-        warnings.append("working tree has uncommitted changes; yolo reviewers share this tree and can modify them")
     layout = opts.layout or cfg.settings.layout
     autodecide = cfg.settings.autodecide if opts.autodecide is None else opts.autodecide
     project = project_slug(repo)
@@ -176,77 +179,96 @@ def launch(
     run_id = run_id or new_run_id()
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now()))
     run_dir = project_dir / f"{stamp}-{run_id}"
+    listing = run_dir / "uncommitted.txt"
+    untracked_listing = run_dir / "untracked.txt"
     try:
         run_dir.mkdir(parents=True, mode=0o700)
         run_dir.chmod(0o700)
         (run_dir / "prompts").mkdir()
         (run_dir / "reviews").mkdir()
-    except OSError as e:
-        raise LaunchError(f"cannot create the run directory {run_dir}: {e}") from e
-    reviewers_spec = [_profile_spec(cfg, p, f"{run_id}-{p}") for p in usable]
-    orch = _profile_spec(cfg, orch_profile, f"{run_id}-orch")
-    fixer = _profile_spec(cfg, fixer_profile, f"{run_id}-fixer")
-    description = (opts.description or "").strip() or "(not provided)"
-    plan_ref = (opts.plan or "").strip() or "(not provided)"
-    branch = gitutil.current_branch(repo)
-    run_json = {
-        "version": __version__,
-        "run_id": run_id,
-        "run_dir": str(run_dir),
-        "repo": str(repo),
-        "project": project,
-        "branch": branch,
-        "base": base,
-        "merge_base": mb,
-        "description": description,
-        "plan": plan_ref,
-        "autodecide": autodecide,
-        "layout": layout,
-        "checkin_sec": cfg.settings.checkin_sec,
-        "close_agents_on_finish": cfg.settings.close_agents_on_finish,
-        "workspace_id": workspace_id,
-        "reviewers": reviewers_spec,
-        "orchestrator": orch,
-        "fixer": fixer,
-        "runner": str(runner_path),
-        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now())),
-    }
-    (run_dir / "run.json").write_text(json.dumps(run_json, indent=2, ensure_ascii=False), encoding="utf-8")
+        for pname in usable:
+            (run_dir / "scratch" / pname).mkdir(parents=True)
+        listing.write_text("".join(f"{line}\n" for line in uncommitted), encoding="utf-8")
+        if scope == "worktree":
+            untracked_listing.write_text("".join(f"{untracked_line(f)}\n" for f in untracked), encoding="utf-8")
+        reviewers_spec = [_profile_spec(cfg, p, f"{run_id}-{p}") for p in usable]
+        orch = _profile_spec(cfg, orch_profile, f"{run_id}-orch")
+        fixer = _profile_spec(cfg, fixer_profile, f"{run_id}-fixer")
+        description = (opts.description or "").strip() or "(not provided)"
+        plan_ref = (opts.plan or "").strip() or "(not provided)"
+        branch = gitutil.current_branch(repo)
+        run_json = {
+            "version": __version__,
+            "run_id": run_id,
+            "run_dir": str(run_dir),
+            "repo": str(repo),
+            "project": project,
+            "branch": branch,
+            "base": base,
+            "merge_base": mb,
+            "head": head,
+            "scope": scope,
+            "uncommitted": uncommitted,
+            "description": description,
+            "plan": plan_ref,
+            "autodecide": autodecide,
+            "layout": layout,
+            "checkin_sec": cfg.settings.checkin_sec,
+            "close_agents_on_finish": cfg.settings.close_agents_on_finish,
+            # herdr IDs such as `w1:t2` are per server: `close` must run in this session to mean these tabs.
+            "herdr_session": environ.get("HERDR_SESSION") or None,
+            "herdr_socket_path": environ.get("HERDR_SOCKET_PATH") or None,
+            "workspace_id": workspace_id,
+            "reviewers": reviewers_spec,
+            "orchestrator": orch,
+            "fixer": fixer,
+            "runner": str(runner_path),
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now())),
+        }
+        (run_dir / "run.json").write_text(json.dumps(run_json, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    # ----- prompts
-    for rv in reviewers_spec:
-        text = render_file(PROMPTS_DIR / "reviewer.md", {
-            "DESCRIPTION": description,
-            "PLAN_REFERENCE": plan_ref,
+        # ----- prompts
+        steps = reviewer_steps(scope, mb, uncommitted, untracked, listing, untracked_listing)
+        for rv in reviewers_spec:
+            text = render_file(PROMPTS_DIR / "reviewer.md", {
+                "DESCRIPTION": description,
+                "PLAN_REFERENCE": plan_ref,
+                "REPO": str(repo),
+                "BASE_REF": base,
+                "MERGE_BASE": mb,
+                "RESULT_PATH": str(run_dir / "reviews" / f"{rv['profile']}.md"),
+                "REVIEWER": rv["profile"],
+                "SCOPE_STEPS": steps,
+                "SCRATCH_DIR": str(run_dir / "scratch" / rv["profile"]),
+            })
+            (run_dir / "prompts" / f"{rv['profile']}.md").write_text(text, encoding="utf-8")
+        orch_text = render_file(PROMPTS_DIR / "orchestrator.md", {
+            "RUN_DIR": str(run_dir),
+            "RUNNER": str(runner_path),
+            "RUN_ID": run_id,
             "REPO": str(repo),
+            "BRANCH": branch,
             "BASE_REF": base,
             "MERGE_BASE": mb,
-            "RESULT_PATH": str(run_dir / "reviews" / f"{rv['profile']}.md"),
-            "REVIEWER": rv["profile"],
+            "START_HEAD": head,
+            "SCOPE": orchestrator_scope(scope, mb),
+            "UNCOMMITTED_COUNT": len(uncommitted),
+            "REVIEWERS": _reviewers_table(reviewers_spec, run_dir),
+            "ORCH_NAME": orch["name"],
+            "FIXER_NAME": fixer["name"],
+            "FIXER_PROFILE": fixer_profile,
+            "AUTODECIDE": "true" if autodecide else "false",
+            "LAYOUT": layout,
+            "CHECKIN_SEC": cfg.settings.checkin_sec,
+            "DESCRIPTION": description,
+            "PLAN_REFERENCE": plan_ref,
+            "FIXER_AUTO_SKELETON": fixer_skeleton("auto", scope, run_dir),
+            "FIXER_DECISION_SKELETON": fixer_skeleton("decision", scope, run_dir),
         })
-        (run_dir / "prompts" / f"{rv['profile']}.md").write_text(text, encoding="utf-8")
-    orch_text = render_file(PROMPTS_DIR / "orchestrator.md", {
-        "RUN_DIR": str(run_dir),
-        "RUNNER": str(runner_path),
-        "RUN_ID": run_id,
-        "REPO": str(repo),
-        "BRANCH": branch,
-        "BASE_REF": base,
-        "MERGE_BASE": mb,
-        "REVIEWERS": _reviewers_table(reviewers_spec, run_dir),
-        "ORCH_NAME": orch["name"],
-        "FIXER_NAME": fixer["name"],
-        "FIXER_PROFILE": fixer_profile,
-        "AUTODECIDE": "true" if autodecide else "false",
-        "LAYOUT": layout,
-        "CHECKIN_SEC": cfg.settings.checkin_sec,
-        "DESCRIPTION": description,
-        "PLAN_REFERENCE": plan_ref,
-        "FIXER_AUTO_SKELETON": render_file(PROMPTS_DIR / "fixer-auto.md", {"RUN_DIR": str(run_dir)}),
-        "FIXER_DECISION_SKELETON": render_file(PROMPTS_DIR / "fixer-decision.md", {"RUN_DIR": str(run_dir)}),
-    })
-    (run_dir / "orchestrator.md").write_text(orch_text, encoding="utf-8")
-    status = RunStatus.create(run_dir, run_id=run_id, repo=str(repo), branch=branch, base=base, merge_base=mb, autodecide=autodecide, layout=layout)
+        (run_dir / "orchestrator.md").write_text(orch_text, encoding="utf-8")
+        status = RunStatus.create(run_dir, run_id=run_id, repo=str(repo), branch=branch, base=base, merge_base=mb, autodecide=autodecide, layout=layout)
+    except OSError as e:
+        raise LaunchError(f"cannot write the run directory {run_dir}: {e}") from e
 
     # ----- herdr: log into runner.log from here on, mask profile secrets
     log_path = run_dir / "runner.log"
@@ -285,9 +307,25 @@ def launch(
         status.save()
 
         r = herdr.agent_start(orch["name"], orch["kind"], pane_id, orch["args"])
-        if not r.ok and r.error_code == "agent_not_ready" and try_resolve_startup_dialog(herdr, orch["name"]):
-            log("orchestrator startup dialog resolved automatically")
-            r = HerdrResult(True, 0)
+        refusal = None
+        if r.ok:
+            # herdr 0.9.0 takes Claude Code's MCP dialog with several servers for an idle agent:
+            # look before the prompt is typed into it. A screen herdr could not read stops the launch too.
+            outcome = mcp_check(herdr, orch["name"])
+            if not outcome.resolved:
+                refusal = outcome.refusal or MCP_UNCHECKED
+        elif r.error_code == "agent_not_ready":
+            outcome = resolve_startup_dialog(herdr, orch["name"])
+            if outcome.resolved:
+                log("orchestrator startup dialog resolved automatically")
+                r = HerdrResult(True, 0)
+            refusal = outcome.refusal
+        if refusal:
+            raise LaunchError(
+                f"orchestrator '{orch_profile}' failed to start: {refusal}\n"
+                f"Tab {tab_id} is left open for inspection.\n"
+                f"Run directory: {run_dir}"
+            )
         if not r.ok:
             screen = herdr.pane_read(pane_id) or ""
             raise LaunchError(
@@ -332,6 +370,9 @@ def launch(
         "skipped": [p for p in reviewers if p not in usable],
         "base": base,
         "merge_base": mb,
+        "scope": scope,
+        "uncommitted": uncommitted,
+        "untracked": {"files": len(untracked), "skipped": sum(1 for f in untracked if f.skip)} if scope == "worktree" else None,
         "autodecide": autodecide,
         "layout": layout,
         "warnings": warnings,

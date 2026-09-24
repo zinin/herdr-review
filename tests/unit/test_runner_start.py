@@ -7,10 +7,12 @@ from unittest import mock
 
 from herdr_review import PROMPTS_DIR
 from herdr_review.config import parse_config
+from herdr_review.dialogs import MCP_REFUSAL, MCP_UNCHECKED
 from herdr_review.herdr import HerdrResult
 from herdr_review.runner import Runner, RunnerError, check_review_file
 from herdr_review.status import RunStatus
 from tests.unit.fakeherdr import FakeHerdr
+from tests.unit.test_dialogs import CLAUDE_IDLE, MCP_MANY, MCP_MANY_NARROW, MCP_ONE
 
 RAW = {
     "profiles": {
@@ -70,6 +72,7 @@ class RunnerBase(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.repo = make_repo(self.root)
         self.herdr = FakeHerdr()
+        self.herdr.tab_labels["w1:t1"] = "rv-hrtest: orch"      # the orchestrator's tab, as launch opened it for make_run
         self.cfg = parse_config(RAW, {})
         patcher = mock.patch("herdr_review.runner.load_config", return_value=self.cfg)
         patcher.start()
@@ -104,6 +107,18 @@ class StartReviewersTest(RunnerBase):
         self.assertEqual((a["role"], a["profile"], a["tab"], a["pane"], a["prompted"], a["retries"]), ("reviewer", "codex", "w1:t3", "w1:p3", True, 0))
         self.assertEqual(a["result_file"], str(run_dir / "reviews" / "codex.md"))
         self.assertNotIn("s3cret", (run_dir / "runner.log").read_text())
+
+    def test_an_untracked_file_nobody_can_read_does_not_stop_the_start(self):
+        locked = self.repo / "secret.txt"                   # like a root-owned 0600 file from a Docker bind mount
+        locked.write_text("s3cret\n")
+        locked.chmod(0)
+        try:
+            run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+            out = self.runner(run_dir).start_reviewers()
+            self.assertEqual(out["agents"]["hrtest-codex"]["state"], "working")
+            self.assertEqual(len(json.loads((run_dir / "status.json").read_text())["tree_hash_before"]), 64)
+        finally:
+            locked.chmod(0o644)
 
     def test_grid_layout_splits_orchestrator_pane(self):
         run_dir = make_run(self.root, self.repo, layout="grid")
@@ -219,6 +234,72 @@ class StartReviewersTest(RunnerBase):
             out = r.start_reviewers()
         self.assertEqual(out["agents"]["hrtest-codex"]["state"], "working")
 
+    def test_mcp_dialog_fails_the_reviewer_with_the_reason(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("claude-opus",))
+        self.herdr.start_errors["hrtest-claude-opus"] = ("agent_not_ready", "blocked during startup")
+        self.herdr.screens["hrtest-claude-opus"] = "2 new MCP servers found in this project\n❯ [✔] one\n  [✔] two\n"
+        self.herdr.pane_screens["w1:p2"] = "2 new MCP servers found in this project\n"
+        out = self.runner(run_dir).start_reviewers()
+        a = out["agents"]["hrtest-claude-opus"]
+        self.assertEqual(a["state"], "failed")
+        self.assertIn("enableAllProjectMcpServers", a["reason"])
+        self.assertEqual(self.herdr.calls_named("agent_send_keys"), [])
+        self.assertEqual(self.herdr.calls_named("agent_prompt"), [])
+        status = json.loads((run_dir / "status.json").read_text())
+        self.assertIn("MCP servers found", status["agents"]["hrtest-claude-opus"]["last_screen"])
+        self.assertIn(("tab_rename", "w1:t2", "rv-hrtest: claude-opus ✗"), self.herdr.calls)
+
+    def test_an_mcp_dialog_herdr_calls_idle_fails_the_reviewer_without_a_key(self):
+        for i, screen in enumerate((MCP_ONE, MCP_MANY)):
+            with self.subTest(screen=screen.splitlines()[0]):
+                herdr = FakeHerdr()                                  # agent start succeeds
+                herdr.screens["hrtest-claude-opus"] = screen
+                herdr.pane_screens["w1:p2"] = screen
+                run_dir = make_run(self.root / str(i), self.repo, reviewers=("claude-opus",))
+                out = Runner(run_dir, herdr=herdr, poll_sec=0, sleep=lambda s: None).start_reviewers()
+                a = out["agents"]["hrtest-claude-opus"]
+                self.assertEqual((a["state"], a["reason"]), ("failed", MCP_REFUSAL))
+                self.assertEqual(herdr.calls_named("agent_send_keys"), [])
+                self.assertEqual(herdr.calls_named("agent_prompt"), [])
+                status = json.loads((run_dir / "status.json").read_text())
+                self.assertIn("MCP server", status["agents"]["hrtest-claude-opus"]["last_screen"])
+
+    def test_an_mcp_dialog_a_narrow_pane_wraps_fails_the_reviewer_without_a_prompt(self):
+        run_dir = make_run(self.root, self.repo, layout="grid", reviewers=("claude-opus",))
+        self.herdr.screens["hrtest-claude-opus"] = MCP_MANY_NARROW             # agent start succeeds
+        self.herdr.pane_screens["w1:p2"] = MCP_MANY_NARROW
+        out = self.runner(run_dir).start_reviewers()
+        a = out["agents"]["hrtest-claude-opus"]
+        self.assertEqual((a["state"], a["reason"]), ("failed", MCP_REFUSAL))
+        self.assertEqual(self.herdr.calls_named("agent_send_keys"), [])
+        self.assertEqual(self.herdr.calls_named("agent_prompt"), [])
+
+    def test_a_screen_herdr_cannot_read_after_the_start_gets_no_prompt(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("claude-opus",))
+        self.herdr.reads["hrtest-claude-opus"] = [None, None]                  # agent start succeeds, both looks fail
+        out = self.runner(run_dir).start_reviewers()
+        a = out["agents"]["hrtest-claude-opus"]
+        self.assertEqual((a["state"], a["reason"]), ("blocked-start", MCP_UNCHECKED))
+        self.assertEqual(self.herdr.calls_named("agent_prompt"), [])
+        self.assertEqual(self.herdr.calls_named("agent_send_keys"), [])
+        self.assertIn(("tab_rename", "w1:t2", "rv-hrtest: claude-opus ❓"), self.herdr.calls)
+
+    def test_one_failed_read_after_the_start_is_read_again(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("claude-opus",))
+        self.herdr.reads["hrtest-claude-opus"] = [None, CLAUDE_IDLE]
+        out = self.runner(run_dir).start_reviewers()
+        self.assertEqual(len(self.herdr.calls_named("agent_read")), 2)
+        self.assertEqual(out["agents"]["hrtest-claude-opus"]["state"], "working")
+        self.assertEqual([c[1] for c in self.herdr.calls_named("agent_prompt")], ["hrtest-claude-opus"])
+
+    def test_codex_trust_dialog_resolved_then_prompted(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        self.herdr.start_errors["hrtest-codex"] = ("agent_not_ready", "blocked during startup")
+        self.herdr.screens["hrtest-codex"] = "Trust this folder?\n› 1. Trust and continue\n  2. Quit\n"
+        out = self.runner(run_dir).start_reviewers()
+        self.assertEqual(out["agents"]["hrtest-codex"]["state"], "working")
+        self.assertIn(("agent_send_keys", "hrtest-codex", ("enter",)), self.herdr.calls)
+
 
 class PromptFailFixerTest(RunnerBase):
     def setUp(self):
@@ -285,6 +366,28 @@ class PromptFailFixerTest(RunnerBase):
         self.assertEqual(self.r.status.agent("hrtest-fixer")["state"], "working")
         with self.assertRaises(RunnerError):
             self.r.start_fixer()                   # already started
+
+    def test_an_mcp_dialog_herdr_calls_idle_fails_the_fixer_without_a_key(self):
+        self.herdr.screens["hrtest-fixer"] = MCP_MANY                    # agent start succeeds
+        self.herdr.pane_screens["w1:p3"] = MCP_MANY
+        out = self.r.start_fixer()
+        self.assertEqual((out["state"], out["reason"]), ("failed", MCP_REFUSAL))
+        self.assertEqual(self.herdr.calls_named("agent_send_keys"), [])
+        self.assertEqual([c for c in self.herdr.calls_named("agent_prompt") if c[1] == "hrtest-fixer"], [])
+        self.assertIn("MCP servers found", self.r.status.agent("hrtest-fixer")["last_screen"])
+
+    def test_a_screen_herdr_cannot_read_after_the_start_leaves_the_fixer_blocked(self):
+        self.herdr.reads["hrtest-fixer"] = [None, None]                        # agent start succeeds, both looks fail
+        out = self.r.start_fixer()
+        self.assertEqual((out["state"], out["reason"]), ("blocked-start", MCP_UNCHECKED))
+        self.assertEqual([c for c in self.herdr.calls_named("agent_prompt") if c[1] == "hrtest-fixer"], [])
+        self.assertEqual(self.herdr.calls_named("agent_send_keys"), [])
+
+    def test_one_failed_read_after_the_fixer_starts_is_read_again(self):
+        self.herdr.reads["hrtest-fixer"] = [None, CLAUDE_IDLE]
+        out = self.r.start_fixer()
+        self.assertEqual(len([c for c in self.herdr.calls_named("agent_read") if c[1] == "hrtest-fixer"]), 2)
+        self.assertEqual(out["state"], "idle")                                 # ready for its first task, as usual
 
     def test_fixer_tab_is_marked_only_after_it_finishes_a_task(self):
         self.r.start_fixer()

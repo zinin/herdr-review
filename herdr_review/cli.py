@@ -10,11 +10,12 @@ from pathlib import Path
 from typing import Mapping
 
 from . import PACKAGE_ROOT, __version__, gitutil
-from .config import ConfigError, load_config, public_json
+from .config import SCOPES, ConfigError, load_config, public_json
 from .herdr import Herdr
 from .launch import LaunchError, LaunchOptions, basename_slug, launch, project_slug
 from .render import RenderError
 from .runner import Runner, RunnerError
+from .scope import uncommitted_counts
 from .status import RunStatus, StatusError
 
 RUNNER_PATH = PACKAGE_ROOT / "bin" / "herdr-review"
@@ -39,13 +40,21 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--no-autodecide", dest="autodecide", action="store_false")
     p.add_argument("--layout", choices=("tabs", "grid"))
     p.add_argument("--description", help="what was implemented (goes into the review prompt)")
-    p.add_argument("--plan", help="path to the plan / requirements document")
+    p.add_argument("--plan", help="the plan / requirements: a file path or free text (goes into the review prompt)")
+    p.add_argument("--scope", choices=SCOPES,
+                   help="the change under review: auto (the branch's commits, else the working tree), commits, worktree")
     p.add_argument("--focus", action="store_true", help="switch to the orchestrator tab")
     p.add_argument("--json", action="store_true")
 
     p = sub.add_parser("status", help="show a run's status")
     p.add_argument("run_pos", nargs="?", metavar="DIR", help="run directory or 'latest'")
     p.add_argument("--run", help="run directory or 'latest' (default: $HERDR_REVIEW_RUN, else latest)")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("close", help="close every tab and pane of a finished run")
+    p.add_argument("run_pos", nargs="?", metavar="DIR", help="run directory or 'latest'")
+    p.add_argument("--run", help="run directory or 'latest' (default: $HERDR_REVIEW_RUN, else latest)")
+    p.add_argument("--force", action="store_true", help="close a run that is still in progress")
     p.add_argument("--json", action="store_true")
 
     r = sub.add_parser("run", help="runner subcommands used by the orchestrator agent")
@@ -156,12 +165,31 @@ def cmd_profiles(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     return 0
 
 
+def scope_lines(result: dict) -> list[str]:
+    """The launch summary's lines about what the reviewers review."""
+    if result["scope"] == "commits":
+        lines = [f"  объём:        коммиты ветки ({result['base']}..HEAD)"]
+        if result["uncommitted"]:
+            changed, untracked = uncommitted_counts(result["uncommitted"])
+            lines.append(f"  вне ревью:    ваши незакоммиченные файлы (изменённых: {changed}, неотслеживаемых: {untracked}); их никто не удалит и не закоммитит")
+        return lines
+    line = "  объём:        рабочее дерево — коммиты и незакоммиченное"
+    untracked = result.get("untracked") or {}
+    if untracked.get("files"):
+        line += f"; неотслеживаемых файлов у ревьюеров: {untracked['files']}"
+        if untracked.get("skipped"):
+            line += f", из них пропущено: {untracked['skipped']}"
+    # The fixer commits nothing in this scope: the change under review is uncommitted work.
+    return [line, "  фиксы:        останутся незакоммиченными — закоммитите их сами"]
+
+
 def cmd_launch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     cfg = load_config(environ=environ)
     reviewers = [x.strip() for x in args.reviewers.split(",") if x.strip()] if args.reviewers else None
     opts = LaunchOptions(
         preset=args.preset, reviewers=reviewers, orchestrator=args.orchestrator, fixer=args.fixer, base=args.base,
         autodecide=args.autodecide, layout=args.layout, description=args.description, plan=args.plan, focus=args.focus,
+        scope=args.scope,
     )
     result = launch(opts, cfg, Herdr(), environ, Path.cwd(), RUNNER_PATH)
     if args.json:
@@ -174,6 +202,8 @@ def cmd_launch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     if result["skipped"]:
         print(f"  пропущены:    {', '.join(result['skipped'])}")
     print(f"  база:         {result['base']} ({result['merge_base'][:12]})")
+    for line in scope_lines(result):
+        print(line)
     print(f"  autodecide:   {'on' if result['autodecide'] else 'off'}; layout: {result['layout']}")
     print(f"  смотреть:     {result['hints']['focus']}")
     print(f"  статус:       {result['hints']['status']}")
@@ -206,7 +236,7 @@ def cmd_status(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     if data.get("waiting_for_user"):
         print("ожидает ответа пользователя в панели оркестратора")
     if data.get("drift"):
-        print("drift: ревьюер изменил рабочее дерево")
+        print("drift: рабочее дерево изменилось во время ревью")
     print(f"{'agent':<28} {'role':<9} {'state':<15} {'since':>6}  file  reason")
     for n, a in data["agents"].items():
         reason = (a.get("reason") or "")[:60]
@@ -215,6 +245,22 @@ def cmd_status(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     if data.get("commits"):
         print("commits: " + ", ".join(data["commits"]))
     return 0
+
+
+def cmd_close(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
+    run_dir = resolve_status_run_dir(status_run_spec(args), environ, Path.cwd())
+    result = Runner(run_dir).close(force=args.force, environ=environ)
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(f"закрыто: {', '.join(result['closed']) or 'ничего'}")
+        if result["already_closed"]:
+            print(f"уже закрыты: {', '.join(result['already_closed'])}")
+        if result["left_open"]:
+            print(f"оставлены открытыми (ID теперь у чужой вкладки): {', '.join(result['left_open'])}")
+        for ident, why in result["failed"].items():
+            print(f"не удалось закрыть {ident}: {why}", file=sys.stderr)
+    return 1 if result["failed"] else 0
 
 
 def autodecide_now(runner: Runner) -> bool:
@@ -274,6 +320,8 @@ def dispatch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
         return cmd_launch(args, environ)
     if args.cmd == "status":
         return cmd_status(args, environ)
+    if args.cmd == "close":
+        return cmd_close(args, environ)
     if args.cmd == "run":
         return cmd_run(args, environ)
     return 2

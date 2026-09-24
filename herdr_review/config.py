@@ -13,9 +13,10 @@ import yaml
 PROFILE_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,24}$")
 RESERVED_PROFILE_NAMES = {"orch", "fixer"}
 LAYOUTS = ("tabs", "grid")
+SCOPES = ("auto", "commits", "worktree")
 DEFAULT_RUNS_DIR = "~/.local/state/herdr-review/runs"
 ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-SETTINGS_KEYS = ("layout", "autodecide", "close_agents_on_finish", "checkin_sec", "runs_dir")
+SETTINGS_KEYS = ("layout", "autodecide", "close_agents_on_finish", "checkin_sec", "runs_dir", "scope")
 SECRETISH_KEY_RE = re.compile(r"(TOKEN|KEY|SECRET|PASSWORD|PASSWD|AUTH|CREDENTIAL)", re.IGNORECASE)
 MIN_MASKED_VALUE_LEN = 16
 
@@ -54,6 +55,7 @@ class Settings:
     close_agents_on_finish: bool = False
     checkin_sec: int = 300
     runs_dir: Path = field(default_factory=lambda: Path(DEFAULT_RUNS_DIR).expanduser())
+    scope: str = "auto"
 
 
 @dataclass
@@ -199,6 +201,11 @@ def _parse_settings(raw: object, errors: list[str]) -> Settings:
             s.layout = raw["layout"]
         else:
             errors.append(f"settings.layout: must be one of {', '.join(LAYOUTS)}")
+    if "scope" in raw:
+        if raw["scope"] in SCOPES:
+            s.scope = raw["scope"]
+        else:
+            errors.append(f"settings.scope: must be one of {', '.join(SCOPES)}")
     for key in ("autodecide", "close_agents_on_finish"):
         if key in raw:
             if isinstance(raw[key], bool):
@@ -288,6 +295,7 @@ def public_json(cfg: Config) -> dict:
             "close_agents_on_finish": cfg.settings.close_agents_on_finish,
             "checkin_sec": cfg.settings.checkin_sec,
             "runs_dir": str(cfg.settings.runs_dir),
+            "scope": cfg.settings.scope,
         },
         "warnings": cfg.warnings,
     }

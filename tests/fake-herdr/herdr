@@ -3,8 +3,10 @@
 
 Environment:
   FAKE_HERDR_LOG       every invocation's argv is appended here, one line each
-  FAKE_HERDR_SCENARIO  JSON file: server_down, agent_start, agent_prompt, agent_get, screens (see Task 14)
-  FAKE_HERDR_STATE     JSON file with counters (tabs, panes, per-agent `agent get` call counts)
+  FAKE_HERDR_SCENARIO  JSON file: server_down, agent_start, agent_prompt, agent_get, screens, close,
+                       labels (a tab's label as `tab get` shows it, over the one it was given)
+  FAKE_HERDR_STATE     JSON file with counters (tabs, panes, per-agent `agent get` call counts) and the
+                       label of every open tab
 """
 import fnmatch
 import json
@@ -45,6 +47,7 @@ def main():
     scenario = load(os.environ.get("FAKE_HERDR_SCENARIO", ""), {})
     state_path = os.environ.get("FAKE_HERDR_STATE") or ((log + ".state") if log else "/tmp/fake-herdr.state")
     state = load(state_path, {"tabs": 1, "panes": 1, "get_calls": {}, "waited_idle": []})   # w1:t1 / w1:p1 exist (the caller's pane)
+    labels = state.setdefault("labels", {})
 
     def save():
         with open(state_path, "w", encoding="utf-8") as f:
@@ -70,8 +73,22 @@ def main():
     if head == ["tab", "create"]:
         state["tabs"] += 1
         state["panes"] += 1
+        labels[f"w1:t{state['tabs']}"] = option(argv, "--label", "")
         save()
         return ok({"type": "tab_created", "tab": {"tab_id": f"w1:t{state['tabs']}", "label": option(argv, "--label", "")}, "root_pane": {"pane_id": f"w1:p{state['panes']}"}})
+    if head == ["tab", "get"]:
+        tab = argv[2]
+        if tab not in labels:
+            return err("tab_not_found", f"tab {tab} not found")
+        label = lookup(scenario.get("labels"), tab)
+        return ok({"type": "tab_info", "tab": {"tab_id": tab, "label": labels[tab] if label is None else label, "workspace_id": "w1"}})
+    if head == ["tab", "rename"]:
+        tab = argv[2]
+        if tab not in labels:
+            return err("tab_not_found", f"tab {tab} not found")
+        labels[tab] = argv[3]
+        save()
+        return ok({"type": "ok"})
     if head == ["pane", "split"]:
         state["panes"] += 1
         save()
@@ -117,7 +134,14 @@ def main():
         text = lookup(scenario.get("screens"), target)
         sys.stdout.write(text if text is not None else f"screen of {target}\n")
         return 0
-    if head in (["agent", "send-keys"], ["tab", "rename"], ["pane", "rename"], ["tab", "close"], ["pane", "close"], ["tab", "focus"]):
+    if head in (["tab", "close"], ["pane", "close"]):
+        e = lookup(scenario.get("close"), argv[2])
+        if e:
+            return err(e["code"], e.get("message", e["code"]))
+        if labels.pop(argv[2], None) is not None:
+            save()
+        return ok({"type": "ok"})
+    if head in (["agent", "send-keys"], ["pane", "rename"], ["tab", "focus"]):
         return ok({"type": "ok"})
     if head == ["notification", "show"]:
         return ok({"type": "notification_show", "shown": True, "reason": "shown"})

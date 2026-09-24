@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import shutil
+import stat
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
 from . import PROMPTS_DIR, gitutil
 from .config import ConfigError, is_secretish, load_config
-from .dialogs import try_resolve_startup_dialog
+from .dialogs import MCP_UNCHECKED, SCREEN_LINES, mcp_check, resolve_startup_dialog
 from .herdr import Herdr, HerdrResult
 from .layout import fixer_split, plan_grid
 from .render import render_file
@@ -43,13 +46,25 @@ LABEL_SUFFIX = {
 }
 FIXER_DONE_STATES = {"idle", "done"}
 PROMPT_TIMEOUT_MS = 30000
-SCREEN_LINES = 60
 LAST_SCREEN_LINES = 40
 LIVE_STATUSES = ("idle", "working", "blocked", "done", "unknown")
 # Codes the herdr client raises when it could not reach herdr at all. They say nothing about
 # the agent, so they must never take one out of the run.
 HERDR_ERROR_CODES = ("herdr_not_found", "herdr_failed", "timeout")
 OBSERVE_ATTEMPTS = 3
+# close --force reads status.json again after every round of closes, for the tabs a live orchestrator opened
+# meanwhile; past this many rounds, a tab that still appears is left open for another close --force.
+CLOSE_ROUNDS = 3
+# drift_status when the tree changed but no `git status --short` line is new or gone since launch. An untracked
+# directory shows as one `?? dir/` line, so a file that appears, changes or is deleted inside it adds no line.
+DRIFT_NOTHING_NEW_OR_GONE = (
+    "no line of `git status --short` is new or gone since launch: a file appeared, changed or was deleted inside an"
+    " untracked directory that was already there at launch, the content of a file that was already uncommitted at"
+    " launch changed — an edit or a revert, by an agent or by the user — or a commit landed"
+)
+# How drift_status marks a line of the launch whose path no line shows now: uncommitted work reverted,
+# stashed or committed.
+DRIFT_GONE = "gone since launch: "
 
 
 class RunnerError(Exception):
@@ -59,6 +74,11 @@ class RunnerError(Exception):
 def retry_text(path: str, why: str, prompt: str | None = None) -> str:
     hint = f" Read {prompt} and follow it exactly." if prompt else ""
     return f"You have not written a valid review to {path} ({why}).{hint} Write your complete review there now, in the required format, and reply DONE."
+
+
+def not_found(r: HerdrResult) -> bool:
+    """herdr answered that the tab, pane or agent does not exist; `herdr_not_found` is the binary missing."""
+    return bool(r.error_code) and r.error_code.endswith("not_found") and r.error_code not in HERDR_ERROR_CODES
 
 
 def response_id(result: object, *keys: str) -> str | None:
@@ -95,6 +115,15 @@ def section_body(text: str, heading: str) -> list[str]:
         if inside:
             body.append(line)
     return body
+
+
+def still_listed(path: str, paths: set[str]) -> bool:
+    """Whether <path>, of a `git status --short` line of the launch, is among the <paths> of the lines now.
+    An untracked `dir/` is while a path under it is: a file of it staged since shows by its own path. Any
+    path is while an untracked `dir/` above it is: unstaged since, it shows only as that directory."""
+    if any(p.endswith("/") and path.startswith(p) for p in paths):
+        return True
+    return any(p.startswith(path) for p in paths) if path.endswith("/") else path in paths
 
 
 def same_commits(passed: list[str], computed: list[str]) -> bool:
@@ -143,6 +172,13 @@ class Runner:
     def log(self, line: str) -> None:
         with open(self.log_path, "a", encoding="utf-8") as f:
             f.write(f"{now_iso()} {line}\n")
+
+    def _reload(self) -> None:
+        """Read status.json again: another process of the run may have written it since."""
+        try:
+            self.status = RunStatus.load(self.run_dir)
+        except StatusError as e:
+            raise RunnerError(str(e)) from e
 
     def _load_config(self):
         if self._config is None and self._config_error is None:
@@ -332,16 +368,24 @@ class Runner:
     def _start_agent(self, name: str, spec: dict, pane: str) -> None:
         r = self.herdr.agent_start(name, spec["kind"], pane, spec["args"])
         if r.ok:
-            self._set_state(name, "idle")
-            return
-        if r.error_code == "agent_not_ready":
-            if try_resolve_startup_dialog(self.herdr, name):
+            # herdr 0.9.0 takes Claude Code's MCP dialog with several servers for an idle agent: look
+            # before a prompt is typed into it. An agent whose screen herdr could not read is blocked-start,
+            # for the orchestrator to look at.
+            outcome, blocked = mcp_check(self.herdr, name), MCP_UNCHECKED
+        elif r.error_code == "agent_not_ready":
+            outcome, blocked = resolve_startup_dialog(self.herdr, name), r.message
+            if outcome.resolved:
                 self.log(f"{name}: startup dialog resolved automatically")
-                self._set_state(name, "idle")
-            else:
-                self._set_state(name, "blocked-start", reason=r.message)
+        else:
+            self._set_state(name, "failed", reason=f"{r.error_code}: {r.message}", last_screen=self._pane_screen(pane))
             return
-        self._set_state(name, "failed", reason=f"{r.error_code}: {r.message}", last_screen=self._pane_screen(pane))
+        if outcome.resolved:
+            self._set_state(name, "idle")
+        elif outcome.refusal:
+            self.log(f"{name}: startup dialog refused: {outcome.refusal}")
+            self._set_state(name, "failed", reason=outcome.refusal, last_screen=self._pane_screen(pane))
+        else:
+            self._set_state(name, "blocked-start", reason=blocked)
 
     def _apply_prompt_result(self, name: str, r: HerdrResult) -> None:
         a = self.status.agent(name)
@@ -598,6 +642,23 @@ class Runner:
         return {"autodecide": True, "was": was, "switched_at": data.get("autodecide_switched_at")}
 
     # ----- collect
+    def _drift_status(self) -> str:
+        """The `git status --short` lines that were not there at launch, then, marked, the lines of the launch
+        whose path no line shows now: what was uncommitted then is the owner's own work, listed in
+        uncommitted.txt, and a path of it that no longer shows is that work reverted, stashed or committed. A
+        run from before `uncommitted` was recorded gets the whole status."""
+        before = self.run.get("uncommitted")
+        if not isinstance(before, list):
+            return gitutil.status_short(self.repo)
+        now = gitutil.status_lines(self.repo)
+        known = set(before)
+        paths = {p for line in now for p in gitutil.status_paths(line)}
+        lines = [line for line in now if line not in known]
+        # A path whose status code alone changed, staged since launch say, lost nothing: it shows by its new
+        # line only. A rename of the launch goes by its new path.
+        lines += [DRIFT_GONE + line for line in before if not still_listed(gitutil.status_paths(line)[-1], paths)]
+        return "".join(f"{line}\n" for line in lines) if lines else DRIFT_NOTHING_NEW_OR_GONE + "\n"
+
     def _check_drift(self) -> bool:
         data = self.status.data
         if data.get("phase") != "reviewing" or not data.get("tree_hash_before"):
@@ -606,7 +667,7 @@ class Runner:
             current = gitutil.tree_hash(self.repo)
             if current != data["tree_hash_before"]:
                 self.status.set("drift", True)
-                self.status.set("drift_status", gitutil.status_short(self.repo))
+                self.status.set("drift_status", self._drift_status())
         except gitutil.GitError as e:
             raise RunnerError(str(e)) from e
         return bool(data.get("drift"))
@@ -665,18 +726,58 @@ class Runner:
 
     # ----- finish
     def _log_commits(self) -> list[str] | None:
-        """The hashes git reports for merge_base..HEAD. None when git could not be asked."""
+        """The hashes of the commits made since the run was launched, while HEAD is on the branch of the launch and
+        that branch still holds the HEAD of the launch. None, with the reason in runner.log, when git cannot tell
+        them, and `finish` records the orchestrator's --commits: git could not be asked, for the branch or for the
+        commits; HEAD is on another branch than the `branch` of run.json, switched to during the run, and
+        `<head>..HEAD` would hold every commit that branch has of its own, even when its tip descends from the HEAD
+        of the launch; or the branch was rewritten during the run (a rebase, an amend, a reset), and `<head>..HEAD`
+        would hold the rewritten commits of the branch and the base's. The branch is compared first. A launch on a
+        detached HEAD recorded `HEAD`, as `git rev-parse --abbrev-ref HEAD` names it: while HEAD stays detached,
+        the ancestor check alone decides."""
+        since = self.run.get("head") or self.run["merge_base"]      # a run made before `head` existed
+        branch = self.run["branch"]
         try:
-            out = gitutil.log_oneline(self.repo, f"{self.run['merge_base']}..HEAD")
+            now = gitutil.current_branch(self.repo)
+            if now != branch:
+                self.log(f"finish: the branch was switched during the run (launched on {branch}, now on {now}); recording the orchestrator's --commits")
+                return None
+            if not gitutil.is_ancestor(self.repo, since):
+                self.log(f"finish: the branch was rewritten or switched during the run ({since} is no longer an ancestor of HEAD); recording the orchestrator's --commits")
+                return None
+            return gitutil.commit_hashes(self.repo, f"{since}..HEAD")
         except gitutil.GitError as e:
             self.log(f"finish: cannot read the commit list from git: {e}")
             return None
-        return [line.split(None, 1)[0] for line in out.splitlines() if line.strip()]
+
+    def _remove_scratch(self) -> None:
+        """The reviewers' experiments may hold a whole copy of the repository: they end with the run."""
+        scratch = self.run_dir / "scratch"
+        if not scratch.exists():
+            return
+        try:
+            if scratch.is_symlink():                      # os.walk would follow it into a target that is not ours
+                scratch.unlink()
+                self.log("finish: scratch/ was a symlink; removed the link, not its target")
+                return
+            for root, dirs, _ in os.walk(scratch):
+                for d in dirs:
+                    path = os.path.join(root, d)
+                    if not os.path.islink(path):          # never chmod through a link out of scratch/
+                        try:
+                            os.chmod(path, stat.S_IRWXU)
+                        except OSError as e:
+                            self.log(f"finish: cannot make {path} writable: {e}")
+            shutil.rmtree(scratch)
+            self.log("finish: removed scratch/")
+        except OSError as e:
+            self.log(f"finish: cannot remove {scratch}: {e}")
 
     def finish(self, commits: list[str]) -> dict:
         data = self.status.data
         passed = [c.strip() for c in commits if c and c.strip()]
-        # `--commits` is the orchestrator's recollection; git knows what actually landed.
+        # `--commits` is the orchestrator's recollection; git knows what actually landed, until the branch is
+        # switched or rewritten.
         computed = self._log_commits()
         recorded = passed if computed is None else computed
         if computed is not None and passed and not same_commits(passed, computed):
@@ -689,20 +790,148 @@ class Runner:
         self.herdr.notification_show("herdr-review: готово", body=f"{self.run_id}: отзывов {reviews}, коммитов {len(data['commits'])}", sound="done")
         closed: list[str] = []
         if self.run.get("close_agents_on_finish"):
-            for a in data["agents"].values():
-                if self.layout == "tabs" and a.get("tab"):
-                    ident = a["tab"]
-                    r = self.herdr.tab_close(ident)
-                    if r.ok:
-                        closed.append(ident)
-                    else:
-                        self.log(f"finish: close {ident} failed: {r.error_code}: {r.message}")
-                elif a.get("pane"):
-                    ident = a["pane"]
-                    r = self.herdr.pane_close(ident)
-                    if r.ok:
-                        closed.append(ident)
-                    else:
-                        self.log(f"finish: close {ident} failed: {r.error_code}: {r.message}")
+            closed, _, _, _ = self._close_all(self._agent_targets(), "finish")
+        self._remove_scratch()
         self.status.save()
         return {"phase": "finished", "commits": data["commits"], "closed": closed}
+
+    # ----- close
+    def _agent_targets(self) -> list[tuple[str, bool]]:
+        """(id, is_tab) for every agent's own tab (layout tabs) or pane (layout grid)."""
+        targets: list[tuple[str, bool]] = []
+        for a in self.status.data["agents"].values():
+            if self.layout == "tabs" and a.get("tab"):
+                targets.append((a["tab"], True))
+            elif a.get("pane"):
+                targets.append((a["pane"], False))
+        return targets
+
+    def _check_tab(self, tab: str, who: str) -> str:
+        """What herdr says of <tab>: "ours" while it still shows the tab under this run's label; "gone" when it
+        no longer has it; "foreign" when the ID now names someone else's tab (a restarted server reissues IDs),
+        which stays open; otherwise why herdr could not tell."""
+        r = self.herdr.tab_get(tab)
+        if not r.ok:
+            return "gone" if not_found(r) else f"{r.error_code}: {r.message}"
+        info = (r.result or {}).get("tab")
+        if not isinstance(info, dict):
+            return f"unexpected `tab get` response: {(r.text or '')[:300]}"
+        label = info.get("label")
+        if isinstance(label, str) and label.startswith(f"rv-{self.run_id}:"):
+            return "ours"
+        self.log(f"{who}: {tab} is now labelled {label!r}, not a tab of this run; left open")
+        return "foreign"
+
+    def _close_all(self, targets: list[tuple[str, bool]], who: str) -> tuple[list[str], list[str], list[str], dict[str, str]]:
+        """Close each target: (closed, already closed, left open, failed with the reason). A tab is closed only
+        while it is still this run's: one whose ID now names someone else's tab is left open, and that is no
+        failure. A pane of the grid layout lives inside the orchestrator's tab."""
+        closed: list[str] = []
+        gone: list[str] = []
+        left_open: list[str] = []
+        failed: dict[str, str] = {}
+        for ident, is_tab in targets:
+            if is_tab:
+                verdict = self._check_tab(ident, who)
+                if verdict == "gone":
+                    gone.append(ident)
+                    continue
+                if verdict == "foreign":
+                    left_open.append(ident)
+                    continue
+                if verdict != "ours":
+                    failed[ident] = verdict
+                    self.log(f"{who}: cannot check {ident}: {verdict}")
+                    continue
+            r = self.herdr.tab_close(ident) if is_tab else self.herdr.pane_close(ident)
+            if r.ok:
+                closed.append(ident)
+            elif not_found(r):
+                gone.append(ident)
+            else:
+                failed[ident] = f"{r.error_code}: {r.message}"
+                self.log(f"{who}: close {ident} failed: {r.error_code}: {r.message}")
+        return closed, gone, left_open, failed
+
+    def _check_session(self, environ: Mapping[str, str]) -> None:
+        """Refuse a caller outside the herdr session the run was launched in: tab IDs such as `w1:t2` are
+        per server, so from there they name that session's tabs. A caller that names no session could be
+        talking to any of them. A run launched before the session was recorded is not checked."""
+        socket, session = self.run.get("herdr_socket_path"), self.run.get("herdr_session")
+        if socket:
+            same = environ.get("HERDR_SOCKET_PATH") == socket
+        elif session:
+            same = environ.get("HERDR_SESSION") == session
+        else:
+            return
+        if not same:
+            raise RunnerError(f"run {self.run_id} was started in herdr session '{session or socket}'; run close from a pane of that session")
+
+    def close(self, force: bool = False, environ: Mapping[str, str] | None = None) -> dict:
+        """Close every tab and pane the run opened. A run in progress is refused unless forced.
+        <environ> is the caller's environment: its herdr session must be the run's."""
+        environ = {} if environ is None else environ
+        self._check_session(environ)
+        phase = self.status.data.get("phase")
+        if phase not in ("finished", "aborted") and not force:
+            raise RunnerError(f"run {self.run_id} is still in phase {phase}; closing its tabs stops its agents — pass --force")
+        closed: list[str] = []
+        gone: list[str] = []
+        left_open: list[str] = []
+        failed: dict[str, str] = {}
+
+        def close_these(targets: list[tuple[str, bool]]) -> None:
+            c, g, o, f = self._close_all(targets, "close")
+            closed.extend(c)
+            gone.extend(g)
+            left_open.extend(o)
+            failed.update(f)
+
+        # Typed in one of the run's own tabs (the orchestrator's has HERDR_REVIEW_RUN set), close ends in
+        # that tab's closing: herdr kills the caller with it. So that tab goes last, once the rest is saved.
+        own_tab = environ.get("HERDR_TAB_ID")
+        own: list[tuple[str, bool]] = []
+        # The orchestrator's tab first: while the others close, half a second each, a live orchestrator
+        # could still finish the run or start the fixer, whose tab no list taken before would hold.
+        orch = (self.status.data.get("orchestrator") or {}).get("tab")
+        first = [(orch, True)] if orch else []
+        own += [t for t in first if t[0] == own_tab]
+        first = [t for t in first if t[0] != own_tab]
+        close_these(first)
+        handled = {ident for ident, _ in first + own}
+        rounds = 0
+        while True:
+            # What it did meanwhile is on disk: a fixer it started is among the agents there, and so is a phase
+            # it set. It can start the fixer while any tab closes, so every round of closes ends in a read.
+            self._reload()
+            # In the grid layout every agent is a pane of the orchestrator's tab: closing that tab closes them all.
+            agents = self._agent_targets() if self.layout == "tabs" else []
+            new = [t for t in agents if t[0] not in handled]
+            if not new:
+                break
+            handled.update(ident for ident, _ in new)
+            own += [t for t in new if t[0] == own_tab]
+            others = [t for t in new if t[0] != own_tab]
+            if rounds == CLOSE_ROUNDS:
+                failed.update((ident, "opened while close ran; not closed") for ident, _ in others)
+                break
+            rounds += 1
+            close_these(others)
+        # The last read decides: a `run finish` that landed while a tab closed stays finished.
+        phase = self.status.data.get("phase")
+        if force and phase not in ("finished", "aborted"):
+            if failed:
+                # An agent whose tab did not close may still be working: the run keeps its phase and its
+                # scratch/, so a later launch still warns about it and another close --force can finish the job.
+                self.log(f"close --force: {len(failed)} of {len(closed) + len(gone) + len(left_open) + len(failed)} did not close; the run stays in phase {phase}")
+            else:
+                # Its agents are gone: the run ends here, and no later launch may count it as unfinished.
+                # The caller's own tab does not count: the user is at a shell there, not an agent.
+                self.status.set("abort_reason", "closed with --force")
+                self.status.set("waiting_for_user", False)
+                self.status.set_phase("aborted")
+                self._remove_scratch()
+        self.status.set("closed_at", now_iso())
+        self.status.save()
+        close_these(own)
+        return {"closed": closed, "already_closed": gone, "left_open": left_open, "failed": failed}

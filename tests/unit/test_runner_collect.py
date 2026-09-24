@@ -1,13 +1,20 @@
 import json
+import stat
+import subprocess
 import unittest
 from pathlib import Path
 
 from herdr_review import gitutil
-from herdr_review.runner import Runner, retry_text
+from herdr_review.runner import DRIFT_NOTHING_NEW_OR_GONE, Runner, retry_text
 from tests.unit.fakeherdr import FakeHerdr
 from tests.unit.test_runner_start import RunnerBase, git, make_run
 
 GOOD_REVIEW = "### Strengths\nx\n### Critical Issues\nNone.\n### Important Issues\nNone.\n### Minor Issues\nNone.\n### Assessment\n**Ready to merge:** Yes\n"
+
+
+def short(repo: Path, rev: str = "HEAD") -> str:
+    """<rev>'s abbreviated hash, as git abbreviates it."""
+    return subprocess.run(["git", "-C", str(repo), "rev-parse", "--short", rev], capture_output=True, text=True, check=True).stdout.strip()
 
 
 class CollectTest(RunnerBase):
@@ -153,6 +160,116 @@ class CollectTest(RunnerBase):
         (self.repo / "a.txt").write_text("changed by the fixer\n")
         self.assertFalse(r2.collect()["drift"])
 
+    def reviewing_since_now(self, name: str) -> Runner:
+        """A run whose run.json records the tree's `git status --short` lines as uncommitted, as launch does."""
+        run_dir = make_run(self.root / name, self.repo, reviewers=("codex",))
+        run = json.loads((run_dir / "run.json").read_text())
+        run["uncommitted"] = gitutil.status_lines(self.repo)
+        (run_dir / "run.json").write_text(json.dumps(run))
+        r = Runner(run_dir, herdr=FakeHerdr(), poll_sec=0, sleep=lambda s: None)
+        r.start_reviewers()
+        return r
+
+    def test_drift_status_lists_only_what_is_new_since_launch(self):
+        (self.repo / "mine.txt").write_text("the owner's, untracked at launch\n")
+        r = self.reviewing_since_now("own")
+        (self.repo / "new.txt").write_text("written during the review\n")
+        out = r.collect()
+        self.assertTrue(out["drift"])
+        self.assertEqual(out["drift_status"], "?? new.txt\n")
+
+    def test_drift_status_says_so_when_nothing_is_new_or_gone_since_launch(self):
+        (self.repo / "a.txt").write_text("the owner's edit\n")
+        r = self.reviewing_since_now("again")
+        (self.repo / "a.txt").write_text("the owner's edit, edited again\n")
+        out = r.collect()
+        self.assertTrue(out["drift"])
+        self.assertEqual(out["drift_status"], DRIFT_NOTHING_NEW_OR_GONE + "\n")
+        self.assertIn("an edit or a revert", out["drift_status"])        # a revert is not ruled out
+
+    def test_drift_status_names_a_file_inside_an_untracked_directory_of_the_launch(self):
+        (self.repo / "notes").mkdir()
+        (self.repo / "notes" / "one.md").write_text("the owner's notes\n")
+        r = self.reviewing_since_now("untracked-dir")                    # `?? notes/`
+        (self.repo / "notes" / "new.md").write_text("written during the review\n")   # still only `?? notes/`
+        out = r.collect()
+        self.assertTrue(out["drift"])
+        self.assertEqual(out["drift_status"], DRIFT_NOTHING_NEW_OR_GONE + "\n")
+        self.assertIn("a file appeared, changed or was deleted inside an untracked directory that was already there at"
+                      " launch", out["drift_status"])
+        self.assertNotIn("went inside", out["drift_status"])               # it read as "entered"
+
+    def test_drift_status_names_uncommitted_work_gone_since_launch(self):
+        (self.repo / "a.txt").write_text("the owner's edit\n")
+        r = self.reviewing_since_now("gone")
+        git(self.repo, "checkout", "--", "a.txt")                        # the owner's edit wiped during the review
+        out = r.collect()
+        self.assertTrue(out["drift"])
+        self.assertEqual(out["drift_status"], "gone since launch:  M a.txt\n")
+
+    def test_an_edit_staged_since_launch_is_not_gone(self):
+        (self.repo / "a.txt").write_text("the owner's edit\n")
+        r = self.reviewing_since_now("staged")                           # ` M a.txt`
+        git(self.repo, "add", "a.txt")                                   # the same edit, only staged
+        out = r.collect()
+        self.assertTrue(out["drift"])
+        self.assertEqual(out["drift_status"], "M  a.txt\n")
+
+    def test_an_untracked_file_added_since_launch_is_not_gone(self):
+        (self.repo / "n.txt").write_text("the owner's new file\n")
+        r = self.reviewing_since_now("added")                            # `?? n.txt`
+        git(self.repo, "add", "n.txt")
+        out = r.collect()
+        self.assertTrue(out["drift"])
+        self.assertEqual(out["drift_status"], "A  n.txt\n")
+
+    def test_an_untracked_directory_stays_while_a_path_under_it_is_listed(self):
+        (self.repo / "dir").mkdir()
+        (self.repo / "dir" / "f.txt").write_text("f\n")
+        (self.repo / "dir" / "g.txt").write_text("g\n")
+        r = self.reviewing_since_now("dir")                              # `?? dir/`
+        git(self.repo, "add", "dir/f.txt")                               # `A  dir/f.txt` and `?? dir/g.txt` now
+        out = r.collect()
+        self.assertEqual(out["drift_status"], "A  dir/f.txt\n?? dir/g.txt\n")
+
+    def test_both_paths_of_a_rename_count_and_quoted_paths_match(self):
+        (self.repo / "a.txt").write_text("the owner's edit\n")
+        (self.repo / "my dir").mkdir()
+        (self.repo / "my dir" / "f g.txt").write_text("f\n")
+        r = self.reviewing_since_now("quoted")                           # ` M a.txt`, `?? "my dir/"`
+        git(self.repo, "mv", "a.txt", "b c.txt")                         # a.txt is the rename's old path now
+        git(self.repo, "add", "my dir/f g.txt")                          # git quotes a path with a space
+        out = r.collect()
+        self.assertEqual(out["drift_status"], 'RM a.txt -> "b c.txt"\nA  "my dir/f g.txt"\n')
+
+    def test_a_rename_of_the_launch_counts_by_its_new_path(self):
+        git(self.repo, "mv", "a.txt", "b.txt")
+        r = self.reviewing_since_now("renamed")                          # `R  a.txt -> b.txt`
+        git(self.repo, "checkout", "HEAD", "--", "a.txt")                # a.txt is back, b.txt still holds the work
+        out = r.collect()
+        self.assertEqual(out["drift_status"], "A  b.txt\n")
+
+    def test_a_file_that_shows_only_as_its_untracked_directory_now_is_not_gone(self):
+        (self.repo / "newdir").mkdir()
+        (self.repo / "newdir" / "x.py").write_text("the owner's new module\n")
+        git(self.repo, "add", "newdir/x.py")
+        r = self.reviewing_since_now("unstaged")                         # `A  newdir/x.py`
+        git(self.repo, "rm", "-q", "--cached", "newdir/x.py")            # unstaged: git lists only `?? newdir/`
+        out = r.collect()
+        self.assertEqual(out["drift_status"], "?? newdir/\n")
+
+    def test_an_untracked_directory_inside_one_that_shows_whole_now_is_not_gone(self):
+        (self.repo / "a").mkdir()
+        (self.repo / "a" / "t.txt").write_text("tracked\n")
+        git(self.repo, "add", "a/t.txt")
+        git(self.repo, "commit", "-q", "-m", "a")
+        (self.repo / "a" / "b").mkdir()
+        (self.repo / "a" / "b" / "n.txt").write_text("the owner's\n")
+        r = self.reviewing_since_now("nested")                           # `?? a/b/`
+        git(self.repo, "rm", "-q", "--cached", "a/t.txt")                # a/ holds no tracked file now: `?? a/`
+        out = r.collect()
+        self.assertEqual(out["drift_status"], "D  a/t.txt\n?? a/\n")
+
 
 class FinishTest(RunnerBase):
     def test_finish_tabs_without_closing(self):
@@ -177,8 +294,9 @@ class FinishTest(RunnerBase):
         self.assertEqual(note[3], "done")
         self.assertEqual(self.herdr.calls_named("tab_close"), [])
 
-    def reviewed_run(self, commits: int = 2) -> Path:
-        """A run whose merge_base is real, with <commits> commits on top of it."""
+    def reviewed_run(self, commits: int = 2, launched_now: bool = False) -> Path:
+        """A run whose merge_base is real, with <commits> commits on top of it, launched on the branch the repository
+        is on; <launched_now>: its run.json records the HEAD of now as the HEAD at launch."""
         base = gitutil.merge_base(self.repo, "HEAD")
         for i in range(commits):
             (self.repo / "a.txt").write_text(f"change {i}\n")
@@ -186,6 +304,9 @@ class FinishTest(RunnerBase):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",))
         run = json.loads((run_dir / "run.json").read_text())
         run["merge_base"] = base
+        run["branch"] = gitutil.current_branch(self.repo)          # as launch records it; make_run's is `feat`
+        if launched_now:
+            run["head"] = gitutil.head_commit(self.repo)
         (run_dir / "run.json").write_text(json.dumps(run))
         return run_dir
 
@@ -193,8 +314,7 @@ class FinishTest(RunnerBase):
         run_dir = self.reviewed_run(2)
         r = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None)
         out = r.finish([])                                   # --commits omitted entirely
-        full = gitutil.log_oneline(self.repo, "HEAD~2..HEAD").splitlines()
-        self.assertEqual(out["commits"], [line.split()[0] for line in full])
+        self.assertEqual(out["commits"], [short(self.repo, "HEAD"), short(self.repo, "HEAD~1")])
         self.assertEqual(r.status.data["commits"], out["commits"])
         note = self.herdr.calls_named("notification_show")[-1]
         self.assertIn("коммитов 2", note[2])
@@ -211,10 +331,22 @@ class FinishTest(RunnerBase):
 
     def test_finish_falls_back_to_the_passed_commits_when_git_fails(self):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",))   # merge_base is 0000…
+        run = json.loads((run_dir / "run.json").read_text())
+        run["branch"] = gitutil.current_branch(self.repo)                 # still on the branch of the launch
+        (run_dir / "run.json").write_text(json.dumps(run))
         r = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None)
         out = r.finish(["abc123", ""])
         self.assertEqual(out["commits"], ["abc123"])
         self.assertIn("cannot read the commit list", (run_dir / "runner.log").read_text())
+
+    def test_finish_falls_back_to_the_passed_commits_when_git_cannot_name_the_branch(self):
+        run_dir = self.reviewed_run(0, launched_now=True)
+        git(self.repo, "switch", "-q", "--orphan", "other")     # a branch with no commit: rev-parse cannot name HEAD
+        out = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish(["abc123"])
+        self.assertEqual(out["commits"], ["abc123"])
+        log = (run_dir / "runner.log").read_text()
+        self.assertIn("finish: cannot read the commit list from git: git rev-parse --abbrev-ref HEAD failed", log)
+        self.assertNotIn("switched during the run", log)
 
     def test_finish_closes_agents_when_configured(self):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",), close=True)
@@ -234,15 +366,171 @@ class FinishTest(RunnerBase):
         self.assertEqual(sorted(out["closed"]), ["w1:p2", "w1:p3"])
         self.assertEqual(self.herdr.calls_named("tab_close"), [])
 
+    def test_finish_leaves_open_a_tab_id_that_now_names_someone_elses_tab(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",), close=True)
+        r = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None)
+        r.start_reviewers()
+        r.start_fixer()
+        self.herdr.tab_labels["w1:t2"] = "build"
+        out = r.finish([])
+        self.assertEqual(out["closed"], ["w1:t3"])
+        self.assertNotIn(("tab_close", "w1:t2"), self.herdr.calls)
+
     def test_finish_does_not_report_failed_close_as_closed(self):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",), close=True)
         r = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None)
         r.start_reviewers()
         r.start_fixer()
-        self.herdr.close_errors["w1:t2"] = ("agent_not_found", "gone")
+        self.herdr.close_errors["w1:t2"] = ("server_error", "boom")
         out = r.finish([])
         self.assertEqual(out["closed"], ["w1:t3"])
         self.assertNotIn("w1:t2", out["closed"])
+        self.assertIn("finish: close w1:t2 failed: server_error: boom", (run_dir / "runner.log").read_text())
+
+    def test_finish_counts_only_the_commits_made_during_the_run(self):
+        run_dir = self.reviewed_run(2)                      # two branch commits made before the launch
+        run = json.loads((run_dir / "run.json").read_text())
+        run["head"] = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        (run_dir / "run.json").write_text(json.dumps(run))
+        (self.repo / "a.txt").write_text("fixed during the run\n")
+        git(self.repo, "commit", "-q", "-am", "fix during the run")
+        out = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([])
+        self.assertEqual(out["commits"], [short(self.repo)])
+        self.assertIn("коммитов 1", self.herdr.calls_named("notification_show")[-1][2])
+
+    def test_a_branch_rebased_during_the_run_records_the_orchestrators_commits(self):
+        git(self.repo, "switch", "-q", "-c", "feat")
+        run_dir = self.reviewed_run(2, launched_now=True)       # two branch commits, then the launch
+        git(self.repo, "switch", "-q", "master")
+        (self.repo / "b.txt").write_text("master moves on\n")
+        git(self.repo, "add", "b.txt")
+        git(self.repo, "commit", "-q", "-m", "master moves on")
+        git(self.repo, "switch", "-q", "feat")
+        git(self.repo, "rebase", "-q", "master")                # the owner rebases during the run
+        (self.repo / "a.txt").write_text("fixed during the run\n")
+        git(self.repo, "commit", "-q", "-am", "fix during the run")
+        fix = short(self.repo)
+        out = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([fix])
+        self.assertEqual(out["commits"], [fix])                 # not the rebased commits and master's
+        self.assertIn("коммитов 1", self.herdr.calls_named("notification_show")[-1][2])
+        log = (run_dir / "runner.log").read_text()
+        self.assertIn("finish: the branch was rewritten or switched during the run", log)
+        self.assertIn("recording the orchestrator's --commits", log)
+        self.assertNotIn("does not match", log)
+
+    def test_a_switch_to_a_branch_made_from_the_launch_records_the_orchestrators_commits(self):
+        run_dir = self.reviewed_run(0, launched_now=True)       # launched on master, at its HEAD
+        (self.repo / "a.txt").write_text("fixed during the run\n")
+        git(self.repo, "commit", "-q", "-am", "fix during the run")
+        fix = short(self.repo)
+        git(self.repo, "switch", "-q", "-c", "other")           # the owner makes a branch here and switches to it
+        for i in range(2):                                      # two commits of its own
+            (self.repo / f"o{i}.txt").write_text("the other branch's own work\n")
+            git(self.repo, "add", f"o{i}.txt")
+            git(self.repo, "commit", "-q", "-m", f"the other branch's own work {i}")
+        out = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([fix])
+        self.assertEqual(out["commits"], [fix])                 # HEAD descends from the launch, yet other's own two are not the run's
+        self.assertIn("коммитов 1", self.herdr.calls_named("notification_show")[-1][2])
+        log = (run_dir / "runner.log").read_text()
+        self.assertIn("finish: the branch was switched during the run (launched on master, now on other);"
+                      " recording the orchestrator's --commits", log)
+        self.assertNotIn("does not match", log)
+
+    def test_a_run_launched_on_a_detached_head_that_stays_detached_records_the_commits_git_reports(self):
+        git(self.repo, "switch", "-q", "--detach")
+        run_dir = self.reviewed_run(0, launched_now=True)
+        self.assertEqual(json.loads((run_dir / "run.json").read_text())["branch"], "HEAD")    # as launch records it
+        (self.repo / "a.txt").write_text("fixed during the run\n")
+        git(self.repo, "commit", "-q", "-am", "fix during the run")    # HEAD stays detached
+        out = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([])
+        self.assertEqual(out["commits"], [short(self.repo)])
+
+    def test_a_merge_of_the_base_during_the_run_brings_none_of_the_bases_commits(self):
+        git(self.repo, "switch", "-q", "-c", "feat")
+        run_dir = self.reviewed_run(2, launched_now=True)       # two branch commits, then the launch
+        git(self.repo, "switch", "-q", "master")
+        for i in range(3):                                      # master moves on by three commits
+            (self.repo / f"m{i}.txt").write_text("master moves on\n")
+            git(self.repo, "add", f"m{i}.txt")
+            git(self.repo, "commit", "-q", "-m", f"master moves on {i}")
+        git(self.repo, "switch", "-q", "feat")
+        git(self.repo, "merge", "-q", "--no-ff", "--no-edit", "master")   # the owner merges the base during the run
+        merge = short(self.repo)
+        (self.repo / "a.txt").write_text("fixed during the run\n")
+        git(self.repo, "commit", "-q", "-am", "fix during the run")
+        fix = short(self.repo)
+        out = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([fix])
+        self.assertEqual(out["commits"], [fix, merge])          # the owner's merge is a commit of the run; master's three are not
+        self.assertIn("коммитов 2", self.herdr.calls_named("notification_show")[-1][2])
+
+    def test_a_fix_commit_made_before_a_merge_of_the_base_stays_listed(self):
+        git(self.repo, "switch", "-q", "-c", "feat")
+        run_dir = self.reviewed_run(2, launched_now=True)       # two branch commits, then the launch
+        (self.repo / "a.txt").write_text("first fix\n")
+        git(self.repo, "commit", "-q", "-am", "first fix")
+        fix1 = short(self.repo)
+        git(self.repo, "switch", "-q", "master")
+        for i in range(3):                                      # master moves on by three commits
+            (self.repo / f"m{i}.txt").write_text("master moves on\n")
+            git(self.repo, "add", f"m{i}.txt")
+            git(self.repo, "commit", "-q", "-m", f"master moves on {i}")
+        git(self.repo, "switch", "-q", "feat")
+        git(self.repo, "merge", "-q", "--no-ff", "--no-edit", "master")   # the owner merges the base between two fixes
+        merge = short(self.repo)
+        (self.repo / "a.txt").write_text("second fix\n")
+        git(self.repo, "commit", "-q", "-am", "second fix")
+        fix2 = short(self.repo)
+        out = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([fix1, fix2])
+        # newest first: the fix made before the merge is on the first-parent line too; master's three are not
+        self.assertEqual(out["commits"], [fix2, merge, fix1])
+        self.assertIn("коммитов 3", self.herdr.calls_named("notification_show")[-1][2])
+
+    def test_a_subject_with_a_cr_a_form_feed_and_a_line_separator_is_one_commit(self):
+        run_dir = self.reviewed_run(0, launched_now=True)
+        (self.repo / "a.txt").write_text("fixed during the run\n")
+        git(self.repo, "commit", "-q", "-am", "fix\r one\x0c two\u2028 three")
+        out = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([])
+        self.assertEqual(out["commits"], [short(self.repo)])
+
+    def test_finish_removes_the_scratch_directory(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        (run_dir / "scratch" / "codex" / "copy").mkdir(parents=True)
+        (run_dir / "scratch" / "codex" / "copy" / "x.go").write_text("package main\n")
+        Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([])
+        self.assertFalse((run_dir / "scratch").exists())
+        self.assertIn("finish: removed scratch/", (run_dir / "runner.log").read_text())
+
+    def test_finish_removes_scratch_with_a_read_only_directory_in_it(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        locked = run_dir / "scratch" / "codex" / "gomod" / "mod@v1"      # a Go module cache is read-only
+        locked.mkdir(parents=True)
+        (locked / "x.go").write_text("package main\n")
+        locked.chmod(0o555)
+        try:
+            Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([])
+            self.assertFalse((run_dir / "scratch").exists())
+        finally:
+            if locked.exists():
+                locked.chmod(0o755)                                       # tearDown must be able to remove the temp dir
+
+    def test_finish_removes_a_scratch_link_and_leaves_its_target_alone(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        target = self.root / "elsewhere"                                  # outside the run directory
+        locked = target / "gomod"
+        locked.mkdir(parents=True)
+        (locked / "x.go").write_text("package main\n")
+        locked.chmod(0o555)
+        modes = {p: stat.S_IMODE(p.stat().st_mode) for p in (target, locked)}
+        (run_dir / "scratch").symlink_to(target, target_is_directory=True)
+        try:
+            Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([])
+            self.assertFalse((run_dir / "scratch").is_symlink())
+            self.assertEqual({p: stat.S_IMODE(p.stat().st_mode) for p in (target, locked)}, modes)
+            self.assertEqual((locked / "x.go").read_text(), "package main\n")
+            self.assertIn("finish: scratch/ was a symlink", (run_dir / "runner.log").read_text())
+        finally:
+            if locked.exists():
+                locked.chmod(0o755)                                       # tearDown must be able to remove the temp dir
 
 
 if __name__ == "__main__":

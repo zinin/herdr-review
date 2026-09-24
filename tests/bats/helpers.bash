@@ -6,6 +6,7 @@ setup_env() {
   export HOME="$TMP/home"; mkdir -p "$HOME"
   export XDG_CONFIG_HOME="$TMP/xdg"; mkdir -p "$XDG_CONFIG_HOME/herdr-review"
   export HERDR_ENV=1 HERDR_WORKSPACE_ID=w1 HERDR_TAB_ID=w1:t1 HERDR_PANE_ID=w1:p1
+  export HERDR_SESSION=test HERDR_SOCKET_PATH="$TMP/herdr/sessions/test/herdr.sock"
   export HERDR_BIN="$BATS_TEST_DIRNAME/../fake-herdr/herdr"
   export FAKE_HERDR_LOG="$TMP/herdr.log" FAKE_HERDR_SCENARIO="$TMP/scenario.json" FAKE_HERDR_STATE="$TMP/herdr.state"
   export HERDR_REVIEW_POLL_SEC=0.01

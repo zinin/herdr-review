@@ -9,7 +9,7 @@ teardown() { teardown_env; }
   [ "$status" -eq 0 ]
   [[ "$output" == *"claude-opus"* ]]
   [[ "$output" == *"env=SECRET_TOKEN"* ]]
-  ! [[ "$output" == *"s3cret-value"* ]]
+  [[ "$output" != *"s3cret-value"* ]]
   run "$HR" profiles --json
   [ "$status" -eq 0 ]
   json_has "$output" 'd["profiles"]["claude-opus"]["env_keys"]==["SECRET_TOKEN"] and d["presets"]["default"]["fixer"]=="claude-opus"'

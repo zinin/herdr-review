@@ -3,11 +3,11 @@ import json
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from herdr_review import __version__, gitutil
-from herdr_review.cli import build_parser, main, resolve_status_run_dir, status_run_spec
+from herdr_review.cli import build_parser, main, resolve_status_run_dir, scope_lines, status_run_spec
 from herdr_review.launch import basename_slug, project_slug
 from herdr_review.runner import RunnerError
 from herdr_review.status import RunStatus
@@ -63,6 +63,17 @@ class CliParsingTest(unittest.TestCase):
             self.assertIn("autodecide: on", out.getvalue())
             self.assertIn("2026-09-10T16:33:00+00:00", out.getvalue())
 
+    def test_status_says_the_working_tree_changed_not_who_changed_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            st = RunStatus.create(Path(d), run_id="hrtest", repo=d, layout="tabs")
+            st.set("drift", True)
+            st.save()
+            out = io.StringIO()
+            with redirect_stdout(out):
+                main(["status", "--run", d])
+            self.assertIn("drift: рабочее дерево изменилось во время ревью", out.getvalue())
+            self.assertNotIn("ревьюер", out.getvalue())
+
     def test_status_accepts_positional_latest_and_run_flag(self):
         p = build_parser()
         self.assertEqual(status_run_spec(p.parse_args(["status", "latest"])), "latest")
@@ -98,6 +109,36 @@ class CliParsingTest(unittest.TestCase):
             with self.assertRaises(RunnerError) as ctx:
                 cmd_run(args, {"HERDR_REVIEW_POLL_SEC": raw})
             self.assertIn("must be a positive number", str(ctx.exception))
+
+    def test_launch_scope_flag(self):
+        self.assertEqual(build_parser().parse_args(["launch", "--scope", "worktree"]).scope, "worktree")
+        self.assertIsNone(build_parser().parse_args(["launch"]).scope)
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                build_parser().parse_args(["launch", "--scope", "everything"])
+
+    def test_scope_lines(self):
+        commits = {"scope": "commits", "base": "origin/master", "uncommitted": [" M a.txt", "?? notes/", "?? x"], "untracked": None}
+        self.assertEqual(scope_lines(commits), [
+            "  объём:        коммиты ветки (origin/master..HEAD)",
+            "  вне ревью:    ваши незакоммиченные файлы (изменённых: 1, неотслеживаемых: 2); их никто не удалит и не закоммитит",
+        ])
+        self.assertEqual(scope_lines({**commits, "uncommitted": []}), ["  объём:        коммиты ветки (origin/master..HEAD)"])
+        worktree = {"scope": "worktree", "base": "master", "uncommitted": ["?? new.py"], "untracked": {"files": 3, "skipped": 1}}
+        self.assertEqual(scope_lines(worktree), [
+            "  объём:        рабочее дерево — коммиты и незакоммиченное; неотслеживаемых файлов у ревьюеров: 3, из них пропущено: 1",
+            "  фиксы:        останутся незакоммиченными — закоммитите их сами",
+        ])
+        self.assertEqual(scope_lines({**worktree, "uncommitted": [" M a.txt"], "untracked": {"files": 0, "skipped": 0}}), [
+            "  объём:        рабочее дерево — коммиты и незакоммиченное",
+            "  фиксы:        останутся незакоммиченными — закоммитите их сами",
+        ])
+
+    def test_close_parses(self):
+        args = build_parser().parse_args(["close", "latest", "--force", "--json"])
+        self.assertEqual((args.cmd, status_run_spec(args), args.force, args.json), ("close", "latest", True, True))
+        args = build_parser().parse_args(["close"])
+        self.assertEqual((status_run_spec(args), args.force), (None, False))
 
 
 class ResolveLatestTest(unittest.TestCase):

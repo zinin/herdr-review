@@ -27,7 +27,7 @@ Exit 1 → print its stderr to the user verbatim and stop. Never edit the config
 
 ## 3. Arguments
 
-Recognise, in any order: `default` or another preset name from `presets`; `BASE_BRANCH=<ref>`; `autodecide`; `layout=tabs|grid`; `reviewers=a,b,c`; `orchestrator=<profile>`; `fixer=<profile>`. Anything else is free text: use it as the description.
+Recognise, in any order: `default` or another preset name from `presets`; `BASE_BRANCH=<ref>`; `autodecide`; `layout=tabs|grid`; `scope=auto|commits|worktree`; `reviewers=a,b,c`; `orchestrator=<profile>`; `fixer=<profile>`. Anything else is free text: use it as the description.
 
 With a preset or an explicit `reviewers=` there are no questions.
 
@@ -40,9 +40,11 @@ Use the host's question tool: `AskUserQuestion` (Claude Code), `ask_user_questio
 3. Fixer — single choice (★ = `presets.default.fixer`).
 4. Autodecide — «да / нет» (default from `settings.autodecide`).
 
-## 5. Description and plan
+## 5. Description, plan and the working tree
 
-If you know from this session what was implemented, pass `--description "<one or two sentences>"`. If a plan or spec file for this work exists, pass `--plan <path>`. Do not invent either; omit what you do not know.
+If you know from this session what was implemented, pass `--description "<one or two sentences>"`. If a plan or spec exists for this work, pass it with `--plan`: a file path, or free text — `git show <sha>:<path>` when the plan lives only in git history, and the user's rulings from earlier review rounds (decisions not to re-raise). Do not invent either; omit what you do not know.
+
+Never ask the user about untracked or uncommitted files, and never hide them (no `.git/info/exclude`, no stash, no commit). `launch` decides what the change is — the branch's commits, or the working tree when nothing is committed — keeps everything uncommitted out of a review of the commits, and says so in its summary. Pass `--scope worktree` only when the user asked to review uncommitted work.
 
 ## 6. Launch
 
@@ -50,15 +52,17 @@ If you know from this session what was implemented, pass `--description "<one or
 "$HR" launch --preset default --description "…"
 ```
 
-Compose the flags from the answers: `--preset <name>`, or `--reviewers a,b,c --orchestrator x --fixer y`; `--base` only when `BASE_BRANCH=` was given; `--autodecide` only when chosen, `--no-autodecide` when the user said no; `--layout` when given; `--plan` when a plan file is known.
+Compose the flags from the answers: `--preset <name>`, or `--reviewers a,b,c --orchestrator x --fixer y`; `--base` only when `BASE_BRANCH=` was given; `--scope` only when `scope=` was given or the user asked to review uncommitted work; `--autodecide` only when chosen, `--no-autodecide` when the user said no; `--layout` when given; `--plan` when a plan is known.
 
-Exit 0 → show the summary as printed (run dir, orchestrator agent, `herdr agent focus <name>`, `herdr-review status latest`) and end your turn.
+Exit 0 → show the summary as printed (run dir, orchestrator agent, scope, `herdr agent focus <name>`, `herdr-review status latest`) and end your turn.
 
 Exit 1 → show stderr verbatim. Two cases you can help with:
 
-- «failed to start … Tab … is left open»: `herdr agent read <name> --source visible --lines 60` shows why. A dialog → resolve it with `herdr agent send-keys <name> …`, then send the prompt from the message. Anything else → report and stop.
+- «failed to start … Tab … is left open»: the message says why. The runner answers the trust dialogs of Claude Code, Codex and Grok by itself and never answers Claude Code's MCP approval dialog — the message then says what to change in the profile. For any other screen (a login, a dialog you do not recognise) run `herdr agent read <name> --source visible --lines 60`, show the error and that screen verbatim, and stop: never press keys in that tab and never ask the user which answer to give.
 - «did not start working … Re-prompt by hand»: run the printed `herdr agent prompt …` once. If it stalls again, report and stop.
 
 ## 7. Later
 
 «Как там ревью?» → `"$HR" status --run latest`, relay the output. `latest` is resolved per repository: run it from the repository under review, or pass that run's directory as `--run`. The orchestrator's tab is `rv-<run_id>: orch`; disputed issues are answered there.
+
+«Закрой вкладки ревью» → `"$HR" close --run latest`, relay the output. It refuses a run that is still in progress; pass `--force` only when the user asks for it. It also refuses outside the herdr session the run was launched in; your own pane, where you launched it, is in that session. After a failed launch `latest` still points at the previous run: pass the `Run directory:` from the launch error instead.

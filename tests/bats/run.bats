@@ -56,6 +56,7 @@ teardown() { teardown_env; }
   [ "$status" -eq 0 ]
   grep -q 'tab rename w1:t2 rv-.*: orch$' "$FAKE_HERDR_LOG"
 
+  echo fixed > "$REPO/a.txt"; git -C "$REPO" commit -q -am "fix during the run"
   HEAD_FULL="$(git -C "$REPO" rev-parse HEAD)"
   run "$HR" run finish --commits abc123,def456
   [ "$status" -eq 0 ]
@@ -182,4 +183,59 @@ teardown() { teardown_env; }
   run "$HR" run autodecide
   [ "$status" -eq 0 ]
   json_has "$output" 'd["was"] is True'
+}
+
+@test "close: refuses a run in progress, then closes every tab once it has finished" {
+  run "$HR" launch --json
+  [ "$status" -eq 0 ]
+  RUN="$(run_dir_of)"
+  run "$HR" run start-reviewers --run "$RUN"
+  [ "$status" -eq 0 ]
+  run "$HR" close
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"still in phase reviewing"* ]]
+  [ "$(grep -c 'tab close' "$FAKE_HERDR_LOG")" -eq 0 ]
+  run "$HR" run finish --run "$RUN"
+  [ "$status" -eq 0 ]
+  run "$HR" close --json
+  [ "$status" -eq 0 ]
+  json_has "$output" 'd["closed"]==["w1:t2","w1:t3","w1:t4"] and d["failed"]=={}'
+}
+
+@test "close: a tab closed by hand is not an error; a failed close is" {
+  run "$HR" launch --json
+  RUN="$(run_dir_of)"
+  run "$HR" run start-reviewers --run "$RUN"
+  run "$HR" run finish --run "$RUN"
+  "$HERDR_BIN" tab close w1:t3                        # by hand
+  echo '{"close": {"w1:t4": {"code": "server_error", "message": "boom"}}}' > "$FAKE_HERDR_SCENARIO"
+  run "$HR" close
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"уже закрыты: w1:t3"* ]]
+  [[ "$output" == *"не удалось закрыть w1:t4: server_error: boom"* ]]
+  echo '{}' > "$FAKE_HERDR_SCENARIO"
+  run "$HR" close --json
+  [ "$status" -eq 0 ]
+  json_has "$output" 'd["closed"]==["w1:t4"] and "w1:t3" in d["already_closed"] and d["failed"]=={}'
+}
+
+@test "close: refuses a caller in another herdr session and leaves another run's tab open" {
+  run "$HR" launch --json
+  RUN="$(run_dir_of)"
+  run "$HR" run start-reviewers --run "$RUN"
+  run "$HR" run finish --run "$RUN"
+  HERDR_SESSION=other HERDR_SOCKET_PATH="$TMP/herdr/sessions/other/herdr.sock" run "$HR" close
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"was started in herdr session 'test'; run close from a pane of that session"* ]]
+  [ "$(grep -c 'tab close' "$FAKE_HERDR_LOG")" -eq 0 ]
+  echo '{"labels": {"w1:t3": "build"}}' > "$FAKE_HERDR_SCENARIO"   # the ID now names someone else's tab
+  run "$HR" close --json
+  [ "$status" -eq 0 ]
+  json_has "$output" 'd["left_open"]==["w1:t3"] and d["already_closed"]==[] and "w1:t4" in d["closed"] and d["failed"]=={}'
+  [ "$(grep -c 'tab close w1:t3' "$FAKE_HERDR_LOG")" -eq 0 ]
+  run "$HR" close                                     # again, in text: the run's own tabs are closed by now
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"оставлены открытыми (ID теперь у чужой вкладки): w1:t3"* ]]
+  [[ "$output" == *"уже закрыты: w1:t2, w1:t4"* ]]
+  [ "$(grep 'уже закрыты' <<< "$output" | grep -c 'w1:t3')" -eq 0 ]
 }
