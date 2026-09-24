@@ -151,6 +151,13 @@ class Runner:
         with open(self.log_path, "a", encoding="utf-8") as f:
             f.write(f"{now_iso()} {line}\n")
 
+    def _reload(self) -> None:
+        """Read status.json again: another process of the run may have written it since."""
+        try:
+            self.status = RunStatus.load(self.run_dir)
+        except StatusError as e:
+            raise RunnerError(str(e)) from e
+
     def _load_config(self):
         if self._config is None and self._config_error is None:
             try:
@@ -810,21 +817,42 @@ class Runner:
         phase = self.status.data.get("phase")
         if phase not in ("finished", "aborted") and not force:
             raise RunnerError(f"run {self.run_id} is still in phase {phase}; closing its tabs stops its agents — pass --force")
-        # In the grid layout every agent is a pane of the orchestrator's tab: closing that tab closes them all.
-        targets = self._agent_targets() if self.layout == "tabs" else []
-        orch = self.status.data.get("orchestrator") or {}
-        if orch.get("tab"):
-            targets.append((orch["tab"], True))
+        closed: list[str] = []
+        gone: list[str] = []
+        failed: dict[str, str] = {}
+
+        def close_these(targets: list[tuple[str, bool]]) -> None:
+            c, g, f = self._close_all(targets, "close")
+            closed.extend(c)
+            gone.extend(g)
+            failed.update(f)
+
         # Typed in one of the run's own tabs (the orchestrator's has HERDR_REVIEW_RUN set), close ends in
         # that tab's closing: herdr kills the caller with it. So that tab goes last, once the rest is saved.
-        own = [t for t in targets if t[1] and t[0] == environ.get("HERDR_TAB_ID")]
-        others = [t for t in targets if t not in own]
-        closed, gone, failed = self._close_all(others, "close")
+        own_tab = environ.get("HERDR_TAB_ID")
+        own: list[tuple[str, bool]] = []
+        # The orchestrator's tab first: while the others close, half a second each, a live orchestrator
+        # could still finish the run or start the fixer, whose tab no list taken before would hold.
+        orch = (self.status.data.get("orchestrator") or {}).get("tab")
+        first = [(orch, True)] if orch else []
+        own += [t for t in first if t[0] == own_tab]
+        first = [t for t in first if t[0] != own_tab]
+        close_these(first)
+        # What it did meanwhile is on disk: a fixer it started is among the agents there.
+        self._reload()
+        # In the grid layout every agent is a pane of the orchestrator's tab: closing that tab closes them all.
+        agents = self._agent_targets() if self.layout == "tabs" else []
+        own += [t for t in agents if t[0] == own_tab]
+        others = [t for t in agents if t[0] != own_tab]
+        close_these(others)
+        # And so is a phase it set: a `run finish` that landed while its tab closed stays finished.
+        self._reload()
+        phase = self.status.data.get("phase")
         if force and phase not in ("finished", "aborted"):
             if failed:
                 # An agent whose tab did not close may still be working: the run keeps its phase and its
                 # scratch/, so a later launch still warns about it and another close --force can finish the job.
-                self.log(f"close --force: {len(failed)} of {len(others)} did not close; the run stays in phase {phase}")
+                self.log(f"close --force: {len(failed)} of {len(first) + len(others)} did not close; the run stays in phase {phase}")
             else:
                 # Its agents are gone: the run ends here, and no later launch may count it as unfinished.
                 # The caller's own tab does not count: the user is at a shell there, not an agent.
@@ -834,9 +862,5 @@ class Runner:
                 self._remove_scratch()
         self.status.set("closed_at", now_iso())
         self.status.save()
-        if own:
-            mine = self._close_all(own, "close")
-            closed += mine[0]
-            gone += mine[1]
-            failed.update(mine[2])
+        close_these(own)
         return {"closed": closed, "already_closed": gone, "failed": failed}

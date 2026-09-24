@@ -199,7 +199,7 @@ teardown() { teardown_env; }
   [ "$status" -eq 0 ]
   run "$HR" close --json
   [ "$status" -eq 0 ]
-  json_has "$output" 'd["closed"]==["w1:t3","w1:t4","w1:t2"] and d["failed"]=={}'
+  json_has "$output" 'd["closed"]==["w1:t2","w1:t3","w1:t4"] and d["failed"]=={}'
 }
 
 @test "close: a tab closed by hand is not an error; a failed close is" {

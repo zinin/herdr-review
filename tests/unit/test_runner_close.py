@@ -28,8 +28,8 @@ class CloseTest(RunnerBase):
     def test_close_shuts_every_tab_of_a_finished_run(self):
         run_dir = self.finished_run()
         out = self.runner(run_dir).close()
-        self.assertEqual(out, {"closed": ["w1:t2", "w1:t3", "w1:t4", "w1:t1"], "already_closed": [], "failed": {}})
-        self.assertEqual([c[1] for c in self.herdr.calls_named("tab_close")], ["w1:t2", "w1:t3", "w1:t4", "w1:t1"])
+        self.assertEqual(out, {"closed": ["w1:t1", "w1:t2", "w1:t3", "w1:t4"], "already_closed": [], "failed": {}})
+        self.assertEqual([c[1] for c in self.herdr.calls_named("tab_close")], ["w1:t1", "w1:t2", "w1:t3", "w1:t4"])
         self.assertIn("closed_at", json.loads((run_dir / "status.json").read_text()))
 
     def test_grid_closes_the_orchestrator_tab_only(self):
@@ -47,7 +47,7 @@ class CloseTest(RunnerBase):
         self.assertIn("still in phase reviewing", str(ctx.exception))
         self.assertIn("--force", str(ctx.exception))
         self.assertEqual(self.herdr.calls_named("tab_close"), [])
-        self.assertEqual(r.close(force=True)["closed"], ["w1:t2", "w1:t1"])
+        self.assertEqual(r.close(force=True)["closed"], ["w1:t1", "w1:t2"])
 
     def test_a_forced_close_aborts_a_run_in_progress(self):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",))
@@ -102,6 +102,27 @@ class CloseTest(RunnerBase):
         self.assertEqual([c[1] for c in self.herdr.calls_named("tab_close")], ["w1:t1", "w1:t2"])
         self.assertEqual(json.loads((run_dir / "status.json").read_text())["phase"], "aborted")
 
+    def test_a_fixer_the_orchestrator_starts_while_its_tab_closes_is_closed_too(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        self.runner(run_dir).start_reviewers()
+        orchestrator = self.runner(run_dir)                  # its own process, still live
+        self.herdr.on_close["w1:t1"] = orchestrator.start_fixer
+        out = self.runner(run_dir).close(force=True)
+        status = json.loads((run_dir / "status.json").read_text())
+        self.assertEqual(out["closed"], ["w1:t1", "w1:t2", status["agents"]["hrtest-fixer"]["tab"]])
+        self.assertEqual(status["phase"], "aborted")
+
+    def test_a_run_the_orchestrator_finishes_while_its_tab_closes_stays_finished(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        self.runner(run_dir).start_reviewers()
+        orchestrator = self.runner(run_dir)
+        self.herdr.on_close["w1:t1"] = lambda: orchestrator.finish([])
+        self.runner(run_dir).close(force=True)
+        status = json.loads((run_dir / "status.json").read_text())
+        self.assertEqual(status["phase"], "finished")
+        self.assertNotIn("abort_reason", status)
+        self.assertIn("closed_at", status)
+
     def test_a_forced_close_of_a_finished_run_keeps_it_finished(self):
         run_dir = self.finished_run()
         self.runner(run_dir).close(force=True)
@@ -114,7 +135,7 @@ class CloseTest(RunnerBase):
         self.herdr.close_errors["w1:t3"] = ("tab_not_found", "tab w1:t3 not found")
         self.herdr.close_errors["w1:t4"] = ("server_error", "boom")
         out = self.runner(run_dir).close()
-        self.assertEqual(out["closed"], ["w1:t2", "w1:t1"])
+        self.assertEqual(out["closed"], ["w1:t1", "w1:t2"])
         self.assertEqual(out["already_closed"], ["w1:t3"])
         self.assertEqual(out["failed"], {"w1:t4": "server_error: boom"})
 
@@ -154,18 +175,18 @@ class CloseTest(RunnerBase):
                 self.assertEqual(self.herdr.calls_named("tab_close"), [])
                 self.assertEqual((run_dir / "status.json").read_text(), before)
         out = self.runner(run_dir).close(force=True, environ={"HERDR_SESSION": "ai"})   # the session of the launch
-        self.assertEqual(out["closed"], ["w1:t4", "w1:t1"])
+        self.assertEqual(out["closed"], ["w1:t1", "w1:t4"])
 
     def test_a_run_launched_before_the_session_was_recorded_still_closes(self):
         run_dir = self.finished_run()                                                  # run.json without the fields
         out = self.runner(run_dir).close(environ={"HERDR_SESSION": "work", "HERDR_SOCKET_PATH": "/tmp/work.sock"})
-        self.assertEqual(out["closed"], ["w1:t2", "w1:t3", "w1:t4", "w1:t1"])
+        self.assertEqual(out["closed"], ["w1:t1", "w1:t2", "w1:t3", "w1:t4"])
 
     def test_a_tab_id_that_now_names_someone_elses_tab_is_left_open(self):
         run_dir = self.finished_run()
         self.herdr.tab_labels["w1:t3"] = "build"                 # a restarted herdr gave the ID to another tab
         out = self.runner(run_dir).close()
-        self.assertEqual(out, {"closed": ["w1:t2", "w1:t4", "w1:t1"], "already_closed": ["w1:t3"], "failed": {}})
+        self.assertEqual(out, {"closed": ["w1:t1", "w1:t2", "w1:t4"], "already_closed": ["w1:t3"], "failed": {}})
         self.assertNotIn(("tab_close", "w1:t3"), self.herdr.calls)
         self.assertIn("close: w1:t3 is now labelled 'build', not a tab of this run; left open", (run_dir / "runner.log").read_text())
 
