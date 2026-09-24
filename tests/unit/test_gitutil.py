@@ -102,14 +102,49 @@ class GitUtilTest(unittest.TestCase):
         (self.repo / "build" / "out.o").write_text("junk\n")
         self.assertEqual(gitutil.tree_hash(self.repo), h0)
 
-    def test_tree_hash_asks_git_only_when_there_is_something_untracked(self):
-        with mock.patch.object(gitutil, "_run_stdin", side_effect=AssertionError("hash-object called")) as stdin_run:
-            gitutil.tree_hash(self.repo)
-            self.assertEqual(stdin_run.call_count, 0)
-        (self.repo / "new.txt").write_text("aaa\n")
-        with mock.patch.object(gitutil, "_run_stdin", wraps=gitutil._run_stdin) as stdin_run:
-            gitutil.tree_hash(self.repo)
-        self.assertEqual(stdin_run.call_count, 1)
+    def test_tree_hash_reads_untracked_files_itself_and_runs_no_clean_filter(self):
+        (self.repo / "new.dat").write_text("aaa\n")
+        blob = subprocess.run(["git", "-C", str(self.repo), "hash-object", "new.dat"], capture_output=True, text=True, check=True).stdout.strip()
+        # git's own blob id: a run launched while git hashed these files sees no drift
+        self.assertEqual(gitutil._untracked_meta(self.repo, ["new.dat"]), f"new.dat\0{blob}")
+        ran = Path(self.tmp.name) / "clean-filter-ran"
+        (self.repo / ".git" / "info" / "attributes").write_text("*.dat filter=probe\n")
+        git(self.repo, "config", "filter.probe.clean", f"touch '{ran}'; cat")
+        gitutil.tree_hash(self.repo)
+        self.assertFalse(ran.exists())
+
+    def test_tree_hash_survives_an_untracked_file_it_cannot_read(self):
+        locked = self.repo / "secret.txt"                   # like a root-owned 0600 file from a Docker bind mount
+        locked.write_text("s3cret\n")
+        locked.chmod(0)
+        try:
+            first = gitutil.tree_hash(self.repo)            # root can read it: hashed by content, still the same twice
+            self.assertEqual(gitutil.tree_hash(self.repo), first)
+        finally:
+            locked.chmod(0o644)
+
+    def test_tree_hash_reads_a_name_that_starts_with_a_quote(self):
+        path = self.repo / '"note".txt'                     # `hash-object --stdin-paths` C-unquoted it into `note`
+        path.write_text("aaa\n")
+        stamp = path.stat().st_mtime_ns
+        h0 = gitutil.tree_hash(self.repo)
+        path.write_text("bbb\n")                            # same size
+        os.utime(path, ns=(stamp, stamp))                   # and the same mtime: only its content tells
+        self.assertNotEqual(gitutil.tree_hash(self.repo), h0)
+
+    def test_tree_hash_survives_a_file_deleted_between_its_lstat_and_its_read(self):
+        path = self.repo / "new.txt"
+        path.write_text("aaa\n")
+        real = os.lstat
+
+        def lstat_then_delete(p, *args, **kwargs):
+            st = real(p, *args, **kwargs)
+            if p == path:
+                path.unlink()
+            return st
+
+        with mock.patch.object(gitutil.os, "lstat", lstat_then_delete):
+            self.assertNotEqual(gitutil.tree_hash(self.repo), "")
 
     def test_tree_hash_survives_a_file_that_vanished(self):
         (self.repo / "new.txt").write_text("aaa\n")

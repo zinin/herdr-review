@@ -47,6 +47,13 @@ All notable changes to herdr-review will be documented here.
   reviewers, orchestrator and fixer all in auto mode.
 - README: the auto mode / yolo table in Configure, the `args` rule, the ` ❓` entry in Troubleshooting.
 
+### Fixed
+- An untracked file git could not hash stopped the run: one nobody can read (a `chmod 000` file, a
+  root-owned file from a Docker bind mount), a name that starts with `"`, or a file deleted meanwhile
+  made `run start-reviewers` fail before any agent started, and `collect` fail during the run. The
+  drift check now reads the untracked files itself, with no clean filter of `.gitattributes`, and
+  describes a file it cannot read by its size and mtime.
+
 ## [0.1.0] - 2026-09-10
 
 ### Added

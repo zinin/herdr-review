@@ -108,6 +108,18 @@ class StartReviewersTest(RunnerBase):
         self.assertEqual(a["result_file"], str(run_dir / "reviews" / "codex.md"))
         self.assertNotIn("s3cret", (run_dir / "runner.log").read_text())
 
+    def test_an_untracked_file_nobody_can_read_does_not_stop_the_start(self):
+        locked = self.repo / "secret.txt"                   # like a root-owned 0600 file from a Docker bind mount
+        locked.write_text("s3cret\n")
+        locked.chmod(0)
+        try:
+            run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+            out = self.runner(run_dir).start_reviewers()
+            self.assertEqual(out["agents"]["hrtest-codex"]["state"], "working")
+            self.assertEqual(len(json.loads((run_dir / "status.json").read_text())["tree_hash_before"]), 64)
+        finally:
+            locked.chmod(0o644)
+
     def test_grid_layout_splits_orchestrator_pane(self):
         run_dir = make_run(self.root, self.repo, layout="grid")
         out = self.runner(run_dir).start_reviewers()

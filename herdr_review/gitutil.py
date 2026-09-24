@@ -18,6 +18,8 @@ GIT_TIMEOUT_SEC = 30
 # Above this total, the untracked files that do not fit keep the old size+mtime form:
 # tree_hash runs on every `collect` and must stay fast.
 UNTRACKED_HASH_BUDGET_BYTES = 64 * 1024 * 1024
+# How much of an untracked file tree_hash reads at a time.
+HASH_CHUNK_BYTES = 1024 * 1024
 # An untracked file above this size is listed for the reviewers but not read.
 UNTRACKED_READ_LIMIT_BYTES = 256 * 1024
 BINARY_SNIFF_BYTES = 8192
@@ -50,18 +52,6 @@ def _run(repo: Path | str, *args: str) -> subprocess.CompletedProcess:
         return subprocess.run(
             ["git", "-C", str(repo), *args],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            env=_git_env(), timeout=GIT_TIMEOUT_SEC,
-        )
-    except subprocess.TimeoutExpired as e:
-        raise GitError(f"git {' '.join(args)} timed out after {GIT_TIMEOUT_SEC}s") from e
-
-
-def _run_stdin(repo: Path | str, stdin: str, *args: str) -> subprocess.CompletedProcess:
-    """`_run` for the one subcommand that takes its input on stdin."""
-    try:
-        return subprocess.run(
-            ["git", "-C", str(repo), *args],
-            input=stdin, capture_output=True, text=True, encoding="utf-8", errors="replace",
             env=_git_env(), timeout=GIT_TIMEOUT_SEC,
         )
     except subprocess.TimeoutExpired as e:
@@ -133,35 +123,57 @@ def _untracked(repo: Path | str) -> list[str]:
     return sorted(entry[3:] for entry in out.split("\0") if entry.startswith("?? "))
 
 
+def _blob_id(path: Path, st: os.stat_result) -> str:
+    """git's blob id for the content of <path>, a regular file when `os.lstat` gave <st>. Computed here, not by
+    `git hash-object --stdin-paths`, which fails the whole call on one file it cannot open, C-unquotes a name that
+    starts with `"` and runs the user's clean filters; for a file without filters the id is the one git gave.
+    A file gone since the lstat is `missing`, one that cannot be read is described by its metadata."""
+    unreadable = f"unreadable\0{st.st_size}\0{st.st_mtime_ns}"
+    try:
+        # A name swapped for a link or a FIFO since the lstat is neither followed nor waited on.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return "missing"
+    except OSError:
+        return unreadable
+    try:
+        now = os.fstat(fd)
+        if not stat.S_ISREG(now.st_mode):
+            return f"{now.st_size}\0{now.st_mtime_ns}"
+        blob = hashlib.sha1(b"blob %d\0" % now.st_size)
+        left = now.st_size
+        while left > 0:
+            chunk = os.read(fd, min(left, HASH_CHUNK_BYTES))
+            if not chunk:                   # shrunk since the fstat: the next call reads what is there then
+                break
+            blob.update(chunk)
+            left -= len(chunk)
+        return blob.hexdigest()
+    except OSError:
+        return unreadable
+    finally:
+        os.close(fd)
+
+
 def _untracked_meta(repo: Path | str, paths: list[str]) -> str:
-    """One line per untracked file: git's object id for its content, so that a `touch` is not a
-    change and a same-size rewrite is. Files that cannot be hashed keep the old size+mtime form."""
+    """One line per untracked file: git's blob id for its content, so that a `touch` is not a change and a
+    same-size rewrite is. What is not a regular file, and a file past the budget, keeps the old size+mtime form."""
     root = Path(repo)
-    meta: dict[str, str] = {}
-    hashable: list[str] = []
+    meta: list[str] = []
     budget = UNTRACKED_HASH_BUDGET_BYTES
     for path in paths:                       # `_untracked` sorts, so the fallback is deterministic
         try:
             st = os.lstat(root / path)
         except OSError:
-            meta[path] = "missing"           # vanished since `status`; git would fail on it
+            meta.append(f"{path}\0missing")  # vanished since `status`
             continue
-        # Only a regular file is hashed: git hash-object fails on a nested repository's `dir/` entry
-        # and on a link to a directory.
-        if not stat.S_ISREG(st.st_mode) or "\n" in path or st.st_size > budget:
-            meta[path] = f"{st.st_size}\0{st.st_mtime_ns}"
+        # Only a regular file is read: a nested repository's `dir/` entry and a link are described.
+        if not stat.S_ISREG(st.st_mode) or st.st_size > budget:
+            meta.append(f"{path}\0{st.st_size}\0{st.st_mtime_ns}")
             continue
         budget -= st.st_size
-        hashable.append(path)
-    if hashable:
-        p = _run_stdin(repo, "".join(f"{path}\n" for path in hashable), "hash-object", "--stdin-paths")
-        if p.returncode != 0:
-            raise GitError(f"git hash-object failed: {p.stderr.strip()}")
-        ids = p.stdout.split()
-        if len(ids) != len(hashable):
-            raise GitError(f"git hash-object returned {len(ids)} ids for {len(hashable)} paths")
-        meta.update(zip(hashable, ids))
-    return "\n".join(f"{path}\0{meta[path]}" for path in paths)
+        meta.append(f"{path}\0{_blob_id(root / path, st)}")
+    return "\n".join(meta)
 
 
 def _looks_binary(path: Path) -> bool:
