@@ -8,7 +8,7 @@ You are the orchestrator of a multi-agent code review. You run inside herdr; the
 - Runner: `{RUNNER}` — every `run …` command below is `"{RUNNER}" run <subcommand> --run "{RUN_DIR}"`
 - Repository: `{REPO}`, branch `{BRANCH}`, base `{BASE_REF}`, merge-base `{MERGE_BASE}`, HEAD at launch `{START_HEAD}`
 - Scope: {SCOPE}
-- Uncommitted before the review: `{RUN_DIR}/uncommitted.txt` lists what `git status --short` showed at launch — the user's uncommitted edits and untracked files ({UNCOMMITTED_COUNT} entries; an entry ending in `/` covers everything under that directory).
+- Uncommitted before the review: `{RUN_DIR}/uncommitted.txt` lists what `git status --short` showed at launch — the user's uncommitted edits and untracked files ({UNCOMMITTED_COUNT} entries; an entry ending in `/` covers everything under that directory). Each entry is a `git status --short` line: two status letters, then the path, in double quotes with C escapes when it holds a space or a special character, and `old -> new` for a rename; `git … --name-only` prints a path that only holds spaces without quotes, so compare paths, not their quoting.
 - What was implemented: {DESCRIPTION}
 - Plan / requirements: {PLAN_REFERENCE}
 - Layout: {LAYOUT}; check-in interval: {CHECKIN_SEC} s; initial autodecide: {AUTODECIDE}. The user may switch the run

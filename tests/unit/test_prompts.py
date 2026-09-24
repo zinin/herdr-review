@@ -178,6 +178,18 @@ class PromptTemplatesTest(unittest.TestCase):
                     self.assertNotIn(old, text)
         self.assertIn("`drift_status` lists the `git status --short` lines that are new since launch", texts["orchestrator.md"])
 
+    def test_every_prompt_that_introduces_the_uncommitted_list_says_how_to_read_it(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        texts = {"orchestrator.md": render_file(PROMPTS_DIR / "orchestrator.md", values)}
+        for kind in ("auto", "decision"):
+            for scope in ("commits", "worktree"):
+                texts[f"fixer-{kind} ({scope})"] = fixer_skeleton(kind, scope, "/run")
+        for name, text in texts.items():
+            with self.subTest(name=name):
+                self.assertIn("Each entry is a `git status --short` line: two status letters, then the path", text)
+                # `git status --short` quotes `my notes.md`, `git … --name-only` does not
+                self.assertIn("prints a path that only holds spaces without quotes, so compare paths, not their quoting", text)
+
     def test_the_drift_step_names_uncommitted_work_gone_since_launch(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
         text = render_file(PROMPTS_DIR / "orchestrator.md", values)
