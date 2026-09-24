@@ -194,7 +194,9 @@ def untracked_files(repo: Path | str) -> list[UntrackedFile]:
 def tree_hash(repo: Path | str) -> str:
     head = head_commit(repo)
     status = _out(repo, "status", "--porcelain", "--untracked-files=all")
-    diff = _out(repo, "diff", "HEAD")
+    # The user's diff.external or GIT_EXTERNAL_DIFF and textconv drivers would put their own output
+    # here: git's random temp paths make every hash differ, and a slow driver hits the git timeout.
+    diff = _out(repo, "diff", "--no-ext-diff", "--no-textconv", "HEAD")
     untracked_meta = _untracked_meta(repo, _untracked(repo))
     return hashlib.sha256((head + "\n" + status + "\n" + diff + "\n" + untracked_meta).encode("utf-8", "replace")).hexdigest()
 

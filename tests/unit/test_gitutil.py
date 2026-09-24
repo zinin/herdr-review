@@ -132,6 +132,14 @@ class GitUtilTest(unittest.TestCase):
         first = gitutil.tree_hash(self.repo)
         self.assertEqual(gitutil.tree_hash(self.repo), first)
 
+    def test_tree_hash_runs_no_external_diff(self):
+        noisy = Path(self.tmp.name) / "noisy.sh"            # a new line on every call, like git's temp paths
+        noisy.write_text('#!/bin/sh\nn=$(cat "$0.count" 2>/dev/null || echo 0)\nn=$((n + 1))\necho "$n" > "$0.count"\necho "external diff call $n"\n')
+        noisy.chmod(0o755)
+        git(self.repo, "config", "diff.external", str(noisy))
+        (self.repo / "a.txt").write_text("edited\n")
+        self.assertEqual(gitutil.tree_hash(self.repo), gitutil.tree_hash(self.repo))
+
     def test_tree_hash_changes_when_a_commit_lands_on_a_clean_tree(self):
         h0 = gitutil.tree_hash(self.repo)
         (self.repo / "a.txt").write_text("committed\n")
