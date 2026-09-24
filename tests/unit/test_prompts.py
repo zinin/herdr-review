@@ -165,6 +165,25 @@ class PromptTemplatesTest(unittest.TestCase):
             self.assertIn(phrase, text)
         self.assertNotIn("a file uncommitted then changed again", text)
 
+    def test_the_orchestrators_fixer_rules_follow_the_scope(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        values.update(RUN_DIR="/run", REPO="/repo", FIXER_NAME="hr-fixer")
+        text = render_file(PROMPTS_DIR / "orchestrator.md", values)
+        for phrase in (
+            "In scope `commits` committing its fixes is its job too → confirm",
+            'In scope `worktree` it commits nothing: any `git add` or `git commit` → refuse with the dialog\'s own "no" option',
+            'herdr agent prompt hr-fixer "Stage nothing and commit nothing: nothing is committed in this scope',
+            'In scope `worktree`, note what `git -C "/repo" rev-parse HEAD` prints',
+            "that HEAD did not move during the task", "never ask the fixer to commit, rewrite or undo anything in this scope",
+            "in scope `worktree` only that HEAD did not move, with no prompt to commit",
+        ):
+            self.assertIn(phrase, text)
+        self.assertNotIn("changing repository files and committing them is its job", text)
+        commits = text[text.index("In scope `commits`, first make sure"):text.index("In both scopes")]
+        self.assertIn("Commit your changes now", commits)                  # the prompts to commit are scope `commits` only
+        self.assertIn("its fixes count as `done` without a commit", commits)
+        self.assertEqual(text.count("Commit your changes now"), 1)
+
     def test_orchestrator_checks_that_a_fix_commit_is_the_one_the_task_made(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
         values["RUN_DIR"] = "/run"
