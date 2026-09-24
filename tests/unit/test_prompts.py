@@ -214,6 +214,8 @@ class PromptTemplatesTest(unittest.TestCase):
         for kind in ("auto", "decision"):
             for scope in ("commits", "worktree"):
                 texts[f"fixer-{kind} ({scope})"] = fixer_skeleton(kind, scope, "/run")
+        # the commits-scope reviewer matches the list against `git diff` for a file of the change with uncommitted edits
+        texts["scope-commits.md"] = reviewer_steps("commits", "abc123", [" M a.txt"], [], Path("/run/uncommitted.txt"), Path("/run/untracked.txt"))
         for name, text in texts.items():
             with self.subTest(name=name):
                 # git prints a quoted untracked directory as `?? "my notes/"`: the path ends in `/`, the entry does not
@@ -221,10 +223,10 @@ class PromptTemplatesTest(unittest.TestCase):
                 self.assertIn("Each entry is a `git status --short` line: a two-character status such as `??` or ` M`, a"
                               " space, then the path — in double quotes with C escapes when it holds a space or another"
                               " special character, and `old -> new` for a rename.", text)
-                # `git status --short` quotes `my notes/`, `git … --name-only` does not
-                self.assertIn("`git … --name-only` leaves a path unquoted when a space is its only special character, so"
-                              " compare paths, not their quoting: `?? \"my notes/\"` is the untracked directory `my notes/`.",
-                              text)
+                # `git status --short` quotes `my notes/`; `git … --name-only` and `git diff` do not
+                command = "`git diff`" if name == "scope-commits.md" else "`git … --name-only`"
+                self.assertIn(f"{command} leaves a path unquoted when a space is its only special character, so compare"
+                              " paths, not their quoting: `?? \"my notes/\"` is the untracked directory `my notes/`.", text)
                 self.assertNotRegex(text, "[Aa]n entry ending in `/`")
                 for old in ("two status letters", "a path that only holds spaces"):        # `??`, ` M`; a path of spaces
                     self.assertNotIn(old, text)
