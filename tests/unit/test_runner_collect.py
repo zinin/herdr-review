@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from herdr_review import gitutil
-from herdr_review.runner import DRIFT_NOTHING_NEW, Runner, retry_text
+from herdr_review.runner import DRIFT_NOTHING_NEW_OR_GONE, Runner, retry_text
 from tests.unit.fakeherdr import FakeHerdr
 from tests.unit.test_runner_start import RunnerBase, git, make_run
 
@@ -173,13 +173,22 @@ class CollectTest(RunnerBase):
         self.assertTrue(out["drift"])
         self.assertEqual(out["drift_status"], "?? new.txt\n")
 
-    def test_drift_status_says_so_when_nothing_is_new_since_launch(self):
+    def test_drift_status_says_so_when_nothing_is_new_or_gone_since_launch(self):
         (self.repo / "a.txt").write_text("the owner's edit\n")
         r = self.reviewing_since_now("again")
         (self.repo / "a.txt").write_text("the owner's edit, edited again\n")
         out = r.collect()
         self.assertTrue(out["drift"])
-        self.assertEqual(out["drift_status"], DRIFT_NOTHING_NEW + "\n")
+        self.assertEqual(out["drift_status"], DRIFT_NOTHING_NEW_OR_GONE + "\n")
+        self.assertIn("an edit or a revert", out["drift_status"])        # a revert is not ruled out
+
+    def test_drift_status_names_uncommitted_work_gone_since_launch(self):
+        (self.repo / "a.txt").write_text("the owner's edit\n")
+        r = self.reviewing_since_now("gone")
+        git(self.repo, "checkout", "--", "a.txt")                        # the owner's edit wiped during the review
+        out = r.collect()
+        self.assertTrue(out["drift"])
+        self.assertEqual(out["drift_status"], "gone since launch:  M a.txt\n")
 
 
 class FinishTest(RunnerBase):

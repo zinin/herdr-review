@@ -2,6 +2,7 @@ import unittest
 
 from herdr_review import PROMPTS_DIR
 from herdr_review.render import placeholders, render_file
+from herdr_review.runner import DRIFT_GONE
 from herdr_review.scope import fixer_skeleton
 
 NO_COMMIT = "Commit nothing. The change under review is uncommitted work"
@@ -152,6 +153,17 @@ class PromptTemplatesTest(unittest.TestCase):
                 for old in ("Files a reviewer already changed", "changed by a reviewer", "a reviewer already changed"):
                     self.assertNotIn(old, text)
         self.assertIn("`drift_status` lists the `git status --short` lines that are new since launch", texts["orchestrator.md"])
+
+    def test_the_drift_step_names_uncommitted_work_gone_since_launch(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        text = render_file(PROMPTS_DIR / "orchestrator.md", values)
+        for phrase in (
+            f"the lines that are gone since launch, each marked `{DRIFT_GONE.strip()}`",     # the runner's own mark
+            "A gone line means uncommitted work that was there at launch no longer shows",
+            "name it plainly to the user and in the report's drift section",
+        ):
+            self.assertIn(phrase, text)
+        self.assertNotIn("a file uncommitted then changed again", text)
 
     def test_orchestrator_checks_that_a_fix_commit_is_the_one_the_task_made(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}

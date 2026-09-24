@@ -52,8 +52,13 @@ LIVE_STATUSES = ("idle", "working", "blocked", "done", "unknown")
 # the agent, so they must never take one out of the run.
 HERDR_ERROR_CODES = ("herdr_not_found", "herdr_failed", "timeout")
 OBSERVE_ATTEMPTS = 3
-# drift_status when the tree changed but no `git status --short` line is new since launch.
-DRIFT_NOTHING_NEW = "no line of `git status --short` is new since launch: a file uncommitted then changed again, or a commit landed"
+# drift_status when the tree changed but no `git status --short` line is new or gone since launch.
+DRIFT_NOTHING_NEW_OR_GONE = (
+    "no line of `git status --short` is new or gone since launch: the content of a file that was already uncommitted"
+    " at launch changed — an edit or a revert, by an agent or by the user — or a commit landed"
+)
+# How drift_status marks a line of the launch that no longer shows: uncommitted work gone from the tree.
+DRIFT_GONE = "gone since launch: "
 
 
 class RunnerError(Exception):
@@ -626,14 +631,18 @@ class Runner:
 
     # ----- collect
     def _drift_status(self) -> str:
-        """The `git status --short` lines that were not there at launch: what was uncommitted then is the
-        owner's own work, listed in uncommitted.txt. A run from before `uncommitted` was recorded gets them all."""
+        """The `git status --short` lines that were not there at launch, then, marked, the lines of the launch
+        that are gone: what was uncommitted then is the owner's own work, listed in uncommitted.txt, and a line
+        of it that no longer shows is that work reverted or stashed. A run from before `uncommitted` was
+        recorded gets the whole status."""
         before = self.run.get("uncommitted")
         if not isinstance(before, list):
             return gitutil.status_short(self.repo)
-        known = set(before)
-        new = [line for line in gitutil.status_lines(self.repo) if line not in known]
-        return "".join(f"{line}\n" for line in new) if new else DRIFT_NOTHING_NEW + "\n"
+        now = gitutil.status_lines(self.repo)
+        known, current = set(before), set(now)
+        lines = [line for line in now if line not in known]
+        lines += [DRIFT_GONE + line for line in before if line not in current]
+        return "".join(f"{line}\n" for line in lines) if lines else DRIFT_NOTHING_NEW_OR_GONE + "\n"
 
     def _check_drift(self) -> bool:
         data = self.status.data
