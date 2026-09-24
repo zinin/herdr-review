@@ -52,6 +52,13 @@ class PromptTemplatesTest(unittest.TestCase):
         self.assertNotIn("git ls-files --others", text)
         self.assertIn("Apart from your review file", text)
 
+    def test_a_reviewers_copy_of_the_repository_registers_nothing_in_it(self):
+        reviewer = render_file(PROMPTS_DIR / "reviewer.md", {k: "v" for k in EXPECTED["reviewer.md"]})
+        self.assertIn("Copy the repository with `git clone` or `cp -a`, never with `git worktree add`", reviewer)
+        orchestrator = render_file(PROMPTS_DIR / "orchestrator.md", {k: "v" for k in EXPECTED["orchestrator.md"]})
+        rule = orchestrator[orchestrator.index("       - a reviewer:"):orchestrator.index("       - the fixer:")]
+        self.assertIn("`git worktree add` counts as a write into the repository, even with a path under the scratch directory", rule)
+
     def test_the_worktree_steps_say_how_a_quoted_name_is_written(self):
         text = reviewer_steps("worktree", "abc123", [], [UntrackedFile("Icon\r", 0)], Path("/run/uncommitted.txt"), Path("/run/untracked.txt"))
         self.assertIn("- `\"Icon\\r\"` (0 B)", text)
