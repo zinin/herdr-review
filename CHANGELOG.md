@@ -29,7 +29,7 @@ All notable changes to herdr-review will be documented here.
   is applied and left uncommitted. In a review of the commits, the orchestrator dismisses findings
   about the owner's uncommitted files outside the change.
 - Fix commits follow the repository's own commit style instead of fixed `review:` subjects; the
-  orchestrator verifies them by hash.
+  orchestrator verifies each one by hash and subject.
 - `run finish`, `status` and the report list the commits made during the run, not every commit since
   the merge-base.
 - The launcher never asks about untracked files or startup dialogs; `--plan` is documented as a path

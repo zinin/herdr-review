@@ -138,6 +138,18 @@ class PromptTemplatesTest(unittest.TestCase):
             self.assertIn(phrase, text)
         self.assertNotIn("--stat", text)
         self.assertNotIn("unprotected file", text)
+
+    def test_orchestrator_checks_that_a_fix_commit_is_the_one_the_task_made(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        values["RUN_DIR"] = "/run"
+        text = render_file(PROMPTS_DIR / "orchestrator.md", values)
+        for phrase in (
+            'log -1 --format=%s <hash>', "must equal the first line of `/run/fix-auto-commit.txt`",
+            "compared to the first line of `/run/fix-<i>-commit.txt`", "compare subjects, not whole messages",
+            "must differ from `v` and from every hash an earlier fix of this run reported",
+            "its fixes count as `done` without a commit", "применено, не закоммичено: коммит не создан",
+        ):
+            self.assertIn(phrase, text)
         self.assertNotIn("review(auto-decide)", text)
         self.assertNotIn("review: auto-fix", text)
 
