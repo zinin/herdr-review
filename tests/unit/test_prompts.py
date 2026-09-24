@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 
@@ -161,7 +162,7 @@ class PromptTemplatesTest(unittest.TestCase):
         for phrase in (
             "new MCP servers found in this project", "not even with Esc", "Trust and continue", "Grok — `y`",
             "/run/uncommitted.txt", "/run/scratch/<profile>/", "вне изменения: ваш незакоммиченный файл",
-            "применено, не закоммичено", "log --oneline --first-parent v..HEAD", "rev-parse HEAD",
+            "применено, не закоммичено", "log --oneline --first-parent --no-color --no-show-signature v..HEAD", "rev-parse HEAD",
             "/run/reviews/<profile>.md", "except your review file", "everything else its task file asks for",
             'cursor is on "Quit"', "--name-only", "the user went on editing their own files",
             "In scope `worktree` the fixer commits nothing", "применено, не закоммичено: ревью незакоммиченной работы — закоммитьте сами",
@@ -251,7 +252,7 @@ class PromptTemplatesTest(unittest.TestCase):
         values["RUN_DIR"] = "/run"
         text = render_file(PROMPTS_DIR / "orchestrator.md", values)
         for phrase in (
-            'the first line of the commit\'s message (`git -C "v" log -1 --no-show-signature --format=%B <hash>`)',
+            'the first line of the commit\'s message (`git -C "v" log -1 --no-color --no-show-signature --format=%B <hash>`)',
             "must equal the first line of `/run/fix-auto-commit.txt`", "compare first lines, not whole messages",
             "with the first line of its message compared to the first line of `/run/fix-<i>-commit.txt`",
             "must differ from `v` and from every hash an earlier fix of this run reported",
@@ -267,13 +268,25 @@ class PromptTemplatesTest(unittest.TestCase):
         report = text[text.index("## Phase 6"):text.index("## Red flags")]
         for phrase in (
             'git -C "/repo" merge-base --is-ancestor abc123 HEAD',
-            'git -C "/repo" log --oneline --first-parent abc123..HEAD',        # a merge of the base brings none of its commits
+            'git -C "/repo" log --oneline --first-parent --no-color --no-show-signature abc123..HEAD',   # a merge of the base brings none of its commits
             "«ветку переписали во время прогона (rebase, amend, reset или смена ветки) — git не отделит коммиты"
             " прогона; ниже коммиты фиксера по его отчётам»",
             "the fix commits you noted from the fixer's reports — the same hashes you pass to `run finish --commits`",
         ):
             self.assertIn(phrase, report)
-        self.assertLess(report.index("merge-base --is-ancestor"), report.index("log --oneline --first-parent abc123..HEAD"))
+        self.assertLess(report.index("merge-base --is-ancestor"), report.index("log --oneline --first-parent --no-color --no-show-signature abc123..HEAD"))
+
+    def test_every_command_of_the_orchestrator_that_prints_commits_ignores_colour_and_signatures(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        values["REPO"] = "/repo"
+        text = render_file(PROMPTS_DIR / "orchestrator.md", values)
+        commands = [c for c in re.findall(r'`(git -C "/repo" [^`]*)`', text) if re.search(r" (log|show) ", c)]
+        printing = [c for c in commands if " show HEAD:" not in c]         # a blob read prints no commit
+        self.assertGreaterEqual(len(printing), 3)                           # the fix-commit checks and the report's list
+        for command in printing:                                            # color.ui=always, log.showSignature=true
+            with self.subTest(command=command):
+                self.assertIn(" --no-color", command)
+                self.assertIn(" --no-show-signature", command)
 
 if __name__ == "__main__":
     unittest.main()
