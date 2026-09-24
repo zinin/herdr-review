@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from herdr_review.dialogs import CLAUDE_SESSION_SETTINGS, MCP_REFUSAL, DialogOutcome, recognize, resolve_startup_dialog, startup_args
+from herdr_review.dialogs import CLAUDE_SESSION_SETTINGS, MCP_REFUSAL, DialogOutcome, mcp_check, recognize, resolve_startup_dialog, startup_args
 from tests.unit.fakeherdr import FakeHerdr
 
 CLAUDE_TRUST_ON_NO = "Quick safety check … ❯ No, exit\n  Yes, I trust this folder\nEnter to confirm · Esc to cancel\n"
@@ -169,6 +169,24 @@ class StartupDialogTest(unittest.TestCase):
         h.screens["hr1-grok"] = GROK_TRUST
         self.assertTrue(resolve_startup_dialog(h, "hr1-grok").resolved)
         self.assertEqual(h.calls_named("agent_send_keys"), [("agent_send_keys", "hr1-grok", ("y",))])
+
+
+class MCPCheckTest(unittest.TestCase):
+    def test_the_screen_after_a_start_is_read_once_more_and_never_passed_unread(self):
+        for reads, outcome in (
+            ([CLAUDE_IDLE], DialogOutcome(resolved=True)),
+            ([""], DialogOutcome(resolved=True)),                             # blank, but read: only a failed read is no look
+            ([MCP_MANY], DialogOutcome(resolved=False, refusal=MCP_REFUSAL)),
+            ([None, CLAUDE_IDLE], DialogOutcome(resolved=True)),              # one failed read is read again
+            ([None, MCP_ONE], DialogOutcome(resolved=False, refusal=MCP_REFUSAL)),
+            ([None, None], DialogOutcome(resolved=False)),                    # nothing was checked: neither resolved nor refused
+        ):
+            with self.subTest(reads=reads):
+                h = FakeHerdr()
+                h.reads["hr1-rv"] = list(reads)
+                self.assertEqual(mcp_check(h, "hr1-rv"), outcome)
+                self.assertEqual(len(h.calls_named("agent_read")), len(reads))
+                self.assertEqual(h.calls_named("agent_send_keys"), [])
 
 
 class RecognizeTest(unittest.TestCase):

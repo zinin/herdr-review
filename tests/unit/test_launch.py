@@ -8,11 +8,11 @@ from pathlib import Path
 from unittest import mock
 
 from herdr_review.config import parse_config
-from herdr_review.dialogs import CLAUDE_SESSION_SETTINGS, MCP_REFUSAL
+from herdr_review.dialogs import CLAUDE_SESSION_SETTINGS, MCP_REFUSAL, MCP_UNCHECKED
 from herdr_review.herdr import Herdr
 from herdr_review.launch import LaunchError, LaunchOptions, _unfinished_runs, launch, new_run_id, project_slug, resolve_selection
 from tests.unit.fakeherdr import FakeHerdr
-from tests.unit.test_dialogs import MCP_MANY, MCP_ONE
+from tests.unit.test_dialogs import CLAUDE_IDLE, MCP_MANY, MCP_ONE
 
 RAW = {
     "profiles": {
@@ -495,6 +495,28 @@ class LaunchTest(unittest.TestCase):
                 self.assertEqual(herdr.calls_named("tab_close"), [])
                 run_dir = next((self.root / "runs").glob(f"*/*-hrmcp{i}"))
                 self.assertEqual(json.loads((run_dir / "status.json").read_text())["phase"], "aborted")
+
+    def test_a_screen_herdr_cannot_read_after_the_start_aborts_the_launch_without_a_prompt(self):
+        self.herdr.reads["hrtest-orch"] = [None, None]                        # agent start succeeds, both looks fail
+        with self.assertRaises(LaunchError) as ctx:
+            self.do_launch()
+        message = str(ctx.exception)
+        self.assertIn(f"orchestrator 'claude-opus' failed to start: {MCP_UNCHECKED}", message)
+        self.assertIn("Tab w1:t2 is left open for inspection", message)
+        self.assertIn("Run directory:", message)
+        self.assertEqual(self.herdr.calls_named("agent_prompt"), [])
+        self.assertEqual(self.herdr.calls_named("agent_send_keys"), [])
+        self.assertEqual(self.herdr.calls_named("tab_close"), [])
+        run_dir = next((self.root / "runs").glob("*/*-hrtest"))
+        status = json.loads((run_dir / "status.json").read_text())
+        self.assertEqual((status["phase"], status["abort_reason"]), ("aborted", message))
+
+    def test_one_failed_read_after_the_start_is_read_again(self):
+        self.herdr.reads["hrtest-orch"] = [None, CLAUDE_IDLE]
+        res = self.do_launch()
+        self.assertEqual(len(self.herdr.calls_named("agent_read")), 2)
+        self.assertEqual(res["orchestrator"], "hrtest-orch")
+        self.assertEqual([c[1] for c in self.herdr.calls_named("agent_prompt")], ["hrtest-orch"])
 
 
 if __name__ == "__main__":

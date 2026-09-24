@@ -14,7 +14,7 @@ from typing import Callable, Mapping
 
 from . import PROMPTS_DIR, __version__, gitutil
 from .config import Config, is_secretish
-from .dialogs import mcp_refusal, resolve_startup_dialog, startup_args
+from .dialogs import MCP_UNCHECKED, mcp_check, resolve_startup_dialog, startup_args
 from .herdr import Herdr, HerdrResult
 from .render import render_file
 from .scope import ScopeError, fixer_skeleton, orchestrator_scope, resolve_scope, reviewer_steps, untracked_line
@@ -310,8 +310,10 @@ def launch(
         refusal = None
         if r.ok:
             # herdr 0.9.0 takes Claude Code's MCP dialog with several servers for an idle agent:
-            # look before the prompt is typed into it.
-            refusal = mcp_refusal(herdr, orch["name"])
+            # look before the prompt is typed into it. A screen herdr could not read stops the launch too.
+            outcome = mcp_check(herdr, orch["name"])
+            if not outcome.resolved:
+                refusal = outcome.refusal or MCP_UNCHECKED
         elif r.error_code == "agent_not_ready":
             outcome = resolve_startup_dialog(herdr, orch["name"])
             if outcome.resolved:

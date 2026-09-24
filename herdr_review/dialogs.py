@@ -17,6 +17,9 @@ MCP_REFUSAL = (
     "repository. Usually the profile passes its own --settings, which replaces the session-only one: "
     'add "enableAllProjectMcpServers": true there.'
 )
+# After a successful start nobody has seen a screen herdr could not read: a prompt typed there could answer
+# that dialog, so none is sent.
+MCP_UNCHECKED = "herdr could not read the screen to check for Claude Code's MCP approval dialog; no prompt was sent"
 # Claude Code: "❯ No, exit" / "Yes, I trust this folder" — the cursor starts on "No, exit".
 CLAUDE_CURSOR = "❯"
 CLAUDE_TRUST = re.compile(r"yes,\s*i trust", re.IGNORECASE)
@@ -83,14 +86,23 @@ def _screen_dialog(herdr, name: str) -> tuple[str, tuple[str, ...] | None] | Non
     return recognize(_screen(herdr, name) or "")
 
 
-def mcp_refusal(herdr, name: str) -> str | None:
-    """MCP_REFUSAL when Claude Code's MCP approval dialog is on <name>'s screen, else None.
+def mcp_check(herdr, name: str) -> DialogOutcome:
+    """Look for Claude Code's MCP approval dialog on <name>'s screen once `agent start` succeeded: resolved
+    when the screen was read without it, refused with MCP_REFUSAL when it is there. A failed read is tried
+    once more; when that one fails too, nothing was checked: neither resolved nor refused.
 
     herdr 0.9.0 takes that dialog with several servers for an idle agent, so `agent start` succeeds
     while it is up. Only this dialog is looked for: herdr judged the agent ready, and answering what
     looks like a trust dialog's lingering text could type into a live input."""
-    found = _screen_dialog(herdr, name)
-    return MCP_REFUSAL if found is not None and found[0] == "claude-mcp" else None
+    screen = _screen(herdr, name)
+    if screen is None:
+        screen = _screen(herdr, name)
+    if screen is None:
+        return DialogOutcome(resolved=False)
+    found = recognize(screen)
+    if found is not None and found[0] == "claude-mcp":
+        return DialogOutcome(resolved=False, refusal=MCP_REFUSAL)
+    return DialogOutcome(resolved=True)
 
 
 def _settle(herdr, name: str) -> tuple[tuple[str, tuple[str, ...] | None] | None, bool]:
