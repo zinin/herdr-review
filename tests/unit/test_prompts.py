@@ -13,7 +13,7 @@ EXPECTED = {
     "fixer-decision.md": {"RUN_DIR", "COMMIT_RULES"},
     "fixer-commit-auto.md": {"RUN_DIR"},
     "fixer-commit-decision.md": {"RUN_DIR"},
-    "fixer-commit-none.md": set(),
+    "fixer-commit-none.md": {"RUN_DIR"},
     "scope-commits.md": {"MERGE_BASE", "UNCOMMITTED"},
     "scope-worktree.md": {"MERGE_BASE", "UNTRACKED"},
     "orchestrator.md": {
@@ -72,6 +72,15 @@ class PromptTemplatesTest(unittest.TestCase):
                 self.assertNotIn("the review covers uncommitted work", commits)
                 self.assertIn("git commit --only -F /run/fix-", commits)
                 self.assertNotIn("{", commits)
+
+    def test_the_worktree_commit_rule_leaves_the_skip_rule_in_force(self):
+        for kind in ("auto", "decision"):
+            with self.subTest(kind=kind):
+                text = fixer_skeleton(kind, "worktree", "/run")
+                self.assertIn("Report each fix you apply as `applied, not committed: the review covers uncommitted work`", text)
+                self.assertIn("The Rules above still hold: a fix that would delete, move or rename a path listed in /run/uncommitted.txt", text)
+                self.assertIn("is not applied, and is reported `skipped: <path> holds the user's uncommitted work; left to the user`", text)
+                self.assertNotIn("Apply each fix in full", text)                # it read as covering the fixes to skip too
 
     def test_orchestrator_prompt_renders_and_names_every_subcommand(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
