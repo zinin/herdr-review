@@ -175,10 +175,14 @@ class PromptTemplatesTest(unittest.TestCase):
         for phrase in (
             f"the lines that are gone since launch, each marked `{DRIFT_GONE.strip()}`",     # the runner's own mark
             "A gone line means uncommitted work that was there at launch no longer shows",
+            "no longer shows — reverted, stashed or committed, by an agent or by the user",     # committed loses nothing
+            "больше не видны — откачены, убраны в stash или закоммичены",
             "name it plainly to the user and in the report's drift section",
         ):
             self.assertIn(phrase, text)
         self.assertNotIn("a file uncommitted then changed again", text)
+        for lost in ("пропали", "пропавшую"):                                              # committed work is not lost
+            self.assertNotIn(lost, text)
 
     def test_the_orchestrators_fixer_rules_follow_the_scope(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}

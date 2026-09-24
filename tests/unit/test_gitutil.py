@@ -230,6 +230,17 @@ class GitUtilTest(unittest.TestCase):
         (self.repo / "a\u2028b.txt").write_text("x\n")
         self.assertEqual(gitutil.status_lines(self.repo), ["?? a\u2028b.txt"])
 
+    def test_status_paths_drop_the_quotes_and_split_a_rename(self):
+        (self.repo / "a.txt").write_text("edited\n")
+        git(self.repo, "mv", "a.txt", "b -> c.txt")                        # the new name holds the arrow itself
+        (self.repo / "my dir").mkdir()
+        (self.repo / "my dir" / "f.txt").write_text("x\n")
+        (self.repo / 'q"uote.txt').write_text("y\n")
+        lines = gitutil.status_lines(self.repo)
+        self.assertEqual(lines, ['RM a.txt -> "b -> c.txt"', '?? "my dir/"', '?? "q\\"uote.txt"'])
+        self.assertEqual([gitutil.status_paths(line) for line in lines],
+                         [["a.txt", "b -> c.txt"], ["my dir/"], ['q\\"uote.txt']])    # an escape inside stays
+
     def test_log_oneline_is_colour_free_under_color_ui_always(self):
         git(self.repo, "config", "color.ui", "always")
         short = subprocess.run(["git", "-C", str(self.repo), "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()

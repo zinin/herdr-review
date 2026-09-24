@@ -60,7 +60,8 @@ DRIFT_NOTHING_NEW_OR_GONE = (
     "no line of `git status --short` is new or gone since launch: the content of a file that was already uncommitted"
     " at launch changed — an edit or a revert, by an agent or by the user — or a commit landed"
 )
-# How drift_status marks a line of the launch that no longer shows: uncommitted work gone from the tree.
+# How drift_status marks a line of the launch whose path no line shows now: uncommitted work reverted,
+# stashed or committed.
 DRIFT_GONE = "gone since launch: "
 
 
@@ -112,6 +113,12 @@ def section_body(text: str, heading: str) -> list[str]:
         if inside:
             body.append(line)
     return body
+
+
+def still_listed(path: str, paths: set[str]) -> bool:
+    """Whether <path>, of a `git status --short` line of the launch, is among the <paths> of the lines now.
+    An untracked `dir/` is while a path under it is: a file of it staged since shows by its own path."""
+    return any(p.startswith(path) for p in paths) if path.endswith("/") else path in paths
 
 
 def same_commits(passed: list[str], computed: list[str]) -> bool:
@@ -635,16 +642,19 @@ class Runner:
     # ----- collect
     def _drift_status(self) -> str:
         """The `git status --short` lines that were not there at launch, then, marked, the lines of the launch
-        that are gone: what was uncommitted then is the owner's own work, listed in uncommitted.txt, and a line
-        of it that no longer shows is that work reverted or stashed. A run from before `uncommitted` was
-        recorded gets the whole status."""
+        whose path no line shows now: what was uncommitted then is the owner's own work, listed in
+        uncommitted.txt, and a path of it that no longer shows is that work reverted, stashed or committed. A
+        run from before `uncommitted` was recorded gets the whole status."""
         before = self.run.get("uncommitted")
         if not isinstance(before, list):
             return gitutil.status_short(self.repo)
         now = gitutil.status_lines(self.repo)
-        known, current = set(before), set(now)
+        known = set(before)
+        paths = {p for line in now for p in gitutil.status_paths(line)}
         lines = [line for line in now if line not in known]
-        lines += [DRIFT_GONE + line for line in before if line not in current]
+        # A path whose status code alone changed, staged since launch say, lost nothing: it shows by its new
+        # line only. A rename of the launch goes by its new path.
+        lines += [DRIFT_GONE + line for line in before if not still_listed(gitutil.status_paths(line)[-1], paths)]
         return "".join(f"{line}\n" for line in lines) if lines else DRIFT_NOTHING_NEW_OR_GONE + "\n"
 
     def _check_drift(self) -> bool:

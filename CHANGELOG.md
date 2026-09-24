@@ -35,8 +35,9 @@ All notable changes to herdr-review will be documented here.
 - Drift is worded as a change of the working tree, not as a reviewer's doing: `status` says «рабочее
   дерево изменилось во время ревью», and `drift_status` holds only the `git status --short` lines
   that are new since the launch, so the owner's files uncommitted then are not reported as changed.
-  A line of the launch that no longer shows is listed as `gone since launch: …`: uncommitted work
-  reverted or stashed during the review, which the orchestrator names as such.
+  A line of the launch whose path no line shows any more is listed as `gone since launch: …`:
+  uncommitted work reverted, stashed or committed during the review, which the orchestrator names as
+  such. A path whose status alone changed, staged say, is listed by its new line only.
 - The launcher never asks about untracked files or startup dialogs; `--plan` is documented as a path
   or free text.
 - `config.example.yaml`: every profile offers the agent's auto mode next to yolo, one of the two

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import stat
 import subprocess
 from dataclasses import dataclass
@@ -22,6 +23,10 @@ UNTRACKED_READ_LIMIT_BYTES = 256 * 1024
 BINARY_SNIFF_BYTES = 8192
 # The skip mark of an untracked nested repository: git lists it as one `dir/` entry.
 NESTED_REPO = "nested git repository"
+# A path in `git status --short`: in double quotes, with C escapes inside, when it holds a space, a quote, a
+# backslash or a control character; bare otherwise. A rename or copy entry reads `<old> -> <new>`.
+STATUS_PATH = r'"(?:[^"\\]|\\.)*"|[^ ]+'
+STATUS_RENAME = re.compile(rf"({STATUS_PATH}) -> ({STATUS_PATH})")
 
 
 @dataclass(frozen=True)
@@ -212,6 +217,15 @@ def status_short(repo: Path | str) -> str:
 def status_lines(repo: Path | str) -> list[str]:
     # Not splitlines(): git prints a name holding U+2028 or U+0085 as is, and that is one entry.
     return [line for line in status_short(repo).split("\n") if line.strip()]
+
+
+def status_paths(line: str) -> list[str]:
+    """The paths a `status_lines` line names: its one path, or for a rename or copy the old path, then the
+    new one. The quotes git puts around a path go and its escapes stay: a path reads the same in every
+    line, and a path under an untracked `dir/` starts with it."""
+    rest = line[3:]
+    renamed = STATUS_RENAME.fullmatch(rest) if {"R", "C"} & set(line[:2]) else None
+    return [p[1:-1] if len(p) > 1 and p[0] == p[-1] == '"' else p for p in (renamed.groups() if renamed else (rest,))]
 
 
 def log_oneline(repo: Path | str, range_: str) -> str:

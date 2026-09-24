@@ -190,6 +190,48 @@ class CollectTest(RunnerBase):
         self.assertTrue(out["drift"])
         self.assertEqual(out["drift_status"], "gone since launch:  M a.txt\n")
 
+    def test_an_edit_staged_since_launch_is_not_gone(self):
+        (self.repo / "a.txt").write_text("the owner's edit\n")
+        r = self.reviewing_since_now("staged")                           # ` M a.txt`
+        git(self.repo, "add", "a.txt")                                   # the same edit, only staged
+        out = r.collect()
+        self.assertTrue(out["drift"])
+        self.assertEqual(out["drift_status"], "M  a.txt\n")
+
+    def test_an_untracked_file_added_since_launch_is_not_gone(self):
+        (self.repo / "n.txt").write_text("the owner's new file\n")
+        r = self.reviewing_since_now("added")                            # `?? n.txt`
+        git(self.repo, "add", "n.txt")
+        out = r.collect()
+        self.assertTrue(out["drift"])
+        self.assertEqual(out["drift_status"], "A  n.txt\n")
+
+    def test_an_untracked_directory_stays_while_a_path_under_it_is_listed(self):
+        (self.repo / "dir").mkdir()
+        (self.repo / "dir" / "f.txt").write_text("f\n")
+        (self.repo / "dir" / "g.txt").write_text("g\n")
+        r = self.reviewing_since_now("dir")                              # `?? dir/`
+        git(self.repo, "add", "dir/f.txt")                               # `A  dir/f.txt` and `?? dir/g.txt` now
+        out = r.collect()
+        self.assertEqual(out["drift_status"], "A  dir/f.txt\n?? dir/g.txt\n")
+
+    def test_both_paths_of_a_rename_count_and_quoted_paths_match(self):
+        (self.repo / "a.txt").write_text("the owner's edit\n")
+        (self.repo / "my dir").mkdir()
+        (self.repo / "my dir" / "f g.txt").write_text("f\n")
+        r = self.reviewing_since_now("quoted")                           # ` M a.txt`, `?? "my dir/"`
+        git(self.repo, "mv", "a.txt", "b c.txt")                         # a.txt is the rename's old path now
+        git(self.repo, "add", "my dir/f g.txt")                          # git quotes a path with a space
+        out = r.collect()
+        self.assertEqual(out["drift_status"], 'RM a.txt -> "b c.txt"\nA  "my dir/f g.txt"\n')
+
+    def test_a_rename_of_the_launch_counts_by_its_new_path(self):
+        git(self.repo, "mv", "a.txt", "b.txt")
+        r = self.reviewing_since_now("renamed")                          # `R  a.txt -> b.txt`
+        git(self.repo, "checkout", "HEAD", "--", "a.txt")                # a.txt is back, b.txt still holds the work
+        out = r.collect()
+        self.assertEqual(out["drift_status"], "A  b.txt\n")
+
 
 class FinishTest(RunnerBase):
     def test_finish_tabs_without_closing(self):
