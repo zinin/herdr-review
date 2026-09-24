@@ -123,6 +123,10 @@ class PromptTemplatesTest(unittest.TestCase):
                     self.assertIn("Apply every fix first, then decide what to commit", text)
                     self.assertIn("applied, not committed: shares <file> with an uncommitted fix", text)
                     self.assertIn("Commit once, with only the files of the fixes still marked `done`", text)
+                    # the message comes after the decision and holds only what is committed
+                    self.assertIn("Only then write the commit message, for the fixes still marked `done`", text)
+                    self.assertIn("one line per fix still marked `done`", text)
+                    self.assertLess(text.index("then decide what to commit"), text.index("write the commit message"))
 
     def test_orchestrator_prompt_names_the_dialogs_and_protects_the_users_files(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
