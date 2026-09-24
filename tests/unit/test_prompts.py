@@ -250,6 +250,23 @@ class PromptTemplatesTest(unittest.TestCase):
         self.assertIn("its fixes count as `done` without a commit", commits)
         self.assertEqual(text.count("Commit your changes now"), 1)
 
+    def test_in_the_worktree_scope_a_moved_head_is_not_blamed_on_the_fixer(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        values["REPO"] = "/repo"
+        text = render_file(PROMPTS_DIR / "orchestrator.md", values)
+        worktree = text[text.index("In scope `worktree` the fixer commits nothing"):text.index("In scope `commits`, first make sure")]
+        for phrase in (                                                  # the user may commit during a fixer task too
+            'When HEAD moved during the task, list the new commits with'
+            ' `git -C "/repo" log --oneline --first-parent --no-color --no-show-signature <the noted hash>..HEAD`',
+            "record a commit as the fixer's only when the fixer's report names its hash",
+            "«HEAD сдвинулся во время задачи фиксера: <hash> <тема> — коммит фиксера или ваш»",
+            "never ask the fixer to commit, rewrite or undo anything in this scope",
+        ):
+            self.assertIn(phrase, worktree)
+        self.assertNotIn("a commit made anyway (HEAD moved)", text)
+        self.assertIn("in scope `worktree` only that HEAD did not move, with no prompt to commit, and when it moved, its new"
+                      " commits listed and recorded as in Phase 4", text)
+
     def test_orchestrator_checks_that_a_fix_commit_is_the_one_the_task_made(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
         values["RUN_DIR"] = "/run"
