@@ -81,7 +81,8 @@ class PromptTemplatesTest(unittest.TestCase):
                 self.assertIn("has no copy in git", text)
                 self.assertIn("applied, not committed", text)
                 self.assertIn("committed whole or not at all", text)
-                self.assertIn("git status --porcelain -- <file>", text)
+                self.assertIn("git status --porcelain --untracked-files=all -- <file>", text)   # whatever status.showUntrackedFiles says
+                self.assertNotIn("git status --porcelain -- <file>", text)
                 self.assertIn("holds the user's uncommitted work; left to the user", text)
                 self.assertIn(f"git commit --only -F {message} --", text)
                 self.assertIn("git log -n 20", text)
