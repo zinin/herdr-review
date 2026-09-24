@@ -295,8 +295,8 @@ class FinishTest(RunnerBase):
         self.assertEqual(self.herdr.calls_named("tab_close"), [])
 
     def reviewed_run(self, commits: int = 2, launched_now: bool = False) -> Path:
-        """A run whose merge_base is real, with <commits> commits on top of it; <launched_now>: its run.json
-        records the HEAD of now as the HEAD at launch."""
+        """A run whose merge_base is real, with <commits> commits on top of it, launched on the branch the repository
+        is on; <launched_now>: its run.json records the HEAD of now as the HEAD at launch."""
         base = gitutil.merge_base(self.repo, "HEAD")
         for i in range(commits):
             (self.repo / "a.txt").write_text(f"change {i}\n")
@@ -304,6 +304,7 @@ class FinishTest(RunnerBase):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",))
         run = json.loads((run_dir / "run.json").read_text())
         run["merge_base"] = base
+        run["branch"] = gitutil.current_branch(self.repo)          # as launch records it; make_run's is `feat`
         if launched_now:
             run["head"] = gitutil.head_commit(self.repo)
         (run_dir / "run.json").write_text(json.dumps(run))
@@ -330,10 +331,22 @@ class FinishTest(RunnerBase):
 
     def test_finish_falls_back_to_the_passed_commits_when_git_fails(self):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",))   # merge_base is 0000…
+        run = json.loads((run_dir / "run.json").read_text())
+        run["branch"] = gitutil.current_branch(self.repo)                 # still on the branch of the launch
+        (run_dir / "run.json").write_text(json.dumps(run))
         r = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None)
         out = r.finish(["abc123", ""])
         self.assertEqual(out["commits"], ["abc123"])
         self.assertIn("cannot read the commit list", (run_dir / "runner.log").read_text())
+
+    def test_finish_falls_back_to_the_passed_commits_when_git_cannot_name_the_branch(self):
+        run_dir = self.reviewed_run(0, launched_now=True)
+        git(self.repo, "switch", "-q", "--orphan", "other")     # a branch with no commit: rev-parse cannot name HEAD
+        out = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish(["abc123"])
+        self.assertEqual(out["commits"], ["abc123"])
+        log = (run_dir / "runner.log").read_text()
+        self.assertIn("finish: cannot read the commit list from git: git rev-parse --abbrev-ref HEAD failed", log)
+        self.assertNotIn("switched during the run", log)
 
     def test_finish_closes_agents_when_configured(self):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",), close=True)
@@ -404,6 +417,33 @@ class FinishTest(RunnerBase):
         self.assertIn("finish: the branch was rewritten or switched during the run", log)
         self.assertIn("recording the orchestrator's --commits", log)
         self.assertNotIn("does not match", log)
+
+    def test_a_switch_to_a_branch_made_from_the_launch_records_the_orchestrators_commits(self):
+        run_dir = self.reviewed_run(0, launched_now=True)       # launched on master, at its HEAD
+        (self.repo / "a.txt").write_text("fixed during the run\n")
+        git(self.repo, "commit", "-q", "-am", "fix during the run")
+        fix = short(self.repo)
+        git(self.repo, "switch", "-q", "-c", "other")           # the owner makes a branch here and switches to it
+        for i in range(2):                                      # two commits of its own
+            (self.repo / f"o{i}.txt").write_text("the other branch's own work\n")
+            git(self.repo, "add", f"o{i}.txt")
+            git(self.repo, "commit", "-q", "-m", f"the other branch's own work {i}")
+        out = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([fix])
+        self.assertEqual(out["commits"], [fix])                 # HEAD descends from the launch, yet other's own two are not the run's
+        self.assertIn("коммитов 1", self.herdr.calls_named("notification_show")[-1][2])
+        log = (run_dir / "runner.log").read_text()
+        self.assertIn("finish: the branch was switched during the run (launched on master, now on other);"
+                      " recording the orchestrator's --commits", log)
+        self.assertNotIn("does not match", log)
+
+    def test_a_run_launched_on_a_detached_head_that_stays_detached_records_the_commits_git_reports(self):
+        git(self.repo, "switch", "-q", "--detach")
+        run_dir = self.reviewed_run(0, launched_now=True)
+        self.assertEqual(json.loads((run_dir / "run.json").read_text())["branch"], "HEAD")    # as launch records it
+        (self.repo / "a.txt").write_text("fixed during the run\n")
+        git(self.repo, "commit", "-q", "-am", "fix during the run")    # HEAD stays detached
+        out = Runner(run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None).finish([])
+        self.assertEqual(out["commits"], [short(self.repo)])
 
     def test_a_merge_of_the_base_during_the_run_brings_none_of_the_bases_commits(self):
         git(self.repo, "switch", "-q", "-c", "feat")

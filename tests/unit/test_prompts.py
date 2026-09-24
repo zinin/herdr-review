@@ -359,6 +359,20 @@ class PromptTemplatesTest(unittest.TestCase):
             self.assertIn(phrase, report)
         self.assertLess(report.index("merge-base --is-ancestor"), report.index("log --oneline --first-parent --no-color --no-show-signature abc123..HEAD"))
 
+    def test_the_report_takes_the_runs_commits_from_git_only_on_the_branch_of_the_launch(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        values.update(REPO="/repo", START_HEAD="abc123", BRANCH="feat")
+        text = render_file(PROMPTS_DIR / "orchestrator.md", values)
+        report = text[text.index("## Phase 6"):text.index("## Red flags")]
+        # a branch made from the branch of the launch still holds the HEAD of the launch: the ancestor check passes
+        branch = '`git -C "/repo" rev-parse --abbrev-ref HEAD` prints `feat`'
+        ancestor = '`git -C "/repo" merge-base --is-ancestor abc123 HEAD` succeeds'
+        range_ = '`git -C "/repo" log --oneline --first-parent --no-color --no-show-signature abc123..HEAD`'
+        for phrase in (branch, ancestor, range_, "Otherwise the branch was switched or rewritten during the run"):
+            self.assertIn(phrase, report)
+        self.assertLess(report.index(branch), report.index(range_))
+        self.assertLess(report.index(ancestor), report.index(range_))
+
     def test_every_command_of_the_orchestrator_that_prints_commits_ignores_colour_and_signatures(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
         values["REPO"] = "/repo"

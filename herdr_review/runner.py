@@ -726,12 +726,22 @@ class Runner:
 
     # ----- finish
     def _log_commits(self) -> list[str] | None:
-        """The hashes of the commits made since the run was launched, while the branch still holds the HEAD of the
-        launch. None, with the reason in runner.log, when git cannot tell them: it could not be asked, or the
-        branch was rewritten or switched during the run (a rebase, an amend, a reset), and `<head>..HEAD` would
-        hold the rewritten commits of the branch and the base's."""
+        """The hashes of the commits made since the run was launched, while HEAD is on the branch of the launch and
+        that branch still holds the HEAD of the launch. None, with the reason in runner.log, when git cannot tell
+        them, and `finish` records the orchestrator's --commits: git could not be asked, for the branch or for the
+        commits; HEAD is on another branch than the `branch` of run.json, switched to during the run, and
+        `<head>..HEAD` would hold every commit that branch has of its own, even when its tip descends from the HEAD
+        of the launch; or the branch was rewritten during the run (a rebase, an amend, a reset), and `<head>..HEAD`
+        would hold the rewritten commits of the branch and the base's. The branch is compared first. A launch on a
+        detached HEAD recorded `HEAD`, as `git rev-parse --abbrev-ref HEAD` names it: while HEAD stays detached,
+        the ancestor check alone decides."""
         since = self.run.get("head") or self.run["merge_base"]      # a run made before `head` existed
+        branch = self.run["branch"]
         try:
+            now = gitutil.current_branch(self.repo)
+            if now != branch:
+                self.log(f"finish: the branch was switched during the run (launched on {branch}, now on {now}); recording the orchestrator's --commits")
+                return None
             if not gitutil.is_ancestor(self.repo, since):
                 self.log(f"finish: the branch was rewritten or switched during the run ({since} is no longer an ancestor of HEAD); recording the orchestrator's --commits")
                 return None
@@ -766,7 +776,8 @@ class Runner:
     def finish(self, commits: list[str]) -> dict:
         data = self.status.data
         passed = [c.strip() for c in commits if c and c.strip()]
-        # `--commits` is the orchestrator's recollection; git knows what actually landed, until the branch is rewritten.
+        # `--commits` is the orchestrator's recollection; git knows what actually landed, until the branch is
+        # switched or rewritten.
         computed = self._log_commits()
         recorded = passed if computed is None else computed
         if computed is not None and passed and not same_commits(passed, computed):
