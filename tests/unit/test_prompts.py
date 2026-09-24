@@ -136,6 +136,9 @@ class PromptTemplatesTest(unittest.TestCase):
                 self.assertIn("git log -n 20", text)
                 self.assertIn("Do not mention the review", text)
                 self.assertIn("Add no trailers", text)
+                # git drops a blank line before the subject, and a `#` subject under commit.cleanup=strip
+                self.assertIn("Start the file with the subject line, with no blank line before it, and never start the"
+                              " subject with `#`", text)
                 self.assertNotIn("review: auto-fix", text)
                 self.assertNotIn('-m "', text)
                 self.assertIn("no commit", text)
@@ -252,14 +255,19 @@ class PromptTemplatesTest(unittest.TestCase):
         values["RUN_DIR"] = "/run"
         text = render_file(PROMPTS_DIR / "orchestrator.md", values)
         for phrase in (
-            'the first line of the commit\'s message (`git -C "v" log -1 --no-color --no-show-signature --format=%B <hash>`)',
-            "must equal the first line of `/run/fix-auto-commit.txt`", "compare first lines, not whole messages",
-            "with the first line of its message compared to the first line of `/run/fix-<i>-commit.txt`",
+            'the first non-empty line of the commit\'s message (`git -C "v" log -1 --no-color --no-show-signature --format=%B <hash>`)',
+            "must equal the first non-empty line of `/run/fix-auto-commit.txt`, trailing whitespace ignored",
+            "compare those lines, not whole messages: a commit-msg hook may append trailers, and git drops leading blank"
+            " lines and trailing spaces from a message",
+            "with the first non-empty line of its message compared to the first non-empty line of `/run/fix-<i>-commit.txt`,"
+            " trailing whitespace ignored",
             "must differ from `v` and from every hash an earlier fix of this run reported",
             "its fixes count as `done` without a commit", "применено, не закоммичено: коммит не создан",
         ):
             self.assertIn(phrase, text)
         self.assertNotIn("--format=%s", text)        # git's subject joins the first paragraph into one line
+        for old in ("the first line of", "compare first lines"):                # a leading blank line fails that check
+            self.assertNotIn(old, text)
 
     def test_the_report_takes_the_runs_commits_from_git_only_while_the_branch_holds_the_start_head(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
