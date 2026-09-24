@@ -805,7 +805,8 @@ class Runner:
     def close(self, force: bool = False, environ: Mapping[str, str] | None = None) -> dict:
         """Close every tab and pane the run opened. A run in progress is refused unless forced.
         <environ> is the caller's environment: its herdr session must be the run's."""
-        self._check_session({} if environ is None else environ)
+        environ = {} if environ is None else environ
+        self._check_session(environ)
         phase = self.status.data.get("phase")
         if phase not in ("finished", "aborted") and not force:
             raise RunnerError(f"run {self.run_id} is still in phase {phase}; closing its tabs stops its agents — pass --force")
@@ -814,18 +815,28 @@ class Runner:
         orch = self.status.data.get("orchestrator") or {}
         if orch.get("tab"):
             targets.append((orch["tab"], True))
-        closed, gone, failed = self._close_all(targets, "close")
+        # Typed in one of the run's own tabs (the orchestrator's has HERDR_REVIEW_RUN set), close ends in
+        # that tab's closing: herdr kills the caller with it. So that tab goes last, once the rest is saved.
+        own = [t for t in targets if t[1] and t[0] == environ.get("HERDR_TAB_ID")]
+        others = [t for t in targets if t not in own]
+        closed, gone, failed = self._close_all(others, "close")
         if force and phase not in ("finished", "aborted"):
             if failed:
                 # An agent whose tab did not close may still be working: the run keeps its phase and its
                 # scratch/, so a later launch still warns about it and another close --force can finish the job.
-                self.log(f"close --force: {len(failed)} of {len(targets)} did not close; the run stays in phase {phase}")
+                self.log(f"close --force: {len(failed)} of {len(others)} did not close; the run stays in phase {phase}")
             else:
                 # Its agents are gone: the run ends here, and no later launch may count it as unfinished.
+                # The caller's own tab does not count: the user is at a shell there, not an agent.
                 self.status.set("abort_reason", "closed with --force")
                 self.status.set("waiting_for_user", False)
                 self.status.set_phase("aborted")
                 self._remove_scratch()
         self.status.set("closed_at", now_iso())
         self.status.save()
+        if own:
+            mine = self._close_all(own, "close")
+            closed += mine[0]
+            gone += mine[1]
+            failed.update(mine[2])
         return {"closed": closed, "already_closed": gone, "failed": failed}

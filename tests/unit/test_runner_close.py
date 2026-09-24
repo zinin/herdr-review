@@ -7,6 +7,14 @@ from herdr_review.status import RunStatus
 from tests.unit.test_runner_start import RunnerBase, make_run
 
 
+class Killed(Exception):
+    """herdr ended the calling process along with its tab."""
+
+
+def killed():
+    raise Killed()
+
+
 class CloseTest(RunnerBase):
     def finished_run(self, layout="tabs"):
         run_dir = make_run(self.root, self.repo, layout=layout, reviewers=("codex", "gemini"))
@@ -71,6 +79,28 @@ class CloseTest(RunnerBase):
         r.close(force=True)                                   # the retry closes the rest and ends the run
         self.assertEqual(json.loads((run_dir / "status.json").read_text())["phase"], "aborted")
         self.assertFalse((run_dir / "scratch").exists())
+
+    def test_a_forced_close_from_the_orchestrators_tab_saves_before_that_tab_closes(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex", "gemini"))
+        (run_dir / "scratch" / "codex").mkdir(parents=True)
+        self.runner(run_dir).start_reviewers()
+        self.herdr.on_close["w1:t1"] = killed                 # typed where HERDR_REVIEW_RUN names this run
+        with self.assertRaises(Killed):
+            self.runner(run_dir).close(force=True, environ={"HERDR_TAB_ID": "w1:t1"})
+        self.assertEqual([c[1] for c in self.herdr.calls_named("tab_close")], ["w1:t2", "w1:t3", "w1:t1"])
+        status = json.loads((run_dir / "status.json").read_text())
+        self.assertEqual((status["phase"], status["abort_reason"]), ("aborted", "closed with --force"))
+        self.assertIn("closed_at", status)
+        self.assertFalse((run_dir / "scratch").exists())
+
+    def test_the_callers_own_tab_failing_to_close_does_not_keep_the_run_in_progress(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        self.runner(run_dir).start_reviewers()
+        self.herdr.close_errors["w1:t2"] = ("server_error", "boom")    # a shell in a reviewer's tab, no agent
+        out = self.runner(run_dir).close(force=True, environ={"HERDR_TAB_ID": "w1:t2"})
+        self.assertEqual(out["failed"], {"w1:t2": "server_error: boom"})
+        self.assertEqual([c[1] for c in self.herdr.calls_named("tab_close")], ["w1:t1", "w1:t2"])
+        self.assertEqual(json.loads((run_dir / "status.json").read_text())["phase"], "aborted")
 
     def test_a_forced_close_of_a_finished_run_keeps_it_finished(self):
         run_dir = self.finished_run()

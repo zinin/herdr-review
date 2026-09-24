@@ -1,6 +1,8 @@
 """In-memory stand-in for herdr_review.herdr.Herdr."""
 from __future__ import annotations
 
+from typing import Callable
+
 from herdr_review.herdr import HerdrResult
 
 OK = HerdrResult(True, 0, result={"type": "ok"})
@@ -21,6 +23,7 @@ class FakeHerdr:
         self.wait_error = ("timeout", "wait timed out")
         self.close_errors: dict[str, tuple[str, str]] = {}
         self.tab_labels: dict[str, str] = {}                # the tabs herdr has, by id; a test may relabel one
+        self.on_close: dict[str, Callable[[], None]] = {}   # per tab, run while it closes: what happens meanwhile
         self.keep_screen_on_wait = False
         self.screens: dict[str, str] = {}
         self.screens_after_wait: dict[str, list[str]] = {}
@@ -124,6 +127,8 @@ class FakeHerdr:
 
     def tab_close(self, tab):
         self.calls.append(("tab_close", tab))
+        if tab in self.on_close:
+            self.on_close[tab]()
         if tab in self.close_errors:
             code, msg = self.close_errors[tab]
             return HerdrResult(False, 1, error_code=code, message=msg)
