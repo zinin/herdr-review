@@ -159,6 +159,18 @@ class GitUtilTest(unittest.TestCase):
         with self.assertRaises(gitutil.GitError):
             gitutil.committed_changes(self.repo, "not-a-commit")
 
+    def test_committed_changes_ignore_an_external_diff_that_calls_everything_equal(self):
+        base = gitutil.merge_base(self.repo, "master")
+        same = Path(self.tmp.name) / "same.sh"
+        same.write_text("#!/bin/sh\nexit 0\n")
+        same.chmod(0o755)
+        git(self.repo, "config", "diff.external", str(same))
+        git(self.repo, "config", "diff.trustExitCode", "true")          # git diff --quiet would take its word
+        self.assertFalse(gitutil.committed_changes(self.repo, base))      # equal trees
+        (self.repo / "a.txt").write_text("change\n")
+        git(self.repo, "commit", "-q", "-am", "change")
+        self.assertTrue(gitutil.committed_changes(self.repo, base))
+
     def test_status_lines_collapse_untracked_directories(self):
         (self.repo / "a.txt").write_text("edited\n")
         (self.repo / "notes").mkdir()

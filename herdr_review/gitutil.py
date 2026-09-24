@@ -111,13 +111,16 @@ def head_commit(repo: Path | str) -> str:
 
 
 def committed_changes(repo: Path | str, sha: str) -> bool:
-    """True when HEAD's tree differs from <sha>: the branch has committed changes of its own."""
-    p = _run(repo, "diff", "--quiet", sha, "HEAD", "--")
-    if p.returncode == 1:
-        return True
-    if p.returncode != 0:
-        raise GitError(f"git diff --quiet {sha} HEAD failed: {p.stderr.strip()}")
-    return False
+    """True when HEAD's tree differs from <sha>'s: the branch has committed changes of its own.
+
+    The tree ids are compared: `git diff --quiet` obeys the user's diff.external with
+    diff.trustExitCode, diff.ignoreSubmodules and textconv drivers, and can call a changed tree equal."""
+    if not sha or sha.startswith("-"):
+        raise GitError(f"invalid commit '{sha}'")
+    trees = _out(repo, "rev-parse", f"{sha}^{{tree}}", "HEAD^{tree}").split()
+    if len(trees) != 2:
+        raise GitError(f"git rev-parse {sha}^{{tree}} HEAD^{{tree}} printed {trees!r}")
+    return trees[0] != trees[1]
 
 
 def _untracked(repo: Path | str) -> list[str]:
