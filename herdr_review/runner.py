@@ -117,7 +117,10 @@ def section_body(text: str, heading: str) -> list[str]:
 
 def still_listed(path: str, paths: set[str]) -> bool:
     """Whether <path>, of a `git status --short` line of the launch, is among the <paths> of the lines now.
-    An untracked `dir/` is while a path under it is: a file of it staged since shows by its own path."""
+    An untracked `dir/` is while a path under it is: a file of it staged since shows by its own path. Any
+    path is while an untracked `dir/` above it is: unstaged since, it shows only as that directory."""
+    if any(p.endswith("/") and path.startswith(p) for p in paths):
+        return True
     return any(p.startswith(path) for p in paths) if path.endswith("/") else path in paths
 
 

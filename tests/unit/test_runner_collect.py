@@ -232,6 +232,27 @@ class CollectTest(RunnerBase):
         out = r.collect()
         self.assertEqual(out["drift_status"], "A  b.txt\n")
 
+    def test_a_file_that_shows_only_as_its_untracked_directory_now_is_not_gone(self):
+        (self.repo / "newdir").mkdir()
+        (self.repo / "newdir" / "x.py").write_text("the owner's new module\n")
+        git(self.repo, "add", "newdir/x.py")
+        r = self.reviewing_since_now("unstaged")                         # `A  newdir/x.py`
+        git(self.repo, "rm", "-q", "--cached", "newdir/x.py")            # unstaged: git lists only `?? newdir/`
+        out = r.collect()
+        self.assertEqual(out["drift_status"], "?? newdir/\n")
+
+    def test_an_untracked_directory_inside_one_that_shows_whole_now_is_not_gone(self):
+        (self.repo / "a").mkdir()
+        (self.repo / "a" / "t.txt").write_text("tracked\n")
+        git(self.repo, "add", "a/t.txt")
+        git(self.repo, "commit", "-q", "-m", "a")
+        (self.repo / "a" / "b").mkdir()
+        (self.repo / "a" / "b" / "n.txt").write_text("the owner's\n")
+        r = self.reviewing_since_now("nested")                           # `?? a/b/`
+        git(self.repo, "rm", "-q", "--cached", "a/t.txt")                # a/ holds no tracked file now: `?? a/`
+        out = r.collect()
+        self.assertEqual(out["drift_status"], "D  a/t.txt\n?? a/\n")
+
 
 class FinishTest(RunnerBase):
     def test_finish_tabs_without_closing(self):
