@@ -153,6 +153,8 @@ class PromptTemplatesTest(unittest.TestCase):
             self.assertIn(phrase, text)
         self.assertNotIn("--stat", text)
         self.assertNotIn("unprotected file", text)
+        self.assertNotIn("review(auto-decide)", text)
+        self.assertNotIn("review: auto-fix", text)
 
     def test_drift_is_worded_as_a_change_of_the_tree_not_of_a_reviewer(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
@@ -210,8 +212,6 @@ class PromptTemplatesTest(unittest.TestCase):
         ):
             self.assertIn(phrase, text)
         self.assertNotIn("--format=%s", text)        # git's subject joins the first paragraph into one line
-        self.assertNotIn("review(auto-decide)", text)
-        self.assertNotIn("review: auto-fix", text)
 
 if __name__ == "__main__":
     unittest.main()

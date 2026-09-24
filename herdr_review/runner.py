@@ -779,8 +779,9 @@ class Runner:
         return targets
 
     def _check_tab(self, tab: str, who: str) -> str:
-        """"ours" while herdr still shows <tab> under this run's label; "gone" when herdr no longer has it or
-        the ID now names someone else's tab (a restarted server reissues IDs); otherwise why herdr could not tell."""
+        """What herdr says of <tab>: "ours" while it still shows the tab under this run's label; "gone" when it
+        no longer has it or the ID now names someone else's tab (a restarted server reissues IDs); otherwise
+        why herdr could not tell."""
         r = self.herdr.tab_get(tab)
         if not r.ok:
             return "gone" if not_found(r) else f"{r.error_code}: {r.message}"
