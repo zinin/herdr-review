@@ -44,6 +44,7 @@ EXIT_NOT_FOUND = 127
 COMMAND_CHARS = 200
 CONTROL_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+TERMINAL_SIGNALS = (signal.SIGINT, signal.SIGHUP)
 PR_SET_PDEATHSIG = 1
 PR_SET_CHILD_SUBREAPER = 36
 
@@ -382,6 +383,27 @@ def _signal_all(pids, sig: int) -> None:
             pass
 
 
+def _still_to_signal(pids: set[int], sig: int) -> set[int]:
+    """The processes of <pids> that the stop signal <sig> has yet to reach. A terminal sends SIGINT and SIGHUP to its
+    whole foreground process group, the wrapper's and its command's: a process still in the wrapper's group has it
+    already, and a second Ctrl-C makes a program such as `docker compose up` skip its graceful stop. Only the
+    processes that left the group need it passed on. SIGTERM, which `run fail` and `close` send the wrapper alone,
+    goes to them all."""
+    if sig not in TERMINAL_SIGNALS:
+        return set(pids)
+    own = os.getpgrp()
+    left: set[int] = set()
+    for pid in pids:
+        try:
+            if os.getpgid(pid) != own:
+                left.add(pid)
+        except ProcessLookupError:
+            pass
+        except PermissionError:                  # a process in another session, so in another group too
+            left.add(pid)
+    return left
+
+
 def _alive(pid: int) -> bool:
     """Whether <pid> runs; a zombie counts as gone."""
     try:
@@ -417,10 +439,11 @@ def _run_command(command: list[str], environ: Mapping[str, str], timeout_sec: fl
                  grace_sec: float, received: list[int], shown: str) -> tuple[int, float, bool]:
     """Run the command with an empty stdin, in the wrapper's process group. On a stop signal in <received>, or
     after <timeout_sec>, signal every process under the wrapper: the command, what it started, and on Linux what
-    lost its parent (_adopt_orphans); SIGCONT follows the signal, so a stopped process handles it. SIGKILL whatever
-    is left <grace_sec> later. A stop signal that reached the whole process group and ended the command's first
-    process before the wrapper looked gets the same stop. Every poll collects the adopted processes that have ended
-    (_reap_orphans).
+    lost its parent (_adopt_orphans) — a SIGINT or SIGHUP only the processes that left the wrapper's process group,
+    since the terminal sent it to the group (_still_to_signal); SIGCONT follows the signal, so a stopped process
+    handles it. SIGKILL whatever is left <grace_sec> later. A stop signal that reached the whole process group and
+    ended the command's first process before the wrapper looked gets the same stop. Every poll collects the adopted
+    processes that have ended (_reap_orphans).
     (the exit code, the seconds it ran, whether it timed out)."""
     adopted = _adopt_orphans()
     started = time.monotonic()
@@ -453,7 +476,7 @@ def _run_command(command: list[str], environ: Mapping[str, str], timeout_sec: fl
                 stopping, timed_out = signal.SIGTERM, True
             if stopping:
                 targets = {proc.pid, *descendants(os.getpid())}
-                _signal_all(targets, stopping)
+                _signal_all(_still_to_signal(targets, stopping), stopping)
                 _signal_all(targets, signal.SIGCONT)
                 stopped_at = now
         elif not killed and now - stopped_at >= grace_sec:
@@ -471,7 +494,7 @@ def _run_command(command: list[str], environ: Mapping[str, str], timeout_sec: fl
         # signal reached the whole process group (Ctrl-C): whatever is left under the wrapper gets the same stop.
         stopping = received[0]
         targets = set(descendants(os.getpid()))
-        _signal_all(targets, stopping)
+        _signal_all(_still_to_signal(targets, stopping), stopping)
         _signal_all(targets, signal.SIGCONT)
         stopped_at = time.monotonic()
     if targets and not killed:

@@ -413,6 +413,25 @@ CLEANUP_HARNESS = (      # the command times out at once and has 5 s to clean up
     "from herdr_review import exclusive\n"
     "sys.exit(exclusive.run(sys.argv[1:], timeout_sec=0.5, grace_sec=5, poll_sec=0.05, environ=os.environ))\n"
 )
+GRACEFUL_HARNESS = (     # only a stop signal ends the command, which has 5 s to stop before SIGKILL
+    "import os, sys\n"
+    "from herdr_review import exclusive\n"
+    "sys.exit(exclusive.run(sys.argv[1:], timeout_sec=60, grace_sec=5, poll_sec=0.05, environ=os.environ))\n"
+)
+OUTSIDER = (             # leaves the process group, then records a SIGINT and exits: argv count, ready, pidfile
+    "import os, signal, sys, time\n"
+    "def stop(signum, frame):\n"
+    "    with open(sys.argv[1], 'a') as f:\n"
+    "        f.write('INT\\n')\n"
+    "    os._exit(0)\n"
+    "os.setsid()\n"
+    "signal.signal(signal.SIGINT, stop)\n"
+    "with open(sys.argv[3], 'w') as f:\n"
+    "    f.write(str(os.getpid()))\n"
+    "open(sys.argv[2], 'w').close()\n"
+    "while True:\n"
+    "    time.sleep(0.05)\n"
+)
 
 
 class StopTest(ExclusiveBase):
@@ -486,6 +505,43 @@ class StopTest(ExclusiveBase):
         _, err = p.communicate(timeout=30)
         self.assertEqual(p.returncode, 130, err)
         self.assertTrue(wait_until(lambda: not alive(background)))
+        self.assertEqual(queue_state(self.runs), {"held": False})
+
+    def test_ctrl_c_to_the_whole_group_reaches_the_command_once(self):
+        count, ready = self.root / "sigint.count", self.root / "ready"
+        # The command takes a second to stop after a Ctrl-C; a second Ctrl-C meanwhile would cut that short.
+        script = ('trap \'echo INT >> "$1"; n=20\' INT; : > "$2"; '
+                  'while :; do sleep 0.05; if [ -n "$n" ]; then n=$((n - 1)); [ "$n" -gt 0 ] || exit 130; fi; done')
+        p = subprocess.Popen([sys.executable, "-c", GRACEFUL_HARNESS, "sh", "-c", script, "sh", str(count), str(ready)],
+                             cwd=PACKAGE_ROOT, env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                             text=True, start_new_session=True)
+        self.addCleanup(stop_quietly, p)
+        self.assertTrue(self.holder_written())
+        self.assertTrue(wait_until(ready.exists))
+        os.killpg(p.pid, signal.SIGINT)
+        _, err = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 130, err)
+        self.assertEqual(count.read_text(), "INT\n")
+        self.assertEqual(queue_state(self.runs), {"held": False})
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "PR_SET_CHILD_SUBREAPER is Linux-only")
+    def test_ctrl_c_to_the_whole_group_reaches_a_process_of_the_command_outside_the_group(self):
+        count, ready, pidfile = self.root / "sigint.count", self.root / "ready", self.root / "outsider.pid"
+        # sh dies of the Ctrl-C; the outsider left the group, so only the wrapper can pass the Ctrl-C on to it.
+        p = subprocess.Popen([sys.executable, "-c", SIGNAL_HARNESS, "sh", "-c", '"$1" -c "$2" "$3" "$4" "$5" & wait',
+                              "sh", sys.executable, OUTSIDER, str(count), str(ready), str(pidfile)],
+                             cwd=PACKAGE_ROOT, env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                             text=True, start_new_session=True)
+        self.addCleanup(stop_quietly, p)
+        self.assertTrue(self.holder_written())
+        self.assertTrue(wait_until(lambda: ready.exists() and pidfile.read_text().strip() != ""))
+        outsider = int(pidfile.read_text())
+        self.addCleanup(kill_quietly, outsider)
+        os.killpg(p.pid, signal.SIGINT)
+        _, err = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 130, err)
+        self.assertTrue(wait_until(lambda: not alive(outsider)))
+        self.assertEqual(count.read_text() if count.exists() else "", "INT\n")
         self.assertEqual(queue_state(self.runs), {"held": False})
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "PR_SET_CHILD_SUBREAPER is Linux-only")
