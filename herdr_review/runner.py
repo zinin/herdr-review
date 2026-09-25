@@ -574,7 +574,11 @@ class Runner:
     def fail(self, name: str, reason: str) -> dict:
         self._agent(name)
         self._set_state(name, "failed", reason=reason, last_screen=self._last_screen(name))
-        return {"name": name, "state": "failed"}
+        out = {"name": name, "state": "failed"}
+        stopped = self._stop_queue_holder(agent=name)
+        if stopped:
+            out["exclusive_stopped"] = stopped
+        return out
 
     def start_fixer(self) -> dict:
         fx = self.run["fixer"]
@@ -732,6 +736,13 @@ class Runner:
         self.status.save()
         return {"collected": collected, "pending": pending, "failed": failed, "drift": drift, "drift_status": self.status.data.get("drift_status", "")}
 
+    # ----- the build queue
+    def _stop_queue_holder(self, agent: str | None = None) -> str | None:
+        """Stop a heavy command of this run (of <agent>, when given) that still holds the machine's build queue: a
+        failed reviewer's build, or a background command a CLI kept alive, would hold it up to its --timeout."""
+        return exclusive.stop_holder(exclusive.runs_dir_of(self.run_dir), self.run_id, agent,
+                                     clock=self.clock, sleep=self.sleep, log=self.log)
+
     # ----- finish
     def _log_commits(self) -> list[str] | None:
         """The hashes of the commits made since the run was launched, while HEAD is on the branch of the launch and
@@ -796,12 +807,16 @@ class Runner:
         self._relabel_orch(" ✓")
         reviews = sum(1 for a in self.status.agents_by_role("reviewer").values() if a["state"] == "collected")
         self.herdr.notification_show("herdr-review: готово", body=f"{self.run_id}: отзывов {reviews}, коммитов {len(data['commits'])}", sound="done")
+        stopped = self._stop_queue_holder()          # before scratch/ goes: the command may run there
         closed: list[str] = []
         if self.run.get("close_agents_on_finish"):
             closed, _, _, _ = self._close_all(self._agent_targets(), "finish")
         self._remove_scratch()
         self.status.save()
-        return {"phase": "finished", "commits": data["commits"], "closed": closed}
+        result = {"phase": "finished", "commits": data["commits"], "closed": closed}
+        if stopped:
+            result["exclusive_stopped"] = stopped
+        return result
 
     # ----- close
     def _agent_targets(self) -> list[tuple[str, bool]]:
@@ -883,6 +898,7 @@ class Runner:
         phase = self.status.data.get("phase")
         if phase not in ("finished", "aborted") and not force:
             raise RunnerError(f"run {self.run_id} is still in phase {phase}; closing its tabs stops its agents — pass --force")
+        stopped = self._stop_queue_holder()          # a CLI's background command can outlive its tab
         closed: list[str] = []
         gone: list[str] = []
         left_open: list[str] = []
@@ -942,4 +958,7 @@ class Runner:
         self.status.set("closed_at", now_iso())
         self.status.save()
         close_these(own)
-        return {"closed": closed, "already_closed": gone, "left_open": left_open, "failed": failed}
+        result = {"closed": closed, "already_closed": gone, "left_open": left_open, "failed": failed}
+        if stopped:
+            result["exclusive_stopped"] = stopped
+        return result
