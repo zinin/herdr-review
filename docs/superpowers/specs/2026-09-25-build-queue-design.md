@@ -88,8 +88,11 @@ The command:
 Stopping the command, on `--timeout` or on SIGTERM, SIGINT or SIGHUP to the wrapper: the wrapper sends the signal
 (SIGTERM for a timeout) to the command and to every process under it, found through the process table (`/proc` on
 Linux, `ps -A -o pid=,ppid=` on macOS). After 10 s it sends SIGKILL to whatever is left, then releases the lock and
-exits: with 124 after a timeout, with 128+N after signal N, whatever the command's own code. A signal that arrives
-while the wrapper still waits for its turn ends the wrapper at once with 128+N; nothing runs.
+exits: with 124 after a timeout, with 128+N after signal N, whatever the command's own code. On Linux the wrapper is
+the subreaper of the command's processes (`PR_SET_CHILD_SUBREAPER`): a process whose parent died is re-parented to
+the wrapper and still counts as under it, so the stop is the same when the signal reached the whole process group
+(Ctrl-C) and the command's first process already died of it. A signal that arrives while the wrapper still waits for
+its turn ends the wrapper at once with 128+N; nothing runs.
 
 The lock lives exactly as long as the wrapper. The command does not inherit the queue file's descriptor
 (`O_CLOEXEC`), so a background process the command leaves behind holds no lock, and the kernel releases the lock of
@@ -292,6 +295,8 @@ SMOKE (real herdr): a preset with two reviewers on a repository with a test suit
   enforces the rule, in auto mode, when the CLI asks.
 - A wrapper killed with SIGKILL releases the lock at once. On Linux the command's first process dies with it, but
   the processes it started can live on without the lock; on macOS the whole command can.
+- On macOS a stop signal sent to the whole process group can leave behind a process whose parent died of it, such
+  as a background job of `sh -c`, which ignores SIGINT: the wrapper no longer finds it and releases the lock at once.
 - No FIFO order: when the lock comes free, the waiter that polls first takes it. With a handful of agents this
   costs little.
 - A background process that a command leaves behind, against the rule, holds no lock.
