@@ -526,13 +526,28 @@ def is_wrapper(pid: int) -> bool:
     return "exclusive" in words and any("herdr-review" in w or "herdr_review" in w for w in words)
 
 
+class Stopped(str):
+    """What stop_holder stopped, as `exclusive_stopped` gives it in JSON: "<agent>: <command>", and " (still running
+    after <wait>)" when the wrapper still held the queue <wait> after SIGTERM. <what> and <still_running_after> (the
+    seconds waited; None when the queue came free) let the text of `close` say it in Russian."""
+
+    what: str
+    still_running_after: float | None
+
+    def __new__(cls, what: str, still_running_after: float | None = None) -> Stopped:
+        note = "" if still_running_after is None else f" (still running after {format_duration(still_running_after)})"
+        stopped = super().__new__(cls, what + note)
+        stopped.what, stopped.still_running_after = what, still_running_after
+        return stopped
+
+
 def stop_holder(runs_dir: Path, run_id: str, agent: str | None = None, *, wait_sec: float = STOP_WAIT_SEC,
                 clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
-                log: Callable[[str], None] = lambda line: None) -> str | None:
+                log: Callable[[str], None] = lambda line: None) -> Stopped | None:
     """Stop the wrapper that holds the queue for run <run_id> (for <agent>, when given) with SIGTERM, which it passes
-    to its command before it releases the queue. "<agent>: <command>" when one was stopped, with a note when the
-    queue is still held <wait_sec> later; None when the queue is free or held by someone else. Never SIGKILL: that
-    would orphan the command without the lock, and the wrapper's --timeout still bounds it."""
+    to its command before it releases the queue. A Stopped when one was stopped, noting when the queue is still
+    held <wait_sec> later; None when the queue is free or held by someone else. Never SIGKILL: that would orphan the
+    command without the lock, and the wrapper's --timeout still bounds it."""
     state = queue_state(runs_dir)
     if state.get("held") is not True or state.get("run_id") != run_id:
         return None
@@ -556,7 +571,7 @@ def stop_holder(runs_dir: Path, run_id: str, agent: str | None = None, *, wait_s
         now_state = queue_state(runs_dir)
         if now_state.get("held") is not True or now_state.get("pid") != pid:
             log(f"exclusive: stopped {what}")
-            return what
+            return Stopped(what)
         sleep(0.2)
     log(f"exclusive: {what} still holds the queue {format_duration(wait_sec)} after SIGTERM; left to its --timeout")
-    return f"{what} (still running after {format_duration(wait_sec)})"
+    return Stopped(what, wait_sec)

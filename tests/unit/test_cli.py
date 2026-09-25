@@ -6,8 +6,9 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
-from herdr_review import __version__, gitutil
+from herdr_review import __version__, exclusive, gitutil
 from herdr_review.cli import build_parser, main, resolve_status_run_dir, scope_lines, status_run_spec
 from herdr_review.launch import basename_slug, project_slug
 from herdr_review.runner import RunnerError
@@ -262,6 +263,45 @@ class StatusQueueTest(unittest.TestCase):
         (self.runs / "exclusive.lock").chmod(0)
         self.assertIn("очередь сборок: не удалось проверить (", self.status())
         self.assertIsNone(json.loads(self.status("--json"))["exclusive"]["held"])
+
+
+class CloseQueueStopTest(unittest.TestCase):
+    """close's line on the command of its run that it stopped in the build queue."""
+
+    def stop(self, lets_go_after: float) -> str | None:
+        """What stop_holder reports on hrtest-codex's `mvn test`, whose wrapper lets the queue go <lets_go_after>
+        seconds after SIGTERM."""
+        held = {"held": True, "agent": "hrtest-codex", "run_id": "hrtest", "pid": 99999, "command": "mvn test", "since_sec": 5}
+        now = [0.0]
+
+        def queue_state(runs_dir: Path) -> dict:
+            return held if now[0] < lets_go_after else {"held": False}
+
+        with mock.patch("herdr_review.exclusive.queue_state", side_effect=queue_state), \
+                mock.patch("herdr_review.exclusive.is_wrapper", return_value=True), mock.patch("herdr_review.exclusive.os.kill"):
+            return exclusive.stop_holder(Path("/nowhere"), "hrtest", clock=lambda: now[0],
+                                         sleep=lambda s: now.__setitem__(0, now[0] + s))
+
+    def close(self, stopped: str | None, *flags: str) -> str:
+        result = {"closed": [], "already_closed": [], "left_open": [], "failed": {}, "exclusive_stopped": stopped}
+        out = io.StringIO()
+        with mock.patch("herdr_review.cli.Runner") as runner, redirect_stdout(out):
+            runner.return_value.close.return_value = result
+            self.assertEqual(main(["close", "/nowhere/run", *flags]), 0)
+        return out.getvalue()
+
+    def test_a_command_that_stopped(self):
+        self.assertIn("остановлена команда из очереди сборок: hrtest-codex: mvn test\n", self.close(self.stop(1)))
+
+    def test_a_command_still_running_after_the_wait(self):
+        text = self.close(self.stop(60))
+        self.assertIn("команда из очереди сборок не остановилась за 15 с после SIGTERM: hrtest-codex: mvn test; "
+                      "её остановит --timeout\n", text)
+        self.assertNotIn("still running", text)
+
+    def test_the_json_keeps_its_value(self):
+        self.assertEqual(json.loads(self.close(self.stop(60), "--json"))["exclusive_stopped"],
+                         "hrtest-codex: mvn test (still running after 15s)")
 
 
 if __name__ == "__main__":

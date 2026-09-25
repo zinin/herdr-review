@@ -269,6 +269,14 @@ def queue_line(state: Mapping) -> str:
     return line
 
 
+def queue_stop_line(stopped: exclusive.Stopped) -> str:
+    """The command of its run that `close` stopped in the build queue, or that still ran after the stop's wait."""
+    if stopped.still_running_after is None:
+        return f"остановлена команда из очереди сборок: {stopped.what}"
+    return (f"команда из очереди сборок не остановилась за {stopped.still_running_after:.0f} с после SIGTERM: "
+            f"{stopped.what}; её остановит --timeout")
+
+
 def cmd_status(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     run_dir = resolve_status_run_dir(status_run_spec(args), environ, Path.cwd())
     try:
@@ -319,7 +327,7 @@ def cmd_close(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
         if result["left_open"]:
             print(f"оставлены открытыми (ID теперь у чужой вкладки): {', '.join(result['left_open'])}")
         if result.get("exclusive_stopped"):
-            print(f"остановлена команда из очереди сборок: {result['exclusive_stopped']}")
+            print(queue_stop_line(result["exclusive_stopped"]))
         for ident, why in result["failed"].items():
             print(f"не удалось закрыть {ident}: {why}", file=sys.stderr)
     return 1 if result["failed"] else 0
