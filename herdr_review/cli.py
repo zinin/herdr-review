@@ -248,6 +248,28 @@ def cmd_launch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     return 0
 
 
+def queue_line(state: Mapping) -> str:
+    """The machine's build queue, in `status` text."""
+    held = state.get("held")
+    if held is None:
+        return f"очередь сборок: не удалось проверить ({state.get('error')})"
+    if not held:
+        return "очередь сборок: свободна"
+    pid = state.get("pid")
+    if pid is None:
+        return "очередь сборок: занята — процессом, который себя не назвал"
+    if state.get("run_id"):
+        name = state.get("agent") or f"pid {pid}"
+        who = f"{name} (прогон {state['run_id']})"
+    else:
+        who = f"pid {pid} вне ревью"
+    line = f"очередь сборок: занята — {who}: {state.get('command')}"
+    since = state.get("since_sec")
+    if since is not None:
+        line += f", {since} с" if since < 60 else f", {since // 60} мин"
+    return line
+
+
 def cmd_status(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     run_dir = resolve_status_run_dir(status_run_spec(args), environ, Path.cwd())
     try:
@@ -255,9 +277,11 @@ def cmd_status(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     except StatusError as e:
         raise RunnerError(str(e)) from e
     data = st.data
+    queue = exclusive.queue_state(exclusive.runs_dir_of(run_dir))
     if args.json:
         out = copy.deepcopy(data)
         out["run_dir"] = str(run_dir)
+        out["exclusive"] = queue
         for n in data.get("agents", {}):
             out["agents"][n]["since_sec"] = st.since_sec(n)
         print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -273,6 +297,7 @@ def cmd_status(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
         print("ожидает ответа пользователя в панели оркестратора")
     if data.get("drift"):
         print("drift: рабочее дерево изменилось во время ревью")
+    print(queue_line(queue))
     print(f"{'agent':<28} {'role':<9} {'state':<15} {'since':>6}  file  reason")
     for n, a in data["agents"].items():
         reason = (a.get("reason") or "")[:60]
