@@ -214,6 +214,9 @@ renders the fixer skeletons with it.
 - `Runner._base_env()` adds `GIT_OPTIONAL_LOCKS=0` for every reviewer and the fixer; `launch` adds it to the
   orchestrator's environment. Their `git status` stops taking `.git/index.lock` (`git diff` still rewrites the
   index after a stat-only change, as git 2.53 does); the locks that `git add` and `git commit` need stay as they are.
+- The runner's `gitutil.tree_hash` compares the tree with `git diff-index -p HEAD`: `git diff` rewrites the index
+  after a stat-only change whatever `GIT_OPTIONAL_LOCKS` says, while `diff-index` writes nothing and, with `-p`,
+  prints nothing for a file whose content is unchanged.
 - Every agent gets `HERDR_REVIEW_AGENT=<its agent name>`: the reviewers in `_place_tabs` and `_place_grid`, the
   fixer in `start_fixer`, the orchestrator in `launch`.
 - Order of the environment: the base variables, then the profile's `env` (a profile may override
