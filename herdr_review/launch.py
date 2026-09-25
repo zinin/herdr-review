@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
 
-from . import PROMPTS_DIR, __version__, gitutil
+from . import PROMPTS_DIR, __version__, exclusive, gitutil
 from .config import Config, is_secretish
 from .dialogs import MCP_UNCHECKED, mcp_check, resolve_startup_dialog, startup_args
 from .herdr import Herdr, HerdrResult
@@ -201,6 +201,7 @@ def launch(
             "version": __version__,
             "run_id": run_id,
             "run_dir": str(run_dir),
+            "runs_dir": str(runs_dir),
             "repo": str(repo),
             "project": project,
             "branch": branch,
@@ -285,7 +286,7 @@ def launch(
         if raw and is_secretish(name, raw):     # the same secrets before ${VAR} expansion
             secrets.append(raw)
     herdr.mask_values = secrets
-    env_all = {"HERDR_REVIEW_RUN": str(run_dir)}
+    env_all = {"HERDR_REVIEW_RUN": str(run_dir), "GIT_OPTIONAL_LOCKS": "0"}
     for key in ("HERDR_REVIEW_CONFIG", "XDG_CONFIG_HOME"):
         if key in environ:
             env_all[key] = environ[key]
@@ -294,6 +295,7 @@ def launch(
         if name in environ:
             env_all[name] = environ[name]
     env_all.update(cfg.profiles[orch_profile].env)
+    env_all[exclusive.AGENT_ENV] = orch["name"]
     try:
         r = herdr.tab_create(workspace_id, str(repo), f"rv-{run_id}: orch", env_all, focus=False)
         if not r.ok or not r.result:

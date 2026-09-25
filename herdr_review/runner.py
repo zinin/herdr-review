@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Callable, Mapping
 
-from . import PROMPTS_DIR, gitutil
+from . import PROMPTS_DIR, exclusive, gitutil
 from .config import ConfigError, is_secretish, load_config
 from .dialogs import MCP_UNCHECKED, SCREEN_LINES, mcp_check, resolve_startup_dialog
 from .herdr import Herdr, HerdrResult
@@ -228,7 +228,14 @@ class Runner:
         return self.run.get("layout", "tabs")
 
     def _base_env(self) -> dict[str, str]:
-        return {"HERDR_REVIEW_RUN": str(self.run_dir)}
+        # GIT_OPTIONAL_LOCKS=0: an agent's `git status` or `git diff` never takes .git/index.lock from under the
+        # owner's own `git commit`; the locks that `git add` and `git commit` need are not optional and stay.
+        return {"HERDR_REVIEW_RUN": str(self.run_dir), "GIT_OPTIONAL_LOCKS": "0"}
+
+    def _agent_env(self, name: str, profile: str) -> dict[str, str]:
+        """An agent's environment: the run's, then its profile's env, which may override the run's, then its own
+        name, which `herdr-review exclusive` records as the holder of the build queue."""
+        return {**self._base_env(), **self._profile_env(profile), exclusive.AGENT_ENV: name}
 
     def _agent(self, name: str) -> dict:
         try:
@@ -309,7 +316,7 @@ class Runner:
         created: list[tuple[str, str, str]] = []
         try:
             for s in specs:
-                env = {**self._base_env(), **self._profile_env(s["profile"])}
+                env = self._agent_env(s["name"], s["profile"])
                 r = self.herdr.tab_create(self.run["workspace_id"], self.repo, f"rv-{self.run_id}: {label_of(s)}", env)
                 if not r.ok or not r.result:
                     raise RunnerError(f"herdr tab create failed: {r.error_code}: {r.message}")
@@ -338,7 +345,7 @@ class Runner:
         try:
             for step in steps:
                 spec = owner.get(step.result)
-                env = {**self._base_env(), **(self._profile_env(spec["profile"]) if spec else {})}
+                env = self._agent_env(spec["name"], spec["profile"]) if spec else self._base_env()
                 r = self.herdr.pane_split(ids[step.target], step.direction, step.ratio, self.repo, env)
                 if not r.ok or not r.result:
                     raise RunnerError(f"herdr pane split failed: {r.error_code}: {r.message}")
@@ -573,7 +580,7 @@ class Runner:
         name = fx["name"]
         if name in self.status.data["agents"]:
             raise RunnerError(f"fixer {name} is already started")
-        env = {**self._base_env(), **self._profile_env(fx["profile"])}
+        env = self._agent_env(name, fx["profile"])
         self.log(f"start-fixer {name} layout={self.layout}")
         if self.layout == "tabs":
             r = self.herdr.tab_create(self.run["workspace_id"], self.repo, f"rv-{self.run_id}: fixer", env)

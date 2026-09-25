@@ -92,8 +92,10 @@ class StartReviewersTest(RunnerBase):
         self.assertEqual({n: a["state"] for n, a in out["agents"].items()}, {"hrtest-claude-opus": "working", "hrtest-codex": "working", "hrtest-gemini": "working"})
         tabs = self.herdr.calls_named("tab_create")
         self.assertEqual([t[3] for t in tabs], ["rv-hrtest: claude-opus", "rv-hrtest: codex", "rv-hrtest: gemini"])
-        self.assertEqual(tabs[0][4], {"HERDR_REVIEW_RUN": str(run_dir), "TOKEN": "s3cret"})
-        self.assertEqual(tabs[1][4], {"HERDR_REVIEW_RUN": str(run_dir)})
+        self.assertEqual(tabs[0][4], {"HERDR_REVIEW_RUN": str(run_dir), "GIT_OPTIONAL_LOCKS": "0", "TOKEN": "s3cret",
+                                      "HERDR_REVIEW_AGENT": "hrtest-claude-opus"})
+        self.assertEqual(tabs[1][4], {"HERDR_REVIEW_RUN": str(run_dir), "GIT_OPTIONAL_LOCKS": "0",
+                                      "HERDR_REVIEW_AGENT": "hrtest-codex"})
         starts = self.herdr.calls_named("agent_start")
         self.assertEqual(starts[1], ("agent_start", "hrtest-codex", "codex", "w1:p3", ["-m", "gpt-5.5"]))
         prompts = self.herdr.calls_named("agent_prompt")
@@ -299,6 +301,26 @@ class StartReviewersTest(RunnerBase):
         out = self.runner(run_dir).start_reviewers()
         self.assertEqual(out["agents"]["hrtest-codex"]["state"], "working")
         self.assertIn(("agent_send_keys", "hrtest-codex", ("enter",)), self.herdr.calls)
+
+    def test_a_grid_pane_names_its_agent_and_leaves_the_index_lock_alone(self):
+        run_dir = make_run(self.root, self.repo, layout="grid")
+        self.runner(run_dir).start_reviewers()
+        envs = [s[5] for s in self.herdr.calls_named("pane_split")]
+        self.assertEqual(sorted(e["HERDR_REVIEW_AGENT"] for e in envs), ["hrtest-claude-opus", "hrtest-codex", "hrtest-gemini"])
+        self.assertEqual({e["GIT_OPTIONAL_LOCKS"] for e in envs}, {"0"})
+
+    def test_a_profile_may_set_git_optional_locks_but_never_the_agent_name(self):
+        self.cfg.profiles["codex"].env = {"GIT_OPTIONAL_LOCKS": "1", "HERDR_REVIEW_AGENT": "someone-else"}
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        self.runner(run_dir).start_reviewers()
+        env = self.herdr.calls_named("tab_create")[0][4]
+        self.assertEqual((env["GIT_OPTIONAL_LOCKS"], env["HERDR_REVIEW_AGENT"]), ("1", "hrtest-codex"))
+
+    def test_the_fixer_names_itself_and_leaves_the_index_lock_alone(self):
+        run_dir = make_run(self.root, self.repo)
+        self.runner(run_dir).start_fixer()
+        env = self.herdr.calls_named("tab_create")[-1][4]
+        self.assertEqual((env["GIT_OPTIONAL_LOCKS"], env["HERDR_REVIEW_AGENT"]), ("0", "hrtest-fixer"))
 
 
 class PromptFailFixerTest(RunnerBase):
