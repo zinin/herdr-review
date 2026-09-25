@@ -415,9 +415,10 @@ def _run_command(command: list[str], environ: Mapping[str, str], timeout_sec: fl
                  grace_sec: float, received: list[int], shown: str) -> tuple[int, float, bool]:
     """Run the command with an empty stdin, in the wrapper's process group. On a stop signal in <received>, or
     after <timeout_sec>, signal every process under the wrapper: the command, what it started, and on Linux what
-    lost its parent (_adopt_orphans); SIGKILL whatever is left <grace_sec> later. A stop signal that reached the
-    whole process group and ended the command's first process before the wrapper looked gets the same stop. Every
-    poll collects the adopted processes that have ended (_reap_orphans).
+    lost its parent (_adopt_orphans); SIGCONT follows the signal, so a stopped process handles it. SIGKILL whatever
+    is left <grace_sec> later. A stop signal that reached the whole process group and ended the command's first
+    process before the wrapper looked gets the same stop. Every poll collects the adopted processes that have ended
+    (_reap_orphans).
     (the exit code, the seconds it ran, whether it timed out)."""
     _adopt_orphans()
     started = time.monotonic()
@@ -451,6 +452,7 @@ def _run_command(command: list[str], environ: Mapping[str, str], timeout_sec: fl
             if stopping:
                 targets = {proc.pid, *descendants(os.getpid())}
                 _signal_all(targets, stopping)
+                _signal_all(targets, signal.SIGCONT)
                 stopped_at = now
         elif not killed and now - stopped_at >= grace_sec:
             targets |= {proc.pid, *descendants(os.getpid())}
@@ -463,6 +465,7 @@ def _run_command(command: list[str], environ: Mapping[str, str], timeout_sec: fl
         stopping = received[0]
         targets = set(descendants(os.getpid()))
         _signal_all(targets, stopping)
+        _signal_all(targets, signal.SIGCONT)
         stopped_at = time.monotonic()
     if targets and not killed:
         _finish_off(targets - {proc.pid}, grace_sec - (time.monotonic() - stopped_at), poll_sec)
@@ -564,9 +567,10 @@ def stop_holder(runs_dir: Path, run_id: str, agent: str | None = None, *, wait_s
                 clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
                 log: Callable[[str], None] = lambda line: None) -> Stopped | None:
     """Stop the wrapper that holds the queue for run <run_id> (for <agent>, when given) with SIGTERM, which it passes
-    to its command before it releases the queue. A Stopped when one was stopped, noting when the queue is still
-    held <wait_sec> later; None when the queue is free or held by someone else. Never SIGKILL: that would orphan the
-    command without the lock, and the wrapper's --timeout still bounds it."""
+    to its command before it releases the queue; SIGTERM is followed by SIGCONT, so a wrapper stopped by SIGTSTP or
+    SIGSTOP handles it. A Stopped when one was stopped, noting when the queue is still held <wait_sec> later; None
+    when the queue is free or held by someone else. Never SIGKILL: that would orphan the command without the lock,
+    and the wrapper's --timeout still bounds it."""
     state = queue_state(runs_dir)
     if state.get("held") is not True or state.get("run_id") != run_id:
         return None
@@ -585,6 +589,10 @@ def stop_holder(runs_dir: Path, run_id: str, agent: str | None = None, *, wait_s
     except PermissionError as e:
         log(f"exclusive: cannot stop {what}: {e}")
         return None
+    try:
+        os.kill(pid, signal.SIGCONT)
+    except ProcessLookupError:                   # the wrapper exited meanwhile
+        pass
     deadline = clock() + wait_sec
     while clock() < deadline:
         now_state = queue_state(runs_dir)

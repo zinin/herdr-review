@@ -35,6 +35,19 @@ class RunnerStopsItsQueueHolderTest(RunnerBase):
         self.assertEqual(queue_state(self.runs), {"held": False})
         self.assertIn("exclusive: stopped hrtest-codex: sleep 30", (run_dir / "runner.log").read_text())
 
+    def test_run_fail_stops_a_wrapper_stopped_by_sigstop(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        r = self.runner(run_dir)
+        r.start_reviewers()
+        p = self.holding(run_dir, "hrtest-codex")
+        os.kill(p.pid, signal.SIGSTOP)
+        self.addCleanup(p.send_signal, signal.SIGCONT)             # a failed test leaves no stopped wrapper behind
+        self.assertTrue(os.WIFSTOPPED(os.waitpid(p.pid, os.WUNTRACED)[1]))    # stopped before run fail looks
+        out = r.fail("hrtest-codex", "stuck")
+        self.assertEqual(out["exclusive_stopped"], "hrtest-codex: sleep 30")      # no "still running after" note
+        self.assertEqual(p.wait(timeout=30), 143)
+        self.assertEqual(queue_state(self.runs), {"held": False})
+
     def test_run_fail_leaves_another_agents_command_alone(self):
         run_dir = make_run(self.root, self.repo, reviewers=("codex", "gemini"))
         r = self.runner(run_dir)
@@ -92,7 +105,7 @@ class StopHolderTest(unittest.TestCase):
                 mock.patch("herdr_review.exclusive.os.kill") as kill:
             out = stop_holder(Path("/nowhere"), "hrtest", clock=lambda: now[0],
                               sleep=lambda s: now.__setitem__(0, now[0] + s), log=lines.append)
-        kill.assert_called_once_with(99999, signal.SIGTERM)
+        self.assertEqual(kill.call_args_list, [mock.call(99999, signal.SIGTERM), mock.call(99999, signal.SIGCONT)])
         self.assertEqual(out, "hrtest-codex: mvn test (still running after 15s)")
         self.assertIn("left to its --timeout", lines[-1])
 

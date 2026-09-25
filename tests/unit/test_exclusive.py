@@ -519,6 +519,22 @@ class StopTest(ExclusiveBase):
         self.assertLess(time.monotonic() - started, 4.5)        # once nothing is left, the wrapper stops waiting
         self.assertEqual(queue_state(self.runs), {"held": False})
 
+    def test_a_command_stopped_by_sigstop_still_runs_its_term_trap(self):
+        pidfile, marker = self.root / "sh.pid", self.root / "cleaned"
+        # The trap is set before the pid is written: a SIGSTOP never comes before it.
+        script = 'trap "echo cleaned > \\"$2\\"; exit 143" TERM; echo $$ > "$1"; while :; do sleep 0.1; done'
+        p = subprocess.Popen([sys.executable, "-c", CLEANUP_HARNESS, "sh", "-c", script, "sh", str(pidfile), str(marker)],
+                             cwd=PACKAGE_ROOT, env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(stop_quietly, p)
+        self.assertTrue(wait_until(lambda: pidfile.exists() and pidfile.read_text().strip() != ""))
+        shell = int(pidfile.read_text())
+        self.addCleanup(kill_quietly, shell)
+        os.kill(shell, signal.SIGSTOP)                          # well before the 0.5 s timeout
+        _, err = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 124, err)
+        self.assertTrue(marker.exists(), "the stopped shell was killed at the end of the grace, its TERM trap unrun")
+        self.assertEqual(queue_state(self.runs), {"held": False})
+
     def test_a_process_that_a_term_trap_starts_is_killed_when_the_grace_ends(self):
         pidfile = self.root / "late.pid"
         trap = 'sleep 30 >/dev/null 2>&1 & echo $! > "$1"; exit 143'
