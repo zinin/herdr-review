@@ -338,7 +338,7 @@ def _reap_orphans(first: int | None = None) -> set[int]:
     stopped as gone (`kill -0 <pid>` fails), not as a zombie that lasts as long as the wrapper. <first>, the command's
     first process while Popen has not collected it, is never collected here: its exit status is the wrapper's. The
     pids collected, which a stop must no longer signal: they may name new processes. Elsewhere than on Linux the
-    wrapper adopts nothing, and macOS has no os.waitid: nothing to collect."""
+    wrapper adopts nothing, so there is nothing to collect."""
     reaped: set[int] = set()
     while hasattr(os, "waitid"):
         try:
