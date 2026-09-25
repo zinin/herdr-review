@@ -1,11 +1,12 @@
 import os
 import signal
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from herdr_review.exclusive import queue_state, stop_holder
+from herdr_review.exclusive import is_wrapper, queue_state, stop_holder
 from tests.unit.test_exclusive import Held, clean_env, exclusive_cmd, iso_ago, stop_quietly, wait_until
 from tests.unit.test_runner_start import RunnerBase, make_run
 
@@ -101,3 +102,29 @@ class StopHolderTest(unittest.TestCase):
                     mock.patch("herdr_review.exclusive.os.kill") as kill:
                 self.assertIsNone(stop_holder(Path("/nowhere"), "hrtest"))
                 kill.assert_not_called()
+
+
+class IsWrapperTest(unittest.TestCase):
+    def process(self, *words: str) -> int:
+        """A live process whose command line ends with <words>. It says so once it runs: until then, just after the
+        exec, its command line can still read as empty."""
+        p = subprocess.Popen([sys.executable, "-c", "import time; print('up', flush=True); time.sleep(30)", *words],
+                             stdout=subprocess.PIPE, text=True)
+        self.addCleanup(stop_quietly, p)
+        self.assertEqual(p.stdout.readline(), "up\n")
+        return p.pid
+
+    def test_exclusive_must_come_right_after_the_herdr_review_word(self):
+        self.assertTrue(is_wrapper(self.process("/x/bin/herdr-review", "exclusive", "--", "make")))
+        self.assertFalse(is_wrapper(self.process("grep", "-rw", "exclusive", "/x/herdr-review")))
+        self.assertFalse(is_wrapper(self.process("/x/bin/herdr-review", "status", "--", "exclusive")))
+
+    def test_pid_1_0_or_a_negative_one_is_never_a_wrapper(self):
+        argv = ["python3", "/x/bin/herdr-review", "exclusive", "--", "make"]
+        ps = subprocess.CompletedProcess(["ps"], 0, " ".join(argv) + "\n", "")
+        with mock.patch.object(Path, "read_bytes", return_value="\0".join(argv).encode() + b"\0"), \
+                mock.patch("herdr_review.exclusive.subprocess.run", return_value=ps):
+            self.assertTrue(is_wrapper(4242))                 # any other pid now passes for a wrapper
+            for pid in (1, 0, -1):
+                with self.subTest(pid=pid):
+                    self.assertFalse(is_wrapper(pid))          # os.kill would signal init, this process group, or all

@@ -510,7 +510,11 @@ def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, timeout_sec: 
 
 
 def is_wrapper(pid: int) -> bool:
-    """Whether <pid> runs `herdr-review exclusive`: the holder file is a hint, and a pid is reused."""
+    """Whether <pid> runs `herdr-review exclusive`, the word `exclusive` right after a word naming herdr-review (or
+    herdr_review): the holder file is a hint, and a pid is reused. Never pid 1, 0 or a negative one: os.kill would
+    signal init, the caller's process group or every process."""
+    if pid <= 1:
+        return False
     if Path("/proc/self/cmdline").exists():
         try:
             raw = Path(f"/proc/{pid}/cmdline").read_bytes()
@@ -523,7 +527,8 @@ def is_wrapper(pid: int) -> bool:
         except (OSError, subprocess.SubprocessError):
             return False
         words = out.stdout.split()
-    return "exclusive" in words and any("herdr-review" in w or "herdr_review" in w for w in words)
+    return any(("herdr-review" in word or "herdr_review" in word) and after == "exclusive"
+               for word, after in zip(words, words[1:]))
 
 
 class Stopped(str):
