@@ -7,17 +7,19 @@ the holder for messages and `status`; it is a hint, never proof.
 """
 from __future__ import annotations
 
+import ctypes
 import fcntl
 import json
 import os
 import shlex
+import signal
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping, NamedTuple
+from typing import Callable, Mapping, NamedTuple
 
 from .config import ConfigError, load_config
 from .status import now_iso
@@ -39,6 +41,8 @@ EXIT_TIMEOUT = 124
 EXIT_NOT_EXECUTABLE = 126
 EXIT_NOT_FOUND = 127
 COMMAND_CHARS = 200
+STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+PR_SET_PDEATHSIG = 1
 
 
 class ExclusiveError(Exception):
@@ -250,32 +254,181 @@ def _exec_in_turn(command: list[str], environ: Mapping[str, str]) -> int:
         return EXIT_NOT_EXECUTABLE
 
 
-def _run_command(command: list[str], environ: Mapping[str, str]) -> tuple[int, float]:
-    """Run the command with an empty stdin: (its exit code, 128+N for signal N; the seconds it ran)."""
+def _catch_stop_signals() -> list[int]:
+    """Record SIGTERM, SIGINT and SIGHUP instead of dying of them: the wrapper stops its command and releases the
+    queue itself. A signal the caller ignores stays ignored."""
+    received: list[int] = []
+
+    def record(signum: int, frame: object) -> None:
+        received.append(signum)
+
+    for sig in STOP_SIGNALS:
+        if signal.getsignal(sig) is not signal.SIG_IGN:
+            signal.signal(sig, record)
+    return received
+
+
+def _die_with_wrapper() -> Callable[[], None] | None:
+    """Linux: the command gets SIGKILL when the wrapper dies, even of SIGKILL (PR_SET_PDEATHSIG). Elsewhere
+    nothing: there is no such call. prctl is looked up before the fork: preexec_fn must not import."""
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        prctl = ctypes.CDLL(None, use_errno=True).prctl
+    except (OSError, AttributeError):
+        return None
+    wrapper = os.getpid()
+
+    def preexec() -> None:
+        prctl(PR_SET_PDEATHSIG, int(signal.SIGKILL), 0, 0, 0)
+        if os.getppid() != wrapper:          # the wrapper died before the call took effect
+            os._exit(EXIT_NOT_EXECUTABLE)
+
+    return preexec
+
+
+def _children() -> dict[int, list[int]]:
+    """Parent pid → child pids: from /proc on Linux, from `ps` elsewhere; empty when neither answers."""
+    children: dict[int, list[int]] = {}
+    proc = Path("/proc")
+    if (proc / "self" / "stat").exists():
+        for entry in proc.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                ppid = int((entry / "stat").read_text().rsplit(")", 1)[1].split()[1])
+            except (OSError, IndexError, ValueError):
+                continue
+            children.setdefault(ppid, []).append(int(entry.name))
+        return children
+    try:
+        out = subprocess.run(["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return children
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            children.setdefault(int(parts[1]), []).append(int(parts[0]))
+    return children
+
+
+def descendants(pid: int) -> list[int]:
+    """Every process under <pid>, as the process table shows it now."""
+    tree = _children()
+    found: list[int] = []
+    todo = [pid]
+    while todo:
+        for child in tree.get(todo.pop(), []):
+            if child not in found:
+                found.append(child)
+                todo.append(child)
+    return found
+
+
+def _signal_all(pids, sig: int) -> None:
+    for pid in pids:
+        try:
+            os.kill(pid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def _alive(pid: int) -> bool:
+    """Whether <pid> runs; a zombie counts as gone."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, IndexError):
+        return True
+
+
+def _finish_off(pids: set[int], grace_sec: float, poll_sec: float) -> None:
+    """The command's first process has ended: whatever of <pids> still lives after <grace_sec> gets SIGKILL."""
+    deadline = time.monotonic() + max(0.0, grace_sec)
+    alive = {p for p in pids if _alive(p)}
+    while alive and time.monotonic() < deadline:
+        time.sleep(min(poll_sec, 0.2))
+        alive = {p for p in alive if _alive(p)}
+    _signal_all(alive, signal.SIGKILL)
+
+
+def _run_command(command: list[str], environ: Mapping[str, str], timeout_sec: float, poll_sec: float,
+                 grace_sec: float, received: list[int], shown: str) -> tuple[int, float, bool]:
+    """Run the command with an empty stdin, in the wrapper's process group. On a stop signal in <received>, or
+    after <timeout_sec>, signal it and every process under it; SIGKILL whatever is left <grace_sec> later.
+    (the exit code, the seconds it ran, whether it timed out)."""
     started = time.monotonic()
     try:
-        proc = subprocess.Popen(command, env={**environ, NESTED_ENV: "1"}, stdin=subprocess.DEVNULL)
+        proc = subprocess.Popen(command, env={**environ, NESTED_ENV: "1"}, stdin=subprocess.DEVNULL,
+                                preexec_fn=_die_with_wrapper())
     except FileNotFoundError:
         _say(f"command not found: {command[0]}")
-        return EXIT_NOT_FOUND, 0.0
+        return EXIT_NOT_FOUND, 0.0, False
     except OSError as e:
         _say(f"cannot execute {command[0]}: {e.strerror or e}")
-        return EXIT_NOT_EXECUTABLE, 0.0
-    code = proc.wait()
-    return (code if code >= 0 else 128 - code), time.monotonic() - started
+        return EXIT_NOT_EXECUTABLE, 0.0, False
+    stopping = 0                 # the signal the command was stopped with
+    timed_out = False
+    killed = False
+    targets: set[int] = set()
+    stopped_at = 0.0
+    while True:
+        try:
+            code = proc.wait(timeout=poll_sec)
+            break
+        except subprocess.TimeoutExpired:
+            pass
+        now = time.monotonic()
+        if not stopping:
+            if received:
+                stopping = received[0]
+            elif now - started >= timeout_sec:
+                stopping, timed_out = signal.SIGTERM, True
+            if stopping:
+                targets = {proc.pid, *descendants(proc.pid)}
+                _signal_all(targets, stopping)
+                stopped_at = now
+        elif not killed and now - stopped_at >= grace_sec:
+            targets |= {proc.pid, *descendants(proc.pid)}
+            _signal_all(targets, signal.SIGKILL)
+            killed = True
+    ran = time.monotonic() - started
+    if not stopping and received:          # Ctrl-C to the whole group reached the command too
+        stopping = received[0]
+    if targets and not killed:
+        _finish_off(targets - {proc.pid}, grace_sec - (time.monotonic() - stopped_at), poll_sec)
+    if timed_out:
+        _say(f'timed out after {format_duration(ran)}; stopped "{shown}"')
+        return EXIT_TIMEOUT, ran, True
+    if stopping:
+        _say(f'{signal.Signals(stopping).name} received; stopped "{shown}"')
+        return 128 + stopping, ran, False
+    return (code if code >= 0 else 128 - code), ran, False
 
 
-def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, environ: Mapping[str, str] = os.environ,
-        cwd: Path | None = None, poll_sec: float = POLL_SEC, notice_sec: float = NOTICE_SEC) -> int:
+def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, timeout_sec: float = DEFAULT_TIMEOUT_SEC,
+        environ: Mapping[str, str] = os.environ, cwd: Path | None = None, poll_sec: float = POLL_SEC,
+        notice_sec: float = NOTICE_SEC, grace_sec: float = GRACE_SEC) -> int:
     """Run <command> once this process holds the machine's build queue. The exit code for the CLI."""
     if environ.get(NESTED_ENV):
         return _exec_in_turn(command, environ)
     where = locate(environ, Path.cwd() if cwd is None else Path(cwd))
     who = environ.get(AGENT_ENV) or f"pid {os.getpid()}"
     shown = command_text(command)
+    received = _catch_stop_signals()
     fd = _open_queue(where.runs_dir)
     try:
-        turn = _take_turn(fd, where.runs_dir, wait_sec, poll_sec, notice_sec, [])
+        turn = _take_turn(fd, where.runs_dir, wait_sec, poll_sec, notice_sec, received)
+        if turn.outcome == "signal":
+            name = signal.Signals(turn.signum).name
+            _say(f"{name} received while waiting for a turn; nothing was run")
+            _log(where, f"{who} stopped by {name} while waiting")
+            return 128 + turn.signum
         if turn.outcome == "busy":
             text = holder_text(turn.holder)
             _say(f"busy — {text}; nothing was run. Do other work and run the same command again later.")
@@ -294,8 +447,9 @@ def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, environ: Mapp
             if turn.waited is not None:
                 _say(f"your turn after {format_duration(turn.waited)}")
             _log(where, f'{who} running "{shown}" after {format_duration(turn.waited or 0)} of waiting')
-            code, ran = _run_command(command, environ)
-            _log(where, f"{who} done after {format_duration(ran)}, exit {code}")
+            code, ran, timed_out = _run_command(command, environ, timeout_sec, poll_sec, grace_sec, received, shown)
+            _log(where, f"{who} timed out after {format_duration(ran)}" if timed_out
+                 else f"{who} done after {format_duration(ran)}, exit {code}")
             return code
         finally:
             remove_holder(where.runs_dir, pid)

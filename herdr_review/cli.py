@@ -20,7 +20,7 @@ from .scope import uncommitted_counts
 from .status import RunStatus, StatusError
 
 RUNNER_PATH = PACKAGE_ROOT / "bin" / "herdr-review"
-EXCLUSIVE_USAGE = "herdr-review exclusive [--wait SEC] -- COMMAND [ARG...]"
+EXCLUSIVE_USAGE = "herdr-review exclusive [--wait SEC] [--timeout SEC] -- COMMAND [ARG...]"
 
 
 def seconds(zero_ok: bool) -> Callable[[str], float]:
@@ -89,6 +89,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("exclusive", help="run a heavy command (a build, tests, an install, a server) only while no other runs on this machine")
     p.add_argument("--wait", type=seconds(zero_ok=True), default=exclusive.DEFAULT_WAIT_SEC, metavar="SEC",
                    help="how long to wait for a turn before exiting 75 (default 60; 0 tries once)")
+    p.add_argument("--timeout", type=seconds(zero_ok=False), default=exclusive.DEFAULT_TIMEOUT_SEC, metavar="SEC",
+                   help="stop the command, with everything it started, after this many seconds and exit 124 (default 1800)")
     p.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --")
 
     r = sub.add_parser("run", help="runner subcommands used by the orchestrator agent")
@@ -305,7 +307,7 @@ def cmd_exclusive(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
         print(f"{exclusive.PREFIX} no command given; usage: {EXCLUSIVE_USAGE}", file=sys.stderr)
         return 2
     try:
-        return exclusive.run(command, wait_sec=args.wait, environ=environ, cwd=Path.cwd(),
+        return exclusive.run(command, wait_sec=args.wait, timeout_sec=args.timeout, environ=environ, cwd=Path.cwd(),
                              poll_sec=poll_sec_from(environ, exclusive.POLL_SEC))
     except exclusive.ExclusiveError as e:
         print(f"{exclusive.PREFIX} {e}", file=sys.stderr)

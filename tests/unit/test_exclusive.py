@@ -362,3 +362,93 @@ class TurnTest(ExclusiveBase):
         self.assertEqual(p.stdout, "echo \"привет мир\" 'x'\n")
         self.assertEqual(json.loads(seen.read_text(encoding="utf-8"))["command"], shlex.join(args))
         self.assertIn(shlex.join(args), (self.run_dir / "runner.log").read_text(encoding="utf-8"))
+
+
+HARNESS = (
+    "import os, sys\n"
+    "from herdr_review import exclusive\n"
+    "sys.exit(exclusive.run(sys.argv[1:], timeout_sec=0.5, grace_sec=0.5, poll_sec=0.05, environ=os.environ))\n"
+)
+
+
+class StopTest(ExclusiveBase):
+    def start(self, *args: str, **kw) -> subprocess.Popen:
+        p = subprocess.Popen(exclusive_cmd(*args), env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                             text=True, **kw)
+        self.addCleanup(stop_quietly, p)
+        return p
+
+    def holder_written(self) -> bool:
+        return wait_until(lambda: (self.runs / "exclusive.json").exists())
+
+    def test_a_command_past_its_timeout_is_stopped_with_everything_it_started(self):
+        pidfile = self.root / "bg.pid"
+        started = time.monotonic()
+        p = subprocess.run(exclusive_cmd("--timeout", "0.5", "--", "sh", "-c", 'sleep 30 & echo $! > "$1"; sleep 30', "sh", str(pidfile)),
+                           env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 124, p.stderr)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertRegex(p.stderr, r'herdr-review exclusive: timed out after \ds; stopped "sh -c')
+        background = int(pidfile.read_text())
+        self.addCleanup(kill_quietly, background)
+        self.assertTrue(wait_until(lambda: not alive(background)))
+        self.assertEqual(queue_state(self.runs), {"held": False})
+        self.assertRegex((self.run_dir / "runner.log").read_text(), r"exclusive: hrtest-codex timed out after \d+s\n")
+
+    def test_sigterm_stops_the_command_and_frees_the_queue(self):
+        p = self.start("--", "sleep", "30")
+        self.assertTrue(self.holder_written())
+        p.send_signal(signal.SIGTERM)
+        _, err = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 143, err)
+        self.assertIn('herdr-review exclusive: SIGTERM received; stopped "sleep 30"', err)
+        self.assertEqual(queue_state(self.runs), {"held": False})
+        self.assertIsNone(read_holder(self.runs))
+
+    def test_a_signal_while_waiting_runs_nothing(self):
+        marker = self.root / "ran"
+        self.hold(pid=42, agent="hrtest-gemini", run_id="hrtest", command="mvn test", started_at=iso_ago(5))
+        p = self.start("--wait", "30", "--", "touch", str(marker))
+        first = p.stderr.readline()                  # the waiting notice: the signal handlers are in place
+        self.assertIn("waiting —", first)
+        p.send_signal(signal.SIGTERM)
+        _, rest = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 143, first + rest)
+        self.assertIn("herdr-review exclusive: SIGTERM received while waiting for a turn; nothing was run", rest)
+        self.assertFalse(marker.exists())
+
+    def test_ctrl_c_to_the_whole_group_stops_the_command_and_frees_the_queue(self):   # Review Focus 1
+        p = self.start("--", "sleep", "30", start_new_session=True)
+        self.assertTrue(self.holder_written())
+        os.killpg(p.pid, signal.SIGINT)
+        _, err = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 130, err)
+        self.assertIn('herdr-review exclusive: SIGINT received; stopped "sleep 30"', err)
+        self.assertEqual(queue_state(self.runs), {"held": False})
+
+    def test_a_command_that_ignores_sigterm_is_killed_after_the_grace(self):
+        started = time.monotonic()
+        p = subprocess.run([sys.executable, "-c", HARNESS, "sh", "-c", "trap '' TERM; sleep 30"], cwd=PACKAGE_ROOT,
+                           env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 124, p.stderr)
+        self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(queue_state(self.runs), {"held": False})
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "PR_SET_PDEATHSIG is Linux-only")
+    def test_on_linux_the_command_dies_with_a_wrapper_killed_by_sigkill(self):
+        pidfile = self.root / "cmd.pid"
+        p = self.start("--", "sh", "-c", 'echo $$ > "$1"; exec sleep 30', "sh", str(pidfile))
+        self.assertTrue(wait_until(lambda: pidfile.exists() and pidfile.read_text().strip() != ""))
+        command = int(pidfile.read_text())
+        self.addCleanup(kill_quietly, command)
+        p.kill()
+        p.wait(timeout=30)
+        self.assertTrue(wait_until(lambda: not alive(command)))
+        self.assertEqual(queue_state(self.runs), {"held": False})
+
+    def test_a_bad_timeout_is_a_usage_error(self):
+        for value in ("0", "-5", "never"):
+            with self.subTest(value=value):
+                p = subprocess.run(exclusive_cmd("--timeout", value, "--", "true"), env=self.env, capture_output=True,
+                                   text=True, timeout=30)
+                self.assertEqual(p.returncode, 2)
