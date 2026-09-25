@@ -119,6 +119,12 @@ class IsWrapperTest(unittest.TestCase):
         self.assertFalse(is_wrapper(self.process("grep", "-rw", "exclusive", "/x/herdr-review")))
         self.assertFalse(is_wrapper(self.process("/x/bin/herdr-review", "status", "--", "exclusive")))
 
+    def test_only_a_word_that_names_herdr_review_itself_counts(self):
+        self.assertFalse(is_wrapper(self.process("/x/bin/herdr-reviewer", "exclusive", "--", "make")))
+        self.assertFalse(is_wrapper(self.process("/tmp/my-herdr-review-notes", "exclusive", "--", "make")))
+        self.assertTrue(is_wrapper(self.process("/x/bin/herdr-review", "exclusive", "--", "make")))
+        self.assertTrue(is_wrapper(self.process("herdr_review.cli", "exclusive", "--", "make")))    # python3 -m herdr_review.cli
+
     def test_pid_1_0_or_a_negative_one_is_never_a_wrapper(self):
         argv = ["python3", "/x/bin/herdr-review", "exclusive", "--", "make"]
         ps = subprocess.CompletedProcess(["ps"], 0, " ".join(argv) + "\n", "")

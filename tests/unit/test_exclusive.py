@@ -14,8 +14,8 @@ from pathlib import Path
 
 from herdr_review import PACKAGE_ROOT
 from herdr_review.exclusive import (
-    ExclusiveError, Where, format_duration, holder_text, locate, queue_state, read_holder, remove_holder,
-    runs_dir_of, write_holder,
+    ExclusiveError, Where, command_text, format_duration, holder_text, locate, queue_state, read_holder,
+    remove_holder, runs_dir_of, write_holder,
 )
 
 BIN = PACKAGE_ROOT / "bin" / "herdr-review"
@@ -166,6 +166,17 @@ class QueueFilesTest(ExclusiveBase):
         self.assertIsNone(read_holder(self.runs))
         self.assertEqual(sorted(p.name for p in self.runs.iterdir()), ["proj-abc123"])   # no temporary file left
 
+    def test_the_holder_file_is_readable_by_its_owner_only(self):
+        self.addCleanup(os.umask, os.umask(0o022))         # a umask that alone would leave it readable by all
+        write_holder(self.runs, {"pid": 42, "command": "make", "cwd": "/home/someone/project"})
+        self.assertEqual(stat.S_IMODE(os.stat(self.runs / "exclusive.json").st_mode), 0o600)
+
+    def test_a_control_character_in_the_command_text_becomes_its_escape(self):
+        for arg, text in (("\x1b[31m", "'\\x1b[31m'"), ("a\tb", "'a\\tb'"), ("\r", "'\\r'"), ("\x7f", "'\\x7f'"),
+                          ("\x9b", "'\\x9b'")):
+            with self.subTest(arg=arg):
+                self.assertEqual(command_text(["printf", arg]), f"printf {text}")
+
     def test_durations(self):
         for sec, text in ((0, "0s"), (59, "59s"), (60, "1m00s"), (185, "3m05s"), (3600, "1h00m"), (3725, "1h02m")):
             with self.subTest(sec=sec):
@@ -315,10 +326,21 @@ class TurnTest(ExclusiveBase):
         self.assertEqual(p.returncode, 1)
         self.assertIn("herdr-review exclusive: HERDR_REVIEW_RUN=", p.stderr)
 
+    def test_a_bad_poll_interval_exits_1_with_the_wrappers_line(self):
+        p = self.exclusive("--", "true", env={**self.env, "HERDR_REVIEW_POLL_SEC": "x"})
+        self.assertEqual(p.returncode, 1)
+        self.assertTrue(p.stderr.startswith("herdr-review exclusive: "), p.stderr)
+        self.assertIn("HERDR_REVIEW_POLL_SEC", p.stderr)
+
     def test_inside_a_turn_a_nested_call_runs_at_once(self):
         self.hold(pid=42, agent="hrtest-gemini", run_id="hrtest", command="make", started_at=iso_ago(5))
         p = self.exclusive("--wait", "0", "--", "true", env={**self.env, "HERDR_REVIEW_EXCLUSIVE": "1"})
         self.assertEqual(p.returncode, 0, p.stderr)
+
+    def test_a_nested_call_leaves_sigpipe_at_its_default(self):
+        script = '(yes; echo "yes exited $?" >&2) | head -n 1 >/dev/null'
+        p = self.exclusive("--", "sh", "-c", script, env={**self.env, "HERDR_REVIEW_EXCLUSIVE": "1"})
+        self.assertIn("yes exited 141", p.stderr)          # 1 and "Broken pipe": the command inherited SIGPIPE ignored
 
     def test_a_script_under_the_wrapper_may_call_the_wrapper_again(self):
         p = self.exclusive("--", *exclusive_cmd("--wait", "0", "--", "sh", "-c", "exit 4"))
@@ -363,6 +385,17 @@ class TurnTest(ExclusiveBase):
         self.assertEqual(p.stdout, "echo \"привет мир\" 'x'\n")
         self.assertEqual(json.loads(seen.read_text(encoding="utf-8"))["command"], shlex.join(args))
         self.assertIn(shlex.join(args), (self.run_dir / "runner.log").read_text(encoding="utf-8"))
+
+    def test_a_newline_in_the_command_stays_one_line_in_the_holder_file_and_the_run_log(self):
+        seen = self.root / "seen.json"
+        args = ["sh", "-c", 'cp "$1" "$2"\ntrue', "copy", str(self.runs / "exclusive.json"), str(seen)]
+        p = self.exclusive("--", *args)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        command = json.loads(seen.read_text(encoding="utf-8"))["command"]
+        self.assertEqual(command, shlex.join(args).replace("\n", "\\n"))
+        log = (self.run_dir / "runner.log").read_text(encoding="utf-8")
+        self.assertIn(f' exclusive: hrtest-codex running "{command}" after 0s of waiting\n', log)
+        self.assertEqual(len(log.splitlines()), 2, log)                # running and done, one line each
 
 
 HARNESS = (

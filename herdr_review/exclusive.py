@@ -16,6 +16,7 @@ import signal
 import subprocess
 import sys
 import time
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +42,7 @@ EXIT_TIMEOUT = 124
 EXIT_NOT_EXECUTABLE = 126
 EXIT_NOT_FOUND = 127
 COMMAND_CHARS = 200
+CONTROL_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 PR_SET_PDEATHSIG = 1
 PR_SET_CHILD_SUBREAPER = 36
@@ -91,8 +93,10 @@ def locate(environ: Mapping[str, str], cwd: Path) -> Where:
 
 
 def command_text(command: list[str]) -> str:
-    """The command as a shell would read it, cut to COMMAND_CHARS."""
-    text = shlex.join(command)
+    """The command as a shell would read it, on one line, cut to COMMAND_CHARS. A control character becomes its
+    escape — \\n, \\r, \\t, or \\xNN — so it neither splits a log record nor reaches a terminal."""
+    text = "".join(CONTROL_ESCAPES.get(ch, f"\\x{ord(ch):02x}") if unicodedata.category(ch) == "Cc" else ch
+                   for ch in shlex.join(command))
     return text if len(text) <= COMMAND_CHARS else text[:COMMAND_CHARS - 1] + "…"
 
 
@@ -127,11 +131,14 @@ def read_holder(runs_dir: Path) -> dict | None:
 
 
 def write_holder(runs_dir: Path, holder: dict) -> None:
-    """Atomically: a reader sees the old holder or the new one, never half of it."""
+    """Atomically: a reader sees the old holder or the new one, never half of it. Readable by its owner only, as the
+    queue file is: it holds a command line and directories."""
     path = Path(runs_dir) / HOLDER_NAME
     tmp = path.with_name(f"{HOLDER_NAME}.{os.getpid()}.tmp")
     try:
-        tmp.write_text(json.dumps(holder, ensure_ascii=False), encoding="utf-8")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps(holder, ensure_ascii=False))
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
@@ -244,7 +251,12 @@ def _take_turn(fd: int, runs_dir: Path, wait_sec: float, poll_sec: float, notice
 
 
 def _exec_in_turn(command: list[str], environ: Mapping[str, str]) -> int:
-    """Inside another wrapper's turn: become the command, under the outer turn's lock and timeout."""
+    """Inside another wrapper's turn: become the command, under the outer turn's lock and timeout. The signals Python
+    ignores at startup go back to their defaults first, as subprocess's restore_signals does for a command the
+    wrapper starts: exec keeps an ignored signal ignored, and `yes | head -1` would fail with "Broken pipe"."""
+    for name in ("SIGPIPE", "SIGXFZ", "SIGXFSZ"):
+        if hasattr(signal, name):
+            signal.signal(getattr(signal, name), signal.SIG_DFL)
     try:
         os.execvpe(command[0], command, dict(environ))
     except FileNotFoundError:
@@ -510,9 +522,11 @@ def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, timeout_sec: 
 
 
 def is_wrapper(pid: int) -> bool:
-    """Whether <pid> runs `herdr-review exclusive`, the word `exclusive` right after a word naming herdr-review (or
-    herdr_review): the holder file is a hint, and a pid is reused. Never pid 1, 0 or a negative one: os.kill would
-    signal init, the caller's process group or every process."""
+    """Whether <pid> runs `herdr-review exclusive`, the word `exclusive` right after a word naming herdr-review: a
+    path whose last part is herdr-review, or the module herdr_review or herdr_review.cli as `python3 -m` shows it;
+    a word that merely contains the name, such as herdr-reviewer, does not count. The holder file is a hint, and a
+    pid is reused. Never pid 1, 0 or a negative one: os.kill would signal init, the caller's process group or every
+    process."""
     if pid <= 1:
         return False
     if Path("/proc/self/cmdline").exists():
@@ -527,8 +541,8 @@ def is_wrapper(pid: int) -> bool:
         except (OSError, subprocess.SubprocessError):
             return False
         words = out.stdout.split()
-    return any(("herdr-review" in word or "herdr_review" in word) and after == "exclusive"
-               for word, after in zip(words, words[1:]))
+    return any((os.path.basename(word) == "herdr-review" or word in ("herdr_review", "herdr_review.cli"))
+               and after == "exclusive" for word, after in zip(words, words[1:]))
 
 
 class Stopped(str):

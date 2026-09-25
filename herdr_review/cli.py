@@ -343,7 +343,7 @@ def cmd_exclusive(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     try:
         return exclusive.run(command, wait_sec=args.wait, timeout_sec=args.timeout, environ=environ, cwd=Path.cwd(),
                              poll_sec=poll_sec_from(environ, exclusive.POLL_SEC))
-    except exclusive.ExclusiveError as e:
+    except (exclusive.ExclusiveError, RunnerError, OSError) as e:
         print(f"{exclusive.PREFIX} {e}", file=sys.stderr)
         return 1
 
