@@ -89,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--wait", type=seconds(zero_ok=True), default=exclusive.DEFAULT_WAIT_SEC, metavar="SEC",
                    help="how long to wait for a turn before exiting 75 (default 60; 0 tries once)")
     p.add_argument("--timeout", type=seconds(zero_ok=False), default=exclusive.DEFAULT_TIMEOUT_SEC, metavar="SEC",
-                   help="stop the command, with everything it started, after this many seconds and exit 124 (default 1800)")
+                   help="stop the command, with every process under it, after this many seconds and exit 124 (default 1800)")
     p.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --")
 
     r = sub.add_parser("run", help="runner subcommands used by the orchestrator agent")
