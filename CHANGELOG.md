@@ -2,7 +2,7 @@
 
 All notable changes to herdr-review will be documented here.
 
-## [Unreleased]
+## [0.3.0] - 2026-09-26
 
 ### Added
 - `herdr-review exclusive -- <command>`: runs a heavy command — a build, tests, a dependency install, a server — only

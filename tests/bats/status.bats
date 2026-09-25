@@ -44,5 +44,5 @@ teardown() { teardown_env; }
 @test "version flag" {
   run "$HR" --version
   [ "$status" -eq 0 ]
-  [[ "$output" == "herdr-review 0.2.0" ]]
+  [[ "$output" == "herdr-review 0.3.0" ]]
 }
