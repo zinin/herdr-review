@@ -300,17 +300,17 @@ def _die_with_wrapper() -> Callable[[], None] | None:
     return preexec
 
 
-def _adopt_orphans() -> None:
+def _adopt_orphans() -> bool:
     """Linux: the wrapper becomes the subreaper of the command's processes (PR_SET_CHILD_SUBREAPER). A process
     whose parent dies, such as the background job of an `sh -c` that Ctrl-C killed, is re-parented to the wrapper
-    instead of init, so a stop still finds it under the wrapper; _reap_orphans collects it once it ends. Elsewhere,
-    or when the call fails, nothing: the wrapper works without it."""
+    instead of init, so a stop still finds it under the wrapper; _reap_orphans collects it once it ends. Whether the
+    wrapper became the subreaper: False elsewhere, or when the call fails; the wrapper works without it."""
     if not sys.platform.startswith("linux"):
-        return
+        return False
     try:
-        ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
+        return ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) == 0
     except (OSError, AttributeError):
-        pass
+        return False
 
 
 def _reap_orphans(first: int | None = None) -> set[int]:
@@ -396,12 +396,14 @@ def _alive(pid: int) -> bool:
         return True
 
 
-def _finish_off(pids: set[int], grace_sec: float, poll_sec: float) -> None:
+def _finish_off(pids: set[int], grace_sec: float, poll_sec: float, *, adopted: bool) -> None:
     """The command's first process has ended: wait up to <grace_sec> while a process of the stop still runs — one of
     <pids>, the processes signalled, or one under the wrapper now, such as a cleanup a TERM trap started after the
-    stop — collecting the adopted processes that end (_reap_orphans). Whatever still runs then gets SIGKILL."""
+    stop — collecting the adopted processes that end (_reap_orphans). Whatever still runs then gets SIGKILL. When
+    the wrapper is the subreaper (<adopted>), only the processes under it now count: they hold every live process of
+    the stop, and a pid of <pids> outside them may already name an unrelated process."""
     deadline = time.monotonic() + max(0.0, grace_sec)
-    signalled = set(pids)
+    signalled = set() if adopted else set(pids)
     while True:
         signalled -= _reap_orphans()
         left = {p for p in signalled | set(descendants(os.getpid())) if _alive(p)}
@@ -420,7 +422,7 @@ def _run_command(command: list[str], environ: Mapping[str, str], timeout_sec: fl
     process before the wrapper looked gets the same stop. Every poll collects the adopted processes that have ended
     (_reap_orphans).
     (the exit code, the seconds it ran, whether it timed out)."""
-    _adopt_orphans()
+    adopted = _adopt_orphans()
     started = time.monotonic()
     try:
         proc = subprocess.Popen(command, env={**environ, NESTED_ENV: "1"}, stdin=subprocess.DEVNULL,
@@ -455,7 +457,12 @@ def _run_command(command: list[str], environ: Mapping[str, str], timeout_sec: fl
                 _signal_all(targets, signal.SIGCONT)
                 stopped_at = now
         elif not killed and now - stopped_at >= grace_sec:
-            targets |= {proc.pid, *descendants(os.getpid())}
+            if adopted:
+                # With the wrapper as subreaper every live process of the command is in its tree; a pid of the
+                # stop-time snapshot outside it may already name an unrelated process.
+                targets = {proc.pid, *descendants(os.getpid())}
+            else:
+                targets |= {proc.pid, *descendants(os.getpid())}
             _signal_all(targets, signal.SIGKILL)
             killed = True
     ran = time.monotonic() - started
@@ -468,7 +475,7 @@ def _run_command(command: list[str], environ: Mapping[str, str], timeout_sec: fl
         _signal_all(targets, signal.SIGCONT)
         stopped_at = time.monotonic()
     if targets and not killed:
-        _finish_off(targets - {proc.pid}, grace_sec - (time.monotonic() - stopped_at), poll_sec)
+        _finish_off(targets - {proc.pid}, grace_sec - (time.monotonic() - stopped_at), poll_sec, adopted=adopted)
     if timed_out:
         _say(f'timed out after {format_duration(ran)}; stopped "{shown}"')
         return EXIT_TIMEOUT, ran, True

@@ -14,8 +14,8 @@ from pathlib import Path
 
 from herdr_review import PACKAGE_ROOT
 from herdr_review.exclusive import (
-    ExclusiveError, Where, command_text, format_duration, holder_text, locate, queue_state, read_holder,
-    remove_holder, runs_dir_of, write_holder,
+    ExclusiveError, Where, _finish_off, command_text, format_duration, holder_text, locate, queue_state,
+    read_holder, remove_holder, runs_dir_of, write_holder,
 )
 
 BIN = PACKAGE_ROOT / "bin" / "herdr-review"
@@ -498,6 +498,26 @@ class StopTest(ExclusiveBase):
                            env=self.env, capture_output=True, text=True, timeout=60)
         self.assertEqual(p.returncode, 0, p.stderr)                    # 124: the helper stayed a zombie to the timeout
         self.assertEqual(queue_state(self.runs), {"held": False})
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "PR_SET_CHILD_SUBREAPER is Linux-only")
+    def test_on_linux_the_wrapper_becomes_the_subreaper(self):
+        # In a child process: this test process must not become a subreaper.
+        p = subprocess.run([sys.executable, "-c", "from herdr_review.exclusive import _adopt_orphans; print(_adopt_orphans())"],
+                           cwd=PACKAGE_ROOT, env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(p.stdout, "True\n", p.stderr)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "PR_SET_CHILD_SUBREAPER is Linux-only")
+    def test_only_without_the_subreaper_the_grace_kills_a_pid_of_the_stop_outside_the_wrapper(self):
+        # A live process under no wrapper, not even under this test process, which _finish_off takes for the
+        # wrapper: a pid of the stop-time snapshot that now names an unrelated process.
+        started = subprocess.run(["sh", "-c", "sleep 30 >/dev/null 2>&1 & echo $!"], capture_output=True, text=True,
+                                 timeout=30)
+        pid = int(started.stdout)
+        self.addCleanup(kill_quietly, pid)
+        _finish_off({pid}, 0.2, 0.05, adopted=True)             # the subreaper: only the processes under it now
+        self.assertTrue(alive(pid))
+        _finish_off({pid}, 0.2, 0.05, adopted=False)            # without it (macOS), the snapshot as before
+        self.assertTrue(wait_until(lambda: not alive(pid)))
 
     def test_a_command_that_ignores_sigterm_is_killed_after_the_grace(self):
         started = time.monotonic()
