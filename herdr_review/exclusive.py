@@ -385,15 +385,18 @@ def _alive(pid: int) -> bool:
 
 
 def _finish_off(pids: set[int], grace_sec: float, poll_sec: float) -> None:
-    """The command's first process has ended: whatever of <pids> still lives after <grace_sec> gets SIGKILL, and so
-    does whatever is under the wrapper by then, such as a process a TERM trap forked after the stop. Meanwhile the
-    adopted processes that end are collected (_reap_orphans)."""
+    """The command's first process has ended: wait up to <grace_sec> while a process of the stop still runs — one of
+    <pids>, the processes signalled, or one under the wrapper now, such as a cleanup a TERM trap started after the
+    stop — collecting the adopted processes that end (_reap_orphans). Whatever still runs then gets SIGKILL."""
     deadline = time.monotonic() + max(0.0, grace_sec)
-    alive = {p for p in pids if _alive(p)}
-    while alive and time.monotonic() < deadline:
+    signalled = set(pids)
+    while True:
+        signalled -= _reap_orphans()
+        left = {p for p in signalled | set(descendants(os.getpid())) if _alive(p)}
+        if not left or time.monotonic() >= deadline:
+            break
         time.sleep(min(poll_sec, 0.2))
-        alive = {p for p in alive - _reap_orphans() if _alive(p)}
-    _signal_all(alive | set(descendants(os.getpid())), signal.SIGKILL)
+    _signal_all(left, signal.SIGKILL)
 
 
 def _run_command(command: list[str], environ: Mapping[str, str], timeout_sec: float, poll_sec: float,

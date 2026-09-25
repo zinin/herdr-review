@@ -374,6 +374,11 @@ SIGNAL_HARNESS = (       # a timeout no test reaches: only a stop signal ends th
     "from herdr_review import exclusive\n"
     "sys.exit(exclusive.run(sys.argv[1:], timeout_sec=60, grace_sec=0.5, poll_sec=0.05, environ=os.environ))\n"
 )
+CLEANUP_HARNESS = (      # the command times out at once and has 5 s to clean up before SIGKILL
+    "import os, sys\n"
+    "from herdr_review import exclusive\n"
+    "sys.exit(exclusive.run(sys.argv[1:], timeout_sec=0.5, grace_sec=5, poll_sec=0.05, environ=os.environ))\n"
+)
 
 
 class StopTest(ExclusiveBase):
@@ -466,6 +471,32 @@ class StopTest(ExclusiveBase):
                            env=self.env, capture_output=True, text=True, timeout=60)
         self.assertEqual(p.returncode, 124, p.stderr)
         self.assertLess(time.monotonic() - started, 10)
+        self.assertEqual(queue_state(self.runs), {"held": False})
+
+    def test_a_cleanup_that_a_term_trap_starts_gets_the_rest_of_the_grace(self):
+        marker = self.root / "cleaned"
+        trap = '(sleep 1; echo cleaned > "$1") >/dev/null 2>&1 & exit 143'
+        command = ["sh", "-c", f"trap '{trap}' TERM; sleep 30 & wait", "sh", str(marker)]
+        started = time.monotonic()
+        p = subprocess.run([sys.executable, "-c", CLEANUP_HARNESS, *command], cwd=PACKAGE_ROOT, env=self.env,
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 124, p.stderr)
+        self.assertTrue(marker.exists(), "the cleanup was killed before it wrote its marker")
+        self.assertLess(time.monotonic() - started, 4.5)        # once nothing is left, the wrapper stops waiting
+        self.assertEqual(queue_state(self.runs), {"held": False})
+
+    def test_a_process_that_a_term_trap_starts_is_killed_when_the_grace_ends(self):
+        pidfile = self.root / "late.pid"
+        trap = 'sleep 30 >/dev/null 2>&1 & echo $! > "$1"; exit 143'
+        command = ["sh", "-c", f"trap '{trap}' TERM; sleep 30 & wait", "sh", str(pidfile)]
+        started = time.monotonic()
+        p = subprocess.run([sys.executable, "-c", HARNESS, *command], cwd=PACKAGE_ROOT, env=self.env,
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 124, p.stderr)
+        self.assertLess(time.monotonic() - started, 10)
+        late = int(pidfile.read_text())
+        self.addCleanup(kill_quietly, late)
+        self.assertTrue(wait_until(lambda: not alive(late)))
         self.assertEqual(queue_state(self.runs), {"held": False})
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "PR_SET_PDEATHSIG is Linux-only")
