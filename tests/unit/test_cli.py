@@ -140,6 +140,10 @@ class CliParsingTest(unittest.TestCase):
         args = build_parser().parse_args(["close"])
         self.assertEqual((status_run_spec(args), args.force), (None, False))
 
+    def test_exclusive_parses(self):
+        args = build_parser().parse_args(["exclusive", "--wait", "5", "--", "git", "commit", "--", "f"])
+        self.assertEqual((args.cmd, args.wait, args.command), ("exclusive", 5.0, ["--", "git", "commit", "--", "f"]))
+
 
 class ResolveLatestTest(unittest.TestCase):
     """`latest` is per repository, and two checkouts named the same must not share it."""

@@ -11,12 +11,16 @@ import fcntl
 import json
 import os
 import shlex
+import subprocess
+import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, NamedTuple
 
 from .config import ConfigError, load_config
+from .status import now_iso
 
 LOCK_NAME = "exclusive.lock"
 HOLDER_NAME = "exclusive.json"
@@ -177,3 +181,123 @@ def holder_text(state: Mapping) -> str:
         who = f"pid {pid} outside a review"
     took = state.get("since_sec")
     return f'{who} has run "{command}"' + ("" if took is None else f" for {format_duration(took)}")
+
+
+class Turn(NamedTuple):
+    outcome: str                # "turn", "busy" or "signal"
+    waited: float | None        # seconds spent waiting; None when the queue was free at once
+    holder: dict                # the queue's holder_state() when busy
+    signum: int = 0             # the stop signal that ended the wait
+
+
+def _open_queue(runs_dir: Path) -> int:
+    try:
+        runs_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        return os.open(runs_dir / LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    except OSError as e:
+        raise ExclusiveError(f"cannot open the build queue {runs_dir / LOCK_NAME}: {e}") from e
+
+
+def _say(line: str) -> None:
+    print(f"{PREFIX} {line}", file=sys.stderr, flush=True)
+
+
+def _log(where: Where, line: str) -> None:
+    """A line in the run's runner.log, in the runner's format; nothing outside a review."""
+    if where.run_dir is None:
+        return
+    try:
+        with open(where.run_dir / "runner.log", "a", encoding="utf-8") as f:
+            f.write(f"{now_iso()} exclusive: {line}\n")
+    except OSError:
+        pass
+
+
+def _take_turn(fd: int, runs_dir: Path, wait_sec: float, poll_sec: float, notice_sec: float, received: list[int]) -> Turn:
+    """Poll the lock until it is ours, <wait_sec> passes, or a stop signal arrives in <received>. Say who holds the
+    queue at once, then every <notice_sec>."""
+    start = time.monotonic()
+    next_notice = start
+    waited: float | None = None
+    while True:
+        if received:
+            return Turn("signal", waited, {}, received[0])
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return Turn("turn", None if waited is None else time.monotonic() - start, {})
+        except BlockingIOError:
+            pass
+        now = time.monotonic()
+        waited = now - start
+        holder = holder_state(read_holder(runs_dir))
+        if waited >= wait_sec:
+            return Turn("busy", waited, holder)
+        if now >= next_notice:
+            _say(f"waiting — {holder_text(holder)}")
+            next_notice = now + notice_sec
+        time.sleep(min(poll_sec, wait_sec - waited))
+
+
+def _exec_in_turn(command: list[str], environ: Mapping[str, str]) -> int:
+    """Inside another wrapper's turn: become the command, under the outer turn's lock and timeout."""
+    try:
+        os.execvpe(command[0], command, dict(environ))
+    except FileNotFoundError:
+        _say(f"command not found: {command[0]}")
+        return EXIT_NOT_FOUND
+    except OSError as e:
+        _say(f"cannot execute {command[0]}: {e.strerror or e}")
+        return EXIT_NOT_EXECUTABLE
+
+
+def _run_command(command: list[str], environ: Mapping[str, str]) -> tuple[int, float]:
+    """Run the command with an empty stdin: (its exit code, 128+N for signal N; the seconds it ran)."""
+    started = time.monotonic()
+    try:
+        proc = subprocess.Popen(command, env={**environ, NESTED_ENV: "1"}, stdin=subprocess.DEVNULL)
+    except FileNotFoundError:
+        _say(f"command not found: {command[0]}")
+        return EXIT_NOT_FOUND, 0.0
+    except OSError as e:
+        _say(f"cannot execute {command[0]}: {e.strerror or e}")
+        return EXIT_NOT_EXECUTABLE, 0.0
+    code = proc.wait()
+    return (code if code >= 0 else 128 - code), time.monotonic() - started
+
+
+def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, environ: Mapping[str, str] = os.environ,
+        cwd: Path | None = None, poll_sec: float = POLL_SEC, notice_sec: float = NOTICE_SEC) -> int:
+    """Run <command> once this process holds the machine's build queue. The exit code for the CLI."""
+    if environ.get(NESTED_ENV):
+        return _exec_in_turn(command, environ)
+    where = locate(environ, Path.cwd() if cwd is None else Path(cwd))
+    who = environ.get(AGENT_ENV) or f"pid {os.getpid()}"
+    shown = command_text(command)
+    fd = _open_queue(where.runs_dir)
+    try:
+        turn = _take_turn(fd, where.runs_dir, wait_sec, poll_sec, notice_sec, [])
+        if turn.outcome == "busy":
+            text = holder_text(turn.holder)
+            _say(f"busy — {text}; nothing was run. Do other work and run the same command again later.")
+            _log(where, f"{who} busy after {format_duration(turn.waited or 0)}: {text}")
+            return EXIT_BUSY
+        pid = os.getpid()
+        try:
+            write_holder(where.runs_dir, {
+                "pid": pid, "agent": environ.get(AGENT_ENV) or None, "run_id": where.run_id,
+                "run_dir": None if where.run_dir is None else str(where.run_dir), "command": shown,
+                "cwd": os.getcwd(), "started_at": now_iso(),
+            })
+        except OSError as e:
+            raise ExclusiveError(f"cannot write {where.runs_dir / HOLDER_NAME}: {e}") from e
+        try:
+            if turn.waited is not None:
+                _say(f"your turn after {format_duration(turn.waited)}")
+            _log(where, f'{who} running "{shown}" after {format_duration(turn.waited or 0)} of waiting')
+            code, ran = _run_command(command, environ)
+            _log(where, f"{who} done after {format_duration(ran)}, exit {code}")
+            return code
+        finally:
+            remove_holder(where.runs_dir, pid)
+    finally:
+        os.close(fd)

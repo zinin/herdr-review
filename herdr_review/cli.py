@@ -4,12 +4,13 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 import os
 import sys
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
-from . import PACKAGE_ROOT, __version__, gitutil
+from . import PACKAGE_ROOT, __version__, exclusive, gitutil
 from .config import SCOPES, ConfigError, load_config, public_json
 from .herdr import Herdr
 from .launch import LaunchError, LaunchOptions, basename_slug, launch, project_slug
@@ -19,6 +20,34 @@ from .scope import uncommitted_counts
 from .status import RunStatus, StatusError
 
 RUNNER_PATH = PACKAGE_ROOT / "bin" / "herdr-review"
+EXCLUSIVE_USAGE = "herdr-review exclusive [--wait SEC] -- COMMAND [ARG...]"
+
+
+def seconds(zero_ok: bool) -> Callable[[str], float]:
+    """An argparse type: a finite number of seconds, 0 allowed only when <zero_ok>."""
+    def parse(text: str) -> float:
+        try:
+            value = float(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"not a number of seconds: {text!r}") from None
+        if not math.isfinite(value) or value < 0 or (value == 0 and not zero_ok):
+            raise argparse.ArgumentTypeError(f"must be {'0 or more' if zero_ok else 'more than 0'} seconds, not {text!r}")
+        return value
+    return parse
+
+
+def poll_sec_from(environ: Mapping[str, str], default: float) -> float:
+    """HERDR_REVIEW_POLL_SEC, the tests' knob for every polling loop; <default> without it."""
+    raw = environ.get("HERDR_REVIEW_POLL_SEC")
+    if raw is None:
+        return default
+    try:
+        poll = float(raw)
+    except ValueError:
+        raise RunnerError(f"HERDR_REVIEW_POLL_SEC={raw!r} is not a number") from None
+    if not poll > 0:
+        raise RunnerError(f"HERDR_REVIEW_POLL_SEC={raw!r} must be a positive number")
+    return poll
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -56,6 +85,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run", help="run directory or 'latest' (default: $HERDR_REVIEW_RUN, else latest)")
     p.add_argument("--force", action="store_true", help="close a run that is still in progress")
     p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("exclusive", help="run a heavy command (a build, tests, an install, a server) only while no other runs on this machine")
+    p.add_argument("--wait", type=seconds(zero_ok=True), default=exclusive.DEFAULT_WAIT_SEC, metavar="SEC",
+                   help="how long to wait for a turn before exiting 75 (default 60; 0 tries once)")
+    p.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --")
 
     r = sub.add_parser("run", help="runner subcommands used by the orchestrator agent")
     rs = r.add_subparsers(dest="subcmd", required=True)
@@ -263,6 +297,21 @@ def cmd_close(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     return 1 if result["failed"] else 0
 
 
+def cmd_exclusive(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
+    command = list(args.command)
+    if command[:1] == ["--"]:           # argparse keeps the separator in front of a REMAINDER
+        command = command[1:]
+    if not command:
+        print(f"{exclusive.PREFIX} no command given; usage: {EXCLUSIVE_USAGE}", file=sys.stderr)
+        return 2
+    try:
+        return exclusive.run(command, wait_sec=args.wait, environ=environ, cwd=Path.cwd(),
+                             poll_sec=poll_sec_from(environ, exclusive.POLL_SEC))
+    except exclusive.ExclusiveError as e:
+        print(f"{exclusive.PREFIX} {e}", file=sys.stderr)
+        return 1
+
+
 def autodecide_now(runner: Runner) -> bool:
     """Fresh from disk: a `run wait` can hold its in-memory snapshot for a whole check-in window."""
     try:
@@ -273,13 +322,7 @@ def autodecide_now(runner: Runner) -> bool:
 
 
 def cmd_run(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
-    raw_poll = environ.get("HERDR_REVIEW_POLL_SEC", "5")
-    try:
-        poll = float(raw_poll)
-    except ValueError:
-        raise RunnerError(f"HERDR_REVIEW_POLL_SEC={raw_poll!r} is not a number") from None
-    if not poll > 0:
-        raise RunnerError(f"HERDR_REVIEW_POLL_SEC={raw_poll!r} must be a positive number")
+    poll = poll_sec_from(environ, 5.0)
     runner = Runner(_run_dir_arg(args, environ), poll_sec=poll)
     sub = args.subcmd
     if sub == "start-reviewers":
@@ -322,6 +365,8 @@ def dispatch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
         return cmd_status(args, environ)
     if args.cmd == "close":
         return cmd_close(args, environ)
+    if args.cmd == "exclusive":
+        return cmd_exclusive(args, environ)
     if args.cmd == "run":
         return cmd_run(args, environ)
     return 2
