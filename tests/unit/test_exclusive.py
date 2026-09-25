@@ -252,12 +252,13 @@ class TurnTest(ExclusiveBase):
         p = subprocess.Popen(exclusive_cmd("--wait", "30", "--", "touch", str(marker)), env=self.env,
                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
         self.addCleanup(stop_quietly, p)
-        time.sleep(0.5)
+        first = p.stderr.readline()                  # the waiting notice: the wrapper found the queue held
+        self.assertIn("waiting —", first)
         self.assertIsNone(p.poll())
         self.assertFalse(marker.exists())
         held.release()
         _, err = p.communicate(timeout=30)
-        self.assertEqual(p.returncode, 0, err)
+        self.assertEqual(p.returncode, 0, first + err)
         self.assertTrue(marker.exists())
         self.assertIn("herdr-review exclusive: your turn after", err)
 
