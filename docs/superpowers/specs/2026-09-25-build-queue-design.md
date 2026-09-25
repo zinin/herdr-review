@@ -75,6 +75,9 @@ Behaviour:
    `herdr-review exclusive: your turn after <duration>` before it starts the command.
 5. After `--timeout` seconds of running (default 1800, counted from the start of the command, not of the wait), stop
    the command (below), print `herdr-review exclusive: timed out after <duration>; stopped "<command>"` and exit 124.
+6. A wrapper whose agent the run took off (`run fail` leaves it `failed` in the run's `status.json`) runs nothing: it
+   prints `herdr-review exclusive: <agent> was taken off this review (run fail); nothing was run` and exits 1. It
+   checks before it waits and again when its turn comes; a `status.json` it cannot read takes nobody off.
 
 The command:
 
@@ -86,13 +89,16 @@ The command:
 - on Linux, gets `PR_SET_PDEATHSIG=SIGKILL`, so it dies even when the wrapper is killed with SIGKILL.
 
 Stopping the command, on `--timeout` or on SIGTERM, SIGINT or SIGHUP to the wrapper: the wrapper sends the signal
-(SIGTERM for a timeout) to the command and to every process under it, found through the process table (`/proc` on
-Linux, `ps -A -o pid=,ppid=` on macOS). After 10 s it sends SIGKILL to whatever is left, then releases the lock and
-exits: with 124 after a timeout, with 128+N after signal N, whatever the command's own code. On Linux the wrapper is
-the subreaper of the command's processes (`PR_SET_CHILD_SUBREAPER`): a process whose parent died is re-parented to
-the wrapper and still counts as under it, so the stop is the same when the signal reached the whole process group
-(Ctrl-C) and the command's first process already died of it. A signal that arrives while the wrapper still waits for
-its turn ends the wrapper at once with 128+N; nothing runs.
+(SIGTERM for a timeout), and SIGCONT after it so that a stopped process handles it, to the command and to every
+process under it, found through the process table (`/proc` on Linux, `ps -A -o pid=,ppid=` on macOS). A SIGINT or
+SIGHUP goes only to the processes that left the wrapper's process group: a terminal sends it to its whole foreground
+group, so the others have it already, and a second Ctrl-C makes a program such as `docker compose up` skip its
+graceful stop. After 10 s it sends SIGKILL to whatever is left (on Linux, to what is under the wrapper then), then
+releases the lock and exits: with 124 after a timeout, with 128+N after signal N, whatever the command's own code. On
+Linux the wrapper is the subreaper of the command's processes (`PR_SET_CHILD_SUBREAPER`): a process whose parent died
+is re-parented to the wrapper and still counts as under it, so the stop is the same when the signal reached the whole
+process group (Ctrl-C) and the command's first process already died of it. A signal that arrives while the wrapper
+still waits for its turn ends the wrapper at once with 128+N; nothing runs.
 
 The lock lives exactly as long as the wrapper. The command does not inherit the queue file's descriptor
 (`O_CLOEXEC`), so a background process the command leaves behind holds no lock, and the kernel releases the lock of
@@ -183,7 +189,10 @@ After the embedded rules, each role adds its own lines.
 - **Fixer:** rule 2 becomes "If the project has tests relevant to the changed code, run them as the section Heavy
   commands below says. Fix a failure only if your change caused it." Its own line: "While you wait for your turn,
   apply your next fix, or wait and run the call again. Never skip the tests because the queue is busy; if the
-  wrapper failed, report the tests as not run, with the reason."
+  wrapper failed, report the tests as not run, with the reason." The commit rules (`fixer-commit-auto.md`,
+  `fixer-commit-decision.md`, which gain `RUNNER`) commit through the wrapper too,
+  `"{RUNNER}" exclusive -- git commit --only …`, since the repository's commit hooks may build or test: exit 75 means
+  nothing was committed, and a failed wrapper leaves the fix `applied, not committed: the build queue failed: <line>`.
 
 The orchestrator (`prompts/orchestrator.md`) learns three things:
 
@@ -203,8 +212,8 @@ renders the fixer skeletons with it.
 ### 4. Agent environment
 
 - `Runner._base_env()` adds `GIT_OPTIONAL_LOCKS=0` for every reviewer and the fixer; `launch` adds it to the
-  orchestrator's environment. Their `git status` and `git diff` stop taking `.git/index.lock`; the locks that
-  `git add` and `git commit` need stay as they are.
+  orchestrator's environment. Their `git status` stops taking `.git/index.lock` (`git diff` still rewrites the
+  index after a stat-only change, as git 2.53 does); the locks that `git add` and `git commit` need stay as they are.
 - Every agent gets `HERDR_REVIEW_AGENT=<its agent name>`: the reviewers in `_place_tabs` and `_place_grid`, the
   fixer in `start_fixer`, the orchestrator in `launch`.
 - Order of the environment: the base variables, then the profile's `env` (a profile may override
@@ -229,7 +238,8 @@ the holder when it needs to know.
 A run's leftover — a failed reviewer's build, a background command that a CLI kept alive — could hold the queue for
 up to `--timeout`. The runner stops the holder that belongs to its own run:
 
-- `run fail <name>`: when `<name>` holds the queue;
+- `run fail <name>`: when `<name>` holds the queue; afterwards the wrapper runs nothing more for `<name>` (section 1),
+  since its CLI may still run and call it again;
 - `run finish`: when any agent of the run holds it, before `scratch/` is removed, since the command may run there;
 - `close`, with or without `--force`, once its session and phase checks pass: when any agent of the run holds it,
   before the tabs close, since a CLI's background command can outlive its tab.
@@ -297,6 +307,10 @@ SMOKE (real herdr): a preset with two reviewers on a repository with a test suit
   the processes it started can live on without the lock; on macOS the whole command can.
 - On macOS a stop signal sent to the whole process group can leave behind a process whose parent died of it, such
   as a background job of `sh -c`, which ignores SIGINT: the wrapper no longer finds it and releases the lock at once.
+- A SIGINT or SIGHUP sent to the wrapper alone, not to its process group, reaches the command only as the SIGKILL
+  10 s later: the wrapper takes these signals for a terminal's, which the group already has.
+- On Linux a stop ends the daemons that the command started, such as a Gradle daemon, so the next build starts a new
+  one; a command that ends by itself leaves them running.
 - No FIFO order: when the lock comes free, the waiter that polls first takes it. With a handful of agents this
   costs little.
 - A background process that a command leaves behind, against the rule, holds no lock.
