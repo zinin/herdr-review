@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 load helpers
 
-setup() { setup_env; }
+setup() { setup_env; unset HERDR_REVIEW_EXCLUSIVE HERDR_REVIEW_AGENT HERDR_REVIEW_CONFIG; }
 teardown() { teardown_env; }
 
 @test "exclusive: two calls started together take turns" {
