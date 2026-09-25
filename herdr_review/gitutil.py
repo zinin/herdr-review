@@ -245,9 +245,12 @@ def untracked_files(repo: Path | str) -> list[UntrackedFile]:
 def tree_hash(repo: Path | str) -> str:
     head = head_commit(repo)
     status = _out(repo, "status", "--porcelain", "--untracked-files=all")
+    # diff-index, not diff: after a change to a file's stat alone `git diff` rewrites the index through
+    # index.lock, GIT_OPTIONAL_LOCKS or not, and the user's `git commit` of that moment fails; diff-index
+    # writes nothing and, with -p, prints nothing for a file whose content is unchanged.
     # The user's diff.external or GIT_EXTERNAL_DIFF and textconv drivers would put their own output
     # here: git's random temp paths make every hash differ, and a slow driver hits the git timeout.
-    diff = _out(repo, "diff", "--no-ext-diff", "--no-textconv", "HEAD")
+    diff = _out(repo, "diff-index", "-p", "--no-ext-diff", "--no-textconv", "HEAD")
     untracked_meta = _untracked_meta(repo, _untracked(repo))
     # A name that is not UTF-8 holds lone surrogates: they encode back to its own bytes, so two such names differ.
     return hashlib.sha256((head + "\n" + status + "\n" + diff + "\n" + untracked_meta).encode("utf-8", "surrogateescape")).hexdigest()

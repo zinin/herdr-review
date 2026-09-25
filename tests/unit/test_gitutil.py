@@ -106,6 +106,16 @@ class GitUtilTest(unittest.TestCase):
         os.utime(path, ns=(stamp, stamp))
         self.assertEqual(gitutil.tree_hash(self.repo), h0)
 
+    def test_tree_hash_takes_no_index_lock_when_only_a_tracked_files_stat_changed(self):
+        path, index = self.repo / "a.txt", self.repo / ".git" / "index"
+        h0 = gitutil.tree_hash(self.repo)
+        stamp = path.stat().st_mtime_ns - 5 * 10**9        # the content stays; only the mtime moves
+        os.utime(path, ns=(stamp, stamp))
+        before = (index.stat().st_ino, index.stat().st_mtime_ns)
+        self.assertEqual(gitutil.tree_hash(self.repo), h0)
+        # A rewritten index went through index.lock, which fails the user's own `git commit` at that moment.
+        self.assertEqual((index.stat().st_ino, index.stat().st_mtime_ns), before)
+
     def test_tree_hash_ignores_ignored_files(self):
         (self.repo / ".gitignore").write_text("build/\n")
         h0 = gitutil.tree_hash(self.repo)
