@@ -369,6 +369,11 @@ HARNESS = (
     "from herdr_review import exclusive\n"
     "sys.exit(exclusive.run(sys.argv[1:], timeout_sec=0.5, grace_sec=0.5, poll_sec=0.05, environ=os.environ))\n"
 )
+SIGNAL_HARNESS = (       # a timeout no test reaches: only a stop signal ends the command, SIGKILL follows 0.5 s later
+    "import os, sys\n"
+    "from herdr_review import exclusive\n"
+    "sys.exit(exclusive.run(sys.argv[1:], timeout_sec=60, grace_sec=0.5, poll_sec=0.05, environ=os.environ))\n"
+)
 
 
 class StopTest(ExclusiveBase):
@@ -424,6 +429,24 @@ class StopTest(ExclusiveBase):
         _, err = p.communicate(timeout=30)
         self.assertEqual(p.returncode, 130, err)
         self.assertIn('herdr-review exclusive: SIGINT received; stopped "sleep 30"', err)
+        self.assertEqual(queue_state(self.runs), {"held": False})
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "PR_SET_CHILD_SUBREAPER is Linux-only")
+    def test_ctrl_c_to_the_whole_group_also_stops_a_background_job_of_the_command(self):
+        pidfile = self.root / "bg.pid"
+        job = 'sleep 300 >/dev/null 2>&1 & echo $! > "$1"; sleep 300'      # the job must not hold the stderr pipe
+        p = subprocess.Popen([sys.executable, "-c", SIGNAL_HARNESS, "sh", "-c", job, "sh", str(pidfile)],
+                             cwd=PACKAGE_ROOT, env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                             text=True, start_new_session=True)
+        self.addCleanup(stop_quietly, p)
+        self.assertTrue(self.holder_written())
+        self.assertTrue(wait_until(lambda: pidfile.exists() and pidfile.read_text().strip() != ""))
+        background = int(pidfile.read_text())
+        self.addCleanup(kill_quietly, background)
+        os.killpg(p.pid, signal.SIGINT)       # sh dies of it; the job ignores SIGINT and outlives its parent
+        _, err = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 130, err)
+        self.assertTrue(wait_until(lambda: not alive(background)))
         self.assertEqual(queue_state(self.runs), {"held": False})
 
     def test_a_command_that_ignores_sigterm_is_killed_after_the_grace(self):

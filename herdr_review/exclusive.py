@@ -43,6 +43,7 @@ EXIT_NOT_FOUND = 127
 COMMAND_CHARS = 200
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 PR_SET_PDEATHSIG = 1
+PR_SET_CHILD_SUBREAPER = 36
 
 
 class ExclusiveError(Exception):
@@ -287,6 +288,19 @@ def _die_with_wrapper() -> Callable[[], None] | None:
     return preexec
 
 
+def _adopt_orphans() -> None:
+    """Linux: the wrapper becomes the subreaper of the command's processes (PR_SET_CHILD_SUBREAPER). A process
+    whose parent dies, such as the background job of an `sh -c` that Ctrl-C killed, is re-parented to the wrapper
+    instead of init, so a stop still finds it under the wrapper. Elsewhere, or when the call fails, nothing: the
+    wrapper works without it."""
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
+    except (OSError, AttributeError):
+        pass
+
+
 def _children() -> dict[int, list[int]]:
     """Parent pid → child pids: from /proc on Linux, from `ps` elsewhere; empty when neither answers."""
     children: dict[int, list[int]] = {}
@@ -348,20 +362,24 @@ def _alive(pid: int) -> bool:
 
 
 def _finish_off(pids: set[int], grace_sec: float, poll_sec: float) -> None:
-    """The command's first process has ended: whatever of <pids> still lives after <grace_sec> gets SIGKILL."""
+    """The command's first process has ended: whatever of <pids> still lives after <grace_sec> gets SIGKILL, and so
+    does whatever is under the wrapper by then, such as a process a TERM trap forked after the stop."""
     deadline = time.monotonic() + max(0.0, grace_sec)
     alive = {p for p in pids if _alive(p)}
     while alive and time.monotonic() < deadline:
         time.sleep(min(poll_sec, 0.2))
         alive = {p for p in alive if _alive(p)}
-    _signal_all(alive, signal.SIGKILL)
+    _signal_all(alive | set(descendants(os.getpid())), signal.SIGKILL)
 
 
 def _run_command(command: list[str], environ: Mapping[str, str], timeout_sec: float, poll_sec: float,
                  grace_sec: float, received: list[int], shown: str) -> tuple[int, float, bool]:
     """Run the command with an empty stdin, in the wrapper's process group. On a stop signal in <received>, or
-    after <timeout_sec>, signal it and every process under it; SIGKILL whatever is left <grace_sec> later.
+    after <timeout_sec>, signal every process under the wrapper: the command, what it started, and on Linux what
+    lost its parent (_adopt_orphans); SIGKILL whatever is left <grace_sec> later. A stop signal that reached the
+    whole process group and ended the command's first process before the wrapper looked gets the same stop.
     (the exit code, the seconds it ran, whether it timed out)."""
+    _adopt_orphans()
     started = time.monotonic()
     try:
         proc = subprocess.Popen(command, env={**environ, NESTED_ENV: "1"}, stdin=subprocess.DEVNULL,
@@ -390,16 +408,21 @@ def _run_command(command: list[str], environ: Mapping[str, str], timeout_sec: fl
             elif now - started >= timeout_sec:
                 stopping, timed_out = signal.SIGTERM, True
             if stopping:
-                targets = {proc.pid, *descendants(proc.pid)}
+                targets = {proc.pid, *descendants(os.getpid())}
                 _signal_all(targets, stopping)
                 stopped_at = now
         elif not killed and now - stopped_at >= grace_sec:
-            targets |= {proc.pid, *descendants(proc.pid)}
+            targets |= {proc.pid, *descendants(os.getpid())}
             _signal_all(targets, signal.SIGKILL)
             killed = True
     ran = time.monotonic() - started
-    if not stopping and received:          # Ctrl-C to the whole group reached the command too
+    if not stopping and received:
+        # A stop signal came, but the command's first process ended before the wrapper's poll, usually because the
+        # signal reached the whole process group (Ctrl-C): whatever is left under the wrapper gets the same stop.
         stopping = received[0]
+        targets = set(descendants(os.getpid()))
+        _signal_all(targets, stopping)
+        stopped_at = time.monotonic()
     if targets and not killed:
         _finish_off(targets - {proc.pid}, grace_sec - (time.monotonic() - stopped_at), poll_sec)
     if timed_out:
