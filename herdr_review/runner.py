@@ -228,8 +228,9 @@ class Runner:
         return self.run.get("layout", "tabs")
 
     def _base_env(self) -> dict[str, str]:
-        # GIT_OPTIONAL_LOCKS=0: an agent's `git status` or `git diff` never takes .git/index.lock from under the
-        # owner's own `git commit`; the locks that `git add` and `git commit` need are not optional and stay.
+        # GIT_OPTIONAL_LOCKS=0: an agent's `git status` no longer takes .git/index.lock from under the owner's own
+        # `git commit`. `git diff` ignores the variable and still refreshes the index when it finds stat-only changes;
+        # the locks that `git add` and `git commit` need are not optional and stay.
         return {"HERDR_REVIEW_RUN": str(self.run_dir), "GIT_OPTIONAL_LOCKS": "0"}
 
     def _agent_env(self, name: str, profile: str) -> dict[str, str]:
