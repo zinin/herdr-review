@@ -171,9 +171,12 @@ herdr-review status                 # the latest run of the repository you are i
 herdr-review status <run dir>       # any run
 herdr-review close                  # close every tab of the latest finished run
 herdr-review profiles               # the validated config, secrets omitted
+herdr-review exclusive -- ./gradlew build   # your own heavy command, in turn with the reviews on this machine
 ```
 
 `launch --help` lists every flag (`--no-autodecide`, `--focus`, …); `--json` on any command gives machine-readable output. `launch --json` also carries `scope`, `uncommitted` (the `git status --short` lines kept out of the review) and, in the worktree scope, `untracked` (`files`, `skipped`). `herdr-review run …` is what the orchestrator calls during the run; you never need it.
+
+`herdr-review exclusive -- <command>` runs a heavy command — a build, tests, a dependency install, a server — only while no other heavy command runs on this machine: it holds an exclusive lock on `<runs_dir>/exclusive.lock`, the queue that the reviewers and the fixer of every review share. It waits up to 60 s for its turn (`--wait SEC`; `0` tries once) and exits 75 without running the command when the turn does not come; a command still running after 30 minutes (`--timeout SEC`) is stopped, with everything it started, and the wrapper exits 124. Otherwise it exits with the command's own code. Run your own build through it during a review, and it takes its turn with the agents.
 
 ### During the run
 
@@ -182,6 +185,7 @@ herdr-review profiles               # the validated config, secrets omitted
 - **A disputed issue without autodecide:** the tab turns ` ❓` and a herdr notification arrives. The orchestrator has written its analysis with variants and a recommendation; answer in that tab in free text: a variant letter, a variant of your own, "don't fix", "stop" (defers the rest) or "auto" (the orchestrator decides the rest).
 - **Fixes** land on your branch as commits written in your repository's own style: its subject convention, and a body when your history has them. The fixer commits only the files it changed and never deletes, moves or commits your uncommitted files: a fix that touches one of them is applied in full and left uncommitted, as is a fix that shares a file with such a fix, and the report says so. A file you start editing while the run is going on is treated the same way: the fixer checks `git status` before its first edit of a file. In the working-tree scope the fixer commits nothing: the change under review is uncommitted, and a fix committed without it could leave HEAD failing its own tests, so every fix it applies is left for you to commit with the rest. A fix that would delete, move or rename one of your uncommitted files is still skipped there.
 - **Experiments:** each reviewer keeps its own scripts and scratch copies under `scratch/<profile>/` in the run directory — never in your repository or `/tmp`. `run finish` deletes `scratch/`.
+- **Builds and tests:** the reviewers share your working tree and your machine, so their heavy commands — builds, tests, dependency installs, servers, containers — take turns: each goes through `herdr-review exclusive`, one at a time among all reviews on this machine, and a reviewer reads code while it waits. The fixer runs its tests the same way. `herdr-review status` shows who holds the queue (`очередь сборок: занята — …`). `run fail` stops a command of the agent it takes out of the run, and `run finish` and `close` stop any command of their run that still holds the queue.
 - **The end:** a done notification and `report.md` in the run directory, `~/.local/state/herdr-review/runs/<project>/<timestamp>-<run_id>/` — next to `status.json`, `uncommitted.txt`, `reviews/<profile>.md`, `issues.md`, `fix-*.md` and `runner.log`. The report and `herdr-review status` list the commits made during the run. A merge commit that brings the base in is listed alone, without the base's commits; a fast-forward to the base (what `git merge` does on a branch with no commits of its own) still lists them. When the branch was rewritten during the run (a rebase, an amend, a reset or a branch switch), git can no longer tell which commits are the run's, and both list the fixer's commits from its reports instead. `latest` there points at the newest run of that repository.
 
 ## Troubleshooting
@@ -196,6 +200,8 @@ herdr-review profiles               # the validated config, secrets omitted
 - A reviewer shows ` ✗` — `herdr-review status` gives the reason and `status.json` the last screen.
 - A reviewer or the fixer shows ` ✗` with "Claude Code asks to approve this project's MCP servers" — its profile passes its own `--settings`; add `"enableAllProjectMcpServers": true` to that file (see MCP servers in Configure). Do not answer the dialog left in its tab: any answer, Esc included, is saved; `herdr-review close` closes the tab once the run has finished.
 - A reviewer or the fixer shows ` ❓` — a dialog is waiting in its tab; in auto mode that is the CLI asking about an action. `run wait` reports it to the orchestrator within seconds, and the orchestrator answers it or fails the agent when it does not understand the dialog. `herdr agent read <name> --source visible` shows what is asked.
+- A reviewer stays ` ⏳` a long time and its tab shows `herdr-review exclusive: waiting` — another heavy command holds the build queue; `herdr-review status` names it and says how long it has run. A command stops by itself after 30 minutes unless its caller asked for more with `--timeout`.
+- `herdr-review exclusive` exits 75 — its turn did not come within `--wait`, and the command did not run; run it again later. Exit 124 — the command ran past `--timeout` and was stopped.
 - The orchestrator's tab shows ` ❓` — it is waiting for your answer in that tab.
 - A run died with the orchestrator — `status.json` stays at its phase; a new `launch` starts a new run.
 
