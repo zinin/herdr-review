@@ -449,6 +449,17 @@ class StopTest(ExclusiveBase):
         self.assertTrue(wait_until(lambda: not alive(background)))
         self.assertEqual(queue_state(self.runs), {"held": False})
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "PR_SET_CHILD_SUBREAPER is Linux-only")
+    def test_the_command_sees_an_orphaned_helper_it_stopped_as_gone(self):
+        pidfile = self.root / "helper.pid"
+        # The helper's parent exits at once, so the wrapper adopts it; `kill -0` counts a zombie as alive.
+        script = ('sh -c \'sleep 30 >/dev/null 2>&1 & echo $! > "$1"\' helper "$1"; pid=$(cat "$1"); kill "$pid"; '
+                  'while kill -0 "$pid" 2>/dev/null; do sleep 0.05; done')
+        p = subprocess.run(exclusive_cmd("--timeout", "5", "--", "sh", "-c", script, "sh", str(pidfile)),
+                           env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)                    # 124: the helper stayed a zombie to the timeout
+        self.assertEqual(queue_state(self.runs), {"held": False})
+
     def test_a_command_that_ignores_sigterm_is_killed_after_the_grace(self):
         started = time.monotonic()
         p = subprocess.run([sys.executable, "-c", HARNESS, "sh", "-c", "trap '' TERM; sleep 30"], cwd=PACKAGE_ROOT,

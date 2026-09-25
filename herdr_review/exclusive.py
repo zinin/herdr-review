@@ -291,14 +291,37 @@ def _die_with_wrapper() -> Callable[[], None] | None:
 def _adopt_orphans() -> None:
     """Linux: the wrapper becomes the subreaper of the command's processes (PR_SET_CHILD_SUBREAPER). A process
     whose parent dies, such as the background job of an `sh -c` that Ctrl-C killed, is re-parented to the wrapper
-    instead of init, so a stop still finds it under the wrapper. Elsewhere, or when the call fails, nothing: the
-    wrapper works without it."""
+    instead of init, so a stop still finds it under the wrapper; _reap_orphans collects it once it ends. Elsewhere,
+    or when the call fails, nothing: the wrapper works without it."""
     if not sys.platform.startswith("linux"):
         return
     try:
         ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0)
     except (OSError, AttributeError):
         pass
+
+
+def _reap_orphans(first: int | None = None) -> set[int]:
+    """Collect every adopted process that has ended (_adopt_orphans), as init would: the command sees a helper it
+    stopped as gone (`kill -0 <pid>` fails), not as a zombie that lasts as long as the wrapper. <first>, the command's
+    first process while Popen has not collected it, is never collected here: its exit status is the wrapper's. The
+    pids collected, which a stop must no longer signal: they may name new processes. Elsewhere than on Linux the
+    wrapper adopts nothing, and macOS has no os.waitid: nothing to collect."""
+    reaped: set[int] = set()
+    while hasattr(os, "waitid"):
+        try:
+            ended = os.waitid(os.P_ALL, 0, os.WEXITED | os.WNOHANG | os.WNOWAIT)     # a look: it collects nothing
+        except ChildProcessError:                                                   # no child at all
+            break
+        if ended is None or ended.si_pid == first:
+            break
+        try:
+            if os.waitpid(ended.si_pid, os.WNOHANG)[0] == 0:
+                break
+        except ChildProcessError:
+            break
+        reaped.add(ended.si_pid)
+    return reaped
 
 
 def _children() -> dict[int, list[int]]:
@@ -363,12 +386,13 @@ def _alive(pid: int) -> bool:
 
 def _finish_off(pids: set[int], grace_sec: float, poll_sec: float) -> None:
     """The command's first process has ended: whatever of <pids> still lives after <grace_sec> gets SIGKILL, and so
-    does whatever is under the wrapper by then, such as a process a TERM trap forked after the stop."""
+    does whatever is under the wrapper by then, such as a process a TERM trap forked after the stop. Meanwhile the
+    adopted processes that end are collected (_reap_orphans)."""
     deadline = time.monotonic() + max(0.0, grace_sec)
     alive = {p for p in pids if _alive(p)}
     while alive and time.monotonic() < deadline:
         time.sleep(min(poll_sec, 0.2))
-        alive = {p for p in alive if _alive(p)}
+        alive = {p for p in alive - _reap_orphans() if _alive(p)}
     _signal_all(alive | set(descendants(os.getpid())), signal.SIGKILL)
 
 
@@ -377,7 +401,8 @@ def _run_command(command: list[str], environ: Mapping[str, str], timeout_sec: fl
     """Run the command with an empty stdin, in the wrapper's process group. On a stop signal in <received>, or
     after <timeout_sec>, signal every process under the wrapper: the command, what it started, and on Linux what
     lost its parent (_adopt_orphans); SIGKILL whatever is left <grace_sec> later. A stop signal that reached the
-    whole process group and ended the command's first process before the wrapper looked gets the same stop.
+    whole process group and ended the command's first process before the wrapper looked gets the same stop. Every
+    poll collects the adopted processes that have ended (_reap_orphans).
     (the exit code, the seconds it ran, whether it timed out)."""
     _adopt_orphans()
     started = time.monotonic()
@@ -401,6 +426,7 @@ def _run_command(command: list[str], environ: Mapping[str, str], timeout_sec: fl
             break
         except subprocess.TimeoutExpired:
             pass
+        targets -= _reap_orphans(proc.pid)       # a collected pid may name a new process: no stop signal goes to it
         now = time.monotonic()
         if not stopping:
             if received:
