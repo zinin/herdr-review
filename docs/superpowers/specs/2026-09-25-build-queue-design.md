@@ -154,7 +154,7 @@ whose wording the plan may polish but whose meaning it keeps:
 > `"{RUNNER}" exclusive -- <command> [args…]`, which runs one heavy command at a time. A command is heavy when it
 > runs the project's build tool, test runner or package manager (even for one test), installs or updates
 > dependencies, starts a server, a container, a database or anything else that listens on a port, or does any of
-> this indirectly: `make`, a project script, a `git commit` whose hooks build or test. When unsure, treat it as
+> this indirectly: `make`, a project script, a commit whose hooks build or test. When unsure, treat it as
 > heavy. Reading files, searching, `git diff`, `git log`, `git show`, `git status` and `git clone` are not heavy.
 >
 > - Put steps that must run back to back into one call: `"{RUNNER}" exclusive -- sh -c 'npm ci && npm test'`. The
@@ -212,8 +212,9 @@ renders the fixer skeletons with it.
 `herdr-review status` reports the queue for whatever run it shows, since the queue belongs to the machine:
 
 - text, after the drift line: `очередь сборок: занята — <agent> (прогон <run_id>): <command>, <N> мин`
-  (`pid <pid> вне ревью` for a holder outside a review), `очередь сборок: свободна`, or
-  `очередь сборок: не удалось проверить (<reason>)`;
+  (`<N> с` under a minute; `pid <pid> вне ревью` for a holder outside a review;
+  `очередь сборок: занята — процессом, который себя не назвал` when the lock is held but no holder file names
+  anyone), `очередь сборок: свободна`, or `очередь сборок: не удалось проверить (<reason>)`;
 - `--json`: `"exclusive": {"held": true, "agent": …, "run_id": …, "pid": …, "command": …, "since_sec": …}`,
   `{"held": false}`, or `{"held": null, "error": "<reason>"}`.
 
