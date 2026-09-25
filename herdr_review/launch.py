@@ -12,12 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
 
-from . import PROMPTS_DIR, __version__, gitutil
+from . import PROMPTS_DIR, __version__, exclusive, gitutil
 from .config import Config, is_secretish
 from .dialogs import MCP_UNCHECKED, mcp_check, resolve_startup_dialog, startup_args
 from .herdr import Herdr, HerdrResult
 from .render import render_file
-from .scope import ScopeError, fixer_skeleton, orchestrator_scope, resolve_scope, reviewer_steps, untracked_line
+from .scope import ScopeError, exclusive_rules, fixer_skeleton, orchestrator_scope, resolve_scope, reviewer_steps, untracked_line
 from .status import RunStatus
 
 RUN_ID_ALPHABET = string.ascii_lowercase + string.digits
@@ -201,6 +201,7 @@ def launch(
             "version": __version__,
             "run_id": run_id,
             "run_dir": str(run_dir),
+            "runs_dir": str(runs_dir),
             "repo": str(repo),
             "project": project,
             "branch": branch,
@@ -229,6 +230,7 @@ def launch(
 
         # ----- prompts
         steps = reviewer_steps(scope, mb, uncommitted, untracked, listing, untracked_listing)
+        heavy = exclusive_rules(runner_path)
         for rv in reviewers_spec:
             text = render_file(PROMPTS_DIR / "reviewer.md", {
                 "DESCRIPTION": description,
@@ -240,6 +242,7 @@ def launch(
                 "REVIEWER": rv["profile"],
                 "SCOPE_STEPS": steps,
                 "SCRATCH_DIR": str(run_dir / "scratch" / rv["profile"]),
+                "EXCLUSIVE_RULES": heavy,
             })
             (run_dir / "prompts" / f"{rv['profile']}.md").write_text(text, encoding="utf-8")
         orch_text = render_file(PROMPTS_DIR / "orchestrator.md", {
@@ -262,8 +265,8 @@ def launch(
             "CHECKIN_SEC": cfg.settings.checkin_sec,
             "DESCRIPTION": description,
             "PLAN_REFERENCE": plan_ref,
-            "FIXER_AUTO_SKELETON": fixer_skeleton("auto", scope, run_dir),
-            "FIXER_DECISION_SKELETON": fixer_skeleton("decision", scope, run_dir),
+            "FIXER_AUTO_SKELETON": fixer_skeleton("auto", scope, run_dir, runner_path),
+            "FIXER_DECISION_SKELETON": fixer_skeleton("decision", scope, run_dir, runner_path),
         })
         (run_dir / "orchestrator.md").write_text(orch_text, encoding="utf-8")
         status = RunStatus.create(run_dir, run_id=run_id, repo=str(repo), branch=branch, base=base, merge_base=mb, autodecide=autodecide, layout=layout)
@@ -285,7 +288,7 @@ def launch(
         if raw and is_secretish(name, raw):     # the same secrets before ${VAR} expansion
             secrets.append(raw)
     herdr.mask_values = secrets
-    env_all = {"HERDR_REVIEW_RUN": str(run_dir)}
+    env_all = {"HERDR_REVIEW_RUN": str(run_dir), "GIT_OPTIONAL_LOCKS": "0"}
     for key in ("HERDR_REVIEW_CONFIG", "XDG_CONFIG_HOME"):
         if key in environ:
             env_all[key] = environ[key]
@@ -294,6 +297,7 @@ def launch(
         if name in environ:
             env_all[name] = environ[name]
     env_all.update(cfg.profiles[orch_profile].env)
+    env_all[exclusive.AGENT_ENV] = orch["name"]
     try:
         r = herdr.tab_create(workspace_id, str(repo), f"rv-{run_id}: orch", env_all, focus=False)
         if not r.ok or not r.result:

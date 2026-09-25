@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Callable, Mapping
 
-from . import PROMPTS_DIR, gitutil
+from . import PROMPTS_DIR, exclusive, gitutil
 from .config import ConfigError, is_secretish, load_config
 from .dialogs import MCP_UNCHECKED, SCREEN_LINES, mcp_check, resolve_startup_dialog
 from .herdr import Herdr, HerdrResult
@@ -228,7 +228,15 @@ class Runner:
         return self.run.get("layout", "tabs")
 
     def _base_env(self) -> dict[str, str]:
-        return {"HERDR_REVIEW_RUN": str(self.run_dir)}
+        # GIT_OPTIONAL_LOCKS=0: an agent's `git status` no longer takes .git/index.lock from under the owner's own
+        # `git commit`. `git diff` ignores the variable and still refreshes the index when it finds stat-only changes;
+        # the locks that `git add` and `git commit` need are not optional and stay.
+        return {"HERDR_REVIEW_RUN": str(self.run_dir), "GIT_OPTIONAL_LOCKS": "0"}
+
+    def _agent_env(self, name: str, profile: str) -> dict[str, str]:
+        """An agent's environment: the run's, then its profile's env, which may override the run's, then its own
+        name, which `herdr-review exclusive` records as the holder of the build queue."""
+        return {**self._base_env(), **self._profile_env(profile), exclusive.AGENT_ENV: name}
 
     def _agent(self, name: str) -> dict:
         try:
@@ -309,7 +317,7 @@ class Runner:
         created: list[tuple[str, str, str]] = []
         try:
             for s in specs:
-                env = {**self._base_env(), **self._profile_env(s["profile"])}
+                env = self._agent_env(s["name"], s["profile"])
                 r = self.herdr.tab_create(self.run["workspace_id"], self.repo, f"rv-{self.run_id}: {label_of(s)}", env)
                 if not r.ok or not r.result:
                     raise RunnerError(f"herdr tab create failed: {r.error_code}: {r.message}")
@@ -338,7 +346,7 @@ class Runner:
         try:
             for step in steps:
                 spec = owner.get(step.result)
-                env = {**self._base_env(), **(self._profile_env(spec["profile"]) if spec else {})}
+                env = self._agent_env(spec["name"], spec["profile"]) if spec else self._base_env()
                 r = self.herdr.pane_split(ids[step.target], step.direction, step.ratio, self.repo, env)
                 if not r.ok or not r.result:
                     raise RunnerError(f"herdr pane split failed: {r.error_code}: {r.message}")
@@ -566,14 +574,18 @@ class Runner:
     def fail(self, name: str, reason: str) -> dict:
         self._agent(name)
         self._set_state(name, "failed", reason=reason, last_screen=self._last_screen(name))
-        return {"name": name, "state": "failed"}
+        out = {"name": name, "state": "failed"}
+        stopped = self._stop_queue_holder(agent=name)
+        if stopped:
+            out["exclusive_stopped"] = stopped
+        return out
 
     def start_fixer(self) -> dict:
         fx = self.run["fixer"]
         name = fx["name"]
         if name in self.status.data["agents"]:
             raise RunnerError(f"fixer {name} is already started")
-        env = {**self._base_env(), **self._profile_env(fx["profile"])}
+        env = self._agent_env(name, fx["profile"])
         self.log(f"start-fixer {name} layout={self.layout}")
         if self.layout == "tabs":
             r = self.herdr.tab_create(self.run["workspace_id"], self.repo, f"rv-{self.run_id}: fixer", env)
@@ -724,6 +736,13 @@ class Runner:
         self.status.save()
         return {"collected": collected, "pending": pending, "failed": failed, "drift": drift, "drift_status": self.status.data.get("drift_status", "")}
 
+    # ----- the build queue
+    def _stop_queue_holder(self, agent: str | None = None) -> str | None:
+        """Stop a heavy command of this run (of <agent>, when given) that still holds the machine's build queue: a
+        failed reviewer's build, or a background command a CLI kept alive, would hold it up to its --timeout."""
+        return exclusive.stop_holder(exclusive.runs_dir_of(self.run_dir), self.run_id, agent,
+                                     clock=self.clock, sleep=self.sleep, log=self.log)
+
     # ----- finish
     def _log_commits(self) -> list[str] | None:
         """The hashes of the commits made since the run was launched, while HEAD is on the branch of the launch and
@@ -788,12 +807,16 @@ class Runner:
         self._relabel_orch(" ✓")
         reviews = sum(1 for a in self.status.agents_by_role("reviewer").values() if a["state"] == "collected")
         self.herdr.notification_show("herdr-review: готово", body=f"{self.run_id}: отзывов {reviews}, коммитов {len(data['commits'])}", sound="done")
+        stopped = self._stop_queue_holder()          # before scratch/ goes: the command may run there
         closed: list[str] = []
         if self.run.get("close_agents_on_finish"):
             closed, _, _, _ = self._close_all(self._agent_targets(), "finish")
         self._remove_scratch()
         self.status.save()
-        return {"phase": "finished", "commits": data["commits"], "closed": closed}
+        result = {"phase": "finished", "commits": data["commits"], "closed": closed}
+        if stopped:
+            result["exclusive_stopped"] = stopped
+        return result
 
     # ----- close
     def _agent_targets(self) -> list[tuple[str, bool]]:
@@ -875,6 +898,7 @@ class Runner:
         phase = self.status.data.get("phase")
         if phase not in ("finished", "aborted") and not force:
             raise RunnerError(f"run {self.run_id} is still in phase {phase}; closing its tabs stops its agents — pass --force")
+        stopped = self._stop_queue_holder()          # a CLI's background command can outlive its tab
         closed: list[str] = []
         gone: list[str] = []
         left_open: list[str] = []
@@ -934,4 +958,7 @@ class Runner:
         self.status.set("closed_at", now_iso())
         self.status.save()
         close_these(own)
-        return {"closed": closed, "already_closed": gone, "left_open": left_open, "failed": failed}
+        result = {"closed": closed, "already_closed": gone, "left_open": left_open, "failed": failed}
+        if stopped:
+            result["exclusive_stopped"] = stopped
+        return result

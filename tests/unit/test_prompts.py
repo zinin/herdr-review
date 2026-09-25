@@ -12,16 +12,17 @@ from herdr_review import PROMPTS_DIR
 from herdr_review.gitutil import UntrackedFile
 from herdr_review.render import placeholders, render_file
 from herdr_review.runner import DRIFT_GONE
-from herdr_review.scope import fixer_skeleton, reviewer_steps
+from herdr_review.scope import exclusive_rules, fixer_skeleton, reviewer_steps
 
 NO_COMMIT = "Commit nothing. The change under review is uncommitted work"
 EXPECTED = {
     "terminal.md": {"FILE"},
-    "reviewer.md": {"DESCRIPTION", "PLAN_REFERENCE", "REPO", "BASE_REF", "MERGE_BASE", "RESULT_PATH", "REVIEWER", "SCOPE_STEPS", "SCRATCH_DIR"},
-    "fixer-auto.md": {"RUN_DIR", "COMMIT_RULES"},
-    "fixer-decision.md": {"RUN_DIR", "COMMIT_RULES"},
-    "fixer-commit-auto.md": {"RUN_DIR"},
-    "fixer-commit-decision.md": {"RUN_DIR"},
+    "reviewer.md": {"DESCRIPTION", "PLAN_REFERENCE", "REPO", "BASE_REF", "MERGE_BASE", "RESULT_PATH", "REVIEWER", "SCOPE_STEPS", "SCRATCH_DIR", "EXCLUSIVE_RULES"},
+    "fixer-auto.md": {"RUN_DIR", "COMMIT_RULES", "EXCLUSIVE_RULES"},
+    "fixer-decision.md": {"RUN_DIR", "COMMIT_RULES", "EXCLUSIVE_RULES"},
+    "exclusive.md": {"RUNNER"},
+    "fixer-commit-auto.md": {"RUN_DIR", "RUNNER"},
+    "fixer-commit-decision.md": {"RUN_DIR", "RUNNER"},
     "fixer-commit-none.md": {"RUN_DIR"},
     "scope-commits.md": {"MERGE_BASE", "UNCOMMITTED"},
     "scope-worktree.md": {"MERGE_BASE", "UNTRACKED"},
@@ -186,14 +187,23 @@ class PromptTemplatesTest(unittest.TestCase):
                     self.assertIn("one line per fix still marked `done`", text)
                     self.assertLess(text.index("then decide what to commit"), text.index("write the commit message"))
 
-    def test_the_fixers_commit_command_keeps_a_message_path_with_a_space_whole(self):
+    def test_the_fixers_commit_goes_through_the_build_queue_and_keeps_paths_with_a_space_whole(self):
+        runner = "/opt/my hr/bin/herdr-review"
         for kind, message in (("auto", "fix-auto-commit.txt"), ("decision", "fix-<ORCHESTRATOR: n>-commit.txt")):
             with self.subTest(kind=kind):
-                text = fixer_skeleton(kind, "commits", "/my runs/hr1")
-                commands = re.findall(r"`(git commit --only -F [^`]*)`", text)
+                text = fixer_skeleton(kind, "commits", "/my runs/hr1", runner)
+                commands = re.findall(r"`([^`]*git commit --only -F [^`]*)`", text)
                 self.assertEqual(len(commands), 1)
                 args = shlex.split(commands[0])
+                self.assertEqual(args[:6], [runner, "exclusive", "--", "git", "commit", "--only"])
                 self.assertEqual(args[args.index("-F") + 1], f"/my runs/hr1/{message}")
+
+    def test_the_fixers_commit_rules_say_what_a_busy_queue_and_a_failed_wrapper_mean(self):
+        for kind in ("auto", "decision"):
+            with self.subTest(kind=kind):
+                text = fixer_skeleton(kind, "commits", "/run", "/opt/hr/bin/herdr-review")
+                self.assertIn("means nothing was committed: run the same commit again later", text)
+                self.assertIn("`applied, not committed: the build queue failed: <that line>`", text)
 
     def test_orchestrator_prompt_names_the_dialogs_and_protects_the_users_files(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
@@ -384,6 +394,61 @@ class PromptTemplatesTest(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIn(" --no-color", command)
                 self.assertIn(" --no-show-signature", command)
+
+    def test_the_heavy_command_rules_reach_the_reviewer_and_the_fixer(self):
+        runner = "/opt/hr/bin/herdr-review"
+        values = {k: "v" for k in EXPECTED["reviewer.md"]}
+        values["EXCLUSIVE_RULES"] = exclusive_rules(runner)
+        reviewer = render_file(PROMPTS_DIR / "reviewer.md", values)
+        texts = {"reviewer": reviewer}
+        for kind in ("auto", "decision"):
+            for scope in ("commits", "worktree"):
+                texts[f"fixer-{kind} ({scope})"] = fixer_skeleton(kind, scope, "/run", runner)
+        for name, text in texts.items():
+            with self.subTest(name=name):
+                self.assertIn('Run each one through `"/opt/hr/bin/herdr-review" exclusive -- <command> [args…]`', text)
+                self.assertIn("`\"/opt/hr/bin/herdr-review\" exclusive -- sh -c 'npm ci && npm test'`", text)
+                self.assertIn("a commit whose hooks build or test", text)
+                self.assertIn("Exit code 75 with a `herdr-review exclusive: busy` line means the command did not run.", text)
+                self.assertIn("never in a shell loop", text)
+                self.assertIn("pass `--timeout <seconds>` before the `--`", text)
+                self.assertIn("No server, container or watcher may outlive the call.", text)
+                self.assertIn("Never run the command without it.", text)
+                self.assertNotIn("{", text)
+        self.assertIn("## Heavy Commands", reviewer)
+        self.assertIn("running the project's own tests — through the wrapper that Heavy Commands below describes — are fine", reviewer)
+        self.assertIn("Do not give up a check you need because the queue is busy.", reviewer)
+        for kind in ("auto", "decision"):
+            text = texts[f"fixer-{kind} (commits)"]
+            self.assertIn("## Heavy commands", text)
+            self.assertIn("run them as the section Heavy commands below says", text)
+            self.assertIn("Never skip the tests because the queue is busy", text)
+
+    def test_the_orchestrator_judges_a_wrapped_command_by_the_command_and_refuses_an_unwrapped_heavy_one(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        values.update(RUNNER="/opt/hr/bin/herdr-review", RUN_DIR="/run")
+        text = render_file(PROMPTS_DIR / "orchestrator.md", values)
+        for phrase in (
+            'a command run through `"/opt/hr/bin/herdr-review" exclusive -- <command>` → judge `<command>` by the rules below',
+            "the wrapper itself writes only its queue files in the runs directory and the run's `runner.log`",
+            'Run builds, tests, dependency installs, servers and containers through \\"/opt/hr/bin/herdr-review\\" exclusive -- <command>, as your prompt says.',
+            "the project's own tests or build run through the wrapper",
+            'so is `herdr-review exclusive` waiting for its turn or running its command; `"/opt/hr/bin/herdr-review" status --run "/run"` names who holds the build queue',
+            '| Confirming a heavy command that a reviewer or the fixer runs without `"/opt/hr/bin/herdr-review" exclusive` | Refuse; point the agent at the wrapper. |',
+        ):
+            self.assertIn(phrase, text)
+
+    def test_the_orchestrator_carries_a_stopped_build_queue_command_into_the_report(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        values["RUN_DIR"] = "/run"
+        text = render_file(PROMPTS_DIR / "orchestrator.md", values)
+        rules = text[text.index("## Ground rules"):text.index("## Phase 1")]
+        report = text[text.index("## Phase 6"):text.index("## Red flags")]
+        self.assertIn("When the JSON of `run fail` or `run finish` carries `exclusive_stopped`, the runner stopped a command"
+                      " of this run that held the build queue: note the value for the report (Phase 6).", rules)
+        self.assertIn("**Очередь сборок**, если `run fail` или `run finish` вернули `exclusive_stopped`", report)
+        self.assertIn("When its JSON carries `exclusive_stopped`, add it to the «Очередь сборок» bullet of `/run/report.md` now.",
+                      report)
 
 
 # a global config under which a plain `git diff HEAD | git apply` fails

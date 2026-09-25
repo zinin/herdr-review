@@ -2,6 +2,27 @@
 
 All notable changes to herdr-review will be documented here.
 
+## [Unreleased]
+
+### Added
+- `herdr-review exclusive -- <command>`: runs a heavy command — a build, tests, a dependency install, a server — only
+  while it holds the machine's build queue (`<runs_dir>/exclusive.lock`), one at a time among every review on the
+  machine. It waits up to 60 s for its turn (`--wait`) and exits 75 without running the command when the turn does
+  not come; a command still running after 30 minutes (`--timeout`) is stopped, with every process under it, and the
+  wrapper exits 124. The reviewer and fixer prompts require it for every heavy command, the fixer's commits included,
+  since a commit's hooks may build or test; the orchestrator refuses a heavy command run without it when an agent's
+  CLI asks.
+- `herdr-review status` names who holds the build queue (`exclusive` in `--json`).
+
+### Changed
+- `run fail` stops the failed agent's command that still holds the build queue, and the wrapper runs nothing more for
+  that agent; `run finish` and `close` stop any command of their run that still holds it.
+- Every agent starts with `HERDR_REVIEW_AGENT` naming it, and with `GIT_OPTIONAL_LOCKS=0`, so its `git status` no
+  longer takes `.git/index.lock` from under the owner's `git commit`. The runner's own check of the working tree no
+  longer takes it either: it compared the tree with `git diff`, which rewrites the index after a change to a file's
+  stat alone.
+- `run.json` records `runs_dir`.
+
 ## [0.2.0] - 2026-09-24
 
 ### Added

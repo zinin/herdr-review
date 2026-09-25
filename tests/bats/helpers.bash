@@ -10,7 +10,7 @@ setup_env() {
   export HERDR_BIN="$BATS_TEST_DIRNAME/../fake-herdr/herdr"
   export FAKE_HERDR_LOG="$TMP/herdr.log" FAKE_HERDR_SCENARIO="$TMP/scenario.json" FAKE_HERDR_STATE="$TMP/herdr.state"
   export HERDR_REVIEW_POLL_SEC=0.01
-  unset HERDR_REVIEW_RUN
+  unset HERDR_REVIEW_RUN HERDR_REVIEW_CONFIG
   echo '{}' > "$FAKE_HERDR_SCENARIO"
   mkdir -p "$TMP/bin"
   for x in claude codex; do printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/$x"; chmod +x "$TMP/bin/$x"; done

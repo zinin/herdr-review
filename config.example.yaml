@@ -64,4 +64,6 @@ settings:
   scope: auto                    # auto = the branch's commits, else the working tree | commits | worktree
   close_agents_on_finish: false  # true = close reviewer and fixer tabs/panes at the end
   checkin_sec: 300               # how often `run wait` returns control to the orchestrator
+  # runs_dir also holds the machine's build queue (exclusive.lock, exclusive.json): every review that uses this
+  # runs_dir, and your own `herdr-review exclusive` calls, run their heavy commands there one at a time.
   runs_dir: ~/.local/state/herdr-review/runs   # keep the --add-dir values above in step with it; keep it outside the repository, or the run's own files count as drift

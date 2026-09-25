@@ -36,7 +36,7 @@ teardown() { teardown_env; }
   run "$HR" run start-fixer
   [ "$status" -eq 0 ]
   json_has "$output" 'd["name"].endswith("-fixer") and d["state"]=="idle" and d["tab"]=="w1:t5"'
-  grep -q "tab create --workspace w1 --cwd $REPO --label rv-.*: fixer --env HERDR_REVIEW_RUN=$RUN --env SECRET_TOKEN=s3cret-value --no-focus" "$FAKE_HERDR_LOG"
+  grep -q "tab create --workspace w1 --cwd $REPO --label rv-.*: fixer --env HERDR_REVIEW_RUN=$RUN --env GIT_OPTIONAL_LOCKS=0 --env SECRET_TOKEN=s3cret-value --env HERDR_REVIEW_AGENT=hr.*-fixer --no-focus" "$FAKE_HERDR_LOG"
   FIXER="$(agent_name "$RUN" fixer)"
   echo "task" > "$RUN/fix-auto.md"
   run "$HR" run prompt "$FIXER" --file "$RUN/fix-auto.md"
@@ -84,7 +84,7 @@ teardown() { teardown_env; }
   export HERDR_REVIEW_RUN="$(run_dir_of)"
   run "$HR" run start-reviewers
   [ "$status" -eq 0 ]
-  grep -q "pane split --pane w1:p2 --direction right --ratio 0.35 --cwd $REPO --env HERDR_REVIEW_RUN=$HERDR_REVIEW_RUN --env SECRET_TOKEN=s3cret-value --no-focus" "$FAKE_HERDR_LOG"
+  grep -q "pane split --pane w1:p2 --direction right --ratio 0.35 --cwd $REPO --env HERDR_REVIEW_RUN=$HERDR_REVIEW_RUN --env GIT_OPTIONAL_LOCKS=0 --env SECRET_TOKEN=s3cret-value --env HERDR_REVIEW_AGENT=hr.*-claude-opus --no-focus" "$FAKE_HERDR_LOG"
   grep -q 'pane split --pane w1:p3 --direction right --ratio 0.5' "$FAKE_HERDR_LOG"
   grep -q 'pane rename w1:p4 rv-.*: codex ⏳' "$FAKE_HERDR_LOG"
   [ "$(grep -c 'tab create' "$FAKE_HERDR_LOG")" -eq 1 ]

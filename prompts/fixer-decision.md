@@ -18,9 +18,15 @@ Decision: <ORCHESTRATOR: the chosen variant, described precisely enough to imple
 ## Rules
 
 1. Implement exactly the decision above and nothing else.
-2. If the project has tests relevant to the changed code, run them. Fix a failure only if your change caused it.
+2. If the project has tests relevant to the changed code, run them as the section Heavy commands below says. Fix a failure only if your change caused it.
 3. Never delete, move, rename, or rewrite a file that the decision does not name — in particular nothing listed in {RUN_DIR}/uncommitted.txt.
 4. Never delete, move, or rename a path listed in {RUN_DIR}/uncommitted.txt, even when the decision asks for it: an untracked file has no copy in git, and a tracked one would lose the user's uncommitted edits. Report it as `skipped: <path> holds the user's uncommitted work; left to the user`.
+
+## Heavy commands
+
+{EXCLUSIVE_RULES}
+
+While you wait for your turn, wait a minute and run the call again. Never skip the tests because the queue is busy; if the wrapper failed, say in your report that the tests did not run, and why.
 
 ## Committing
 

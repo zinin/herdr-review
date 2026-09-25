@@ -1,16 +1,19 @@
 import io
 import json
+import os
 import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
-from herdr_review import __version__, gitutil
+from herdr_review import __version__, exclusive, gitutil
 from herdr_review.cli import build_parser, main, resolve_status_run_dir, scope_lines, status_run_spec
 from herdr_review.launch import basename_slug, project_slug
 from herdr_review.runner import RunnerError
 from herdr_review.status import RunStatus
+from tests.unit.test_exclusive import Held, iso_ago, make_run_dir
 
 
 class CliSmokeTest(unittest.TestCase):
@@ -140,6 +143,14 @@ class CliParsingTest(unittest.TestCase):
         args = build_parser().parse_args(["close"])
         self.assertEqual((status_run_spec(args), args.force), (None, False))
 
+    def test_exclusive_parses(self):
+        args = build_parser().parse_args(["exclusive", "--wait", "5", "--", "git", "commit", "--", "f"])
+        self.assertEqual((args.cmd, args.wait, args.command), ("exclusive", 5.0, ["--", "git", "commit", "--", "f"]))
+
+    def test_exclusive_timeout_parses(self):
+        self.assertEqual(build_parser().parse_args(["exclusive", "--", "true"]).timeout, 1800.0)
+        self.assertEqual(build_parser().parse_args(["exclusive", "--timeout", "90", "--", "true"]).timeout, 90.0)
+
 
 class ResolveLatestTest(unittest.TestCase):
     """`latest` is per repository, and two checkouts named the same must not share it."""
@@ -201,6 +212,96 @@ class ResolveLatestTest(unittest.TestCase):
             resolve_status_run_dir("latest", self.environ, one)
         self.assertIn("points at a run of", str(ctx.exception))
         self.assertIn(str(two), str(ctx.exception))
+
+
+class StatusQueueTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.runs = self.root / "runs"
+        self.run_dir = make_run_dir(self.runs)
+        RunStatus.create(self.run_dir, run_id="hrtest", repo=str(self.root), layout="tabs")
+
+    def status(self, *flags: str) -> str:
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(main(["status", "--run", str(self.run_dir), *flags]), 0)
+        return out.getvalue()
+
+    def hold(self, **holder) -> Held:
+        held = Held(self.runs, **holder)
+        self.addCleanup(held.release)
+        return held
+
+    def test_a_held_queue_names_the_agent_its_run_and_the_command(self):
+        self.hold(pid=42, agent="hrtest-codex", run_id="hrtest", command="mvn test", started_at=iso_ago(185))
+        self.assertIn("очередь сборок: занята — hrtest-codex (прогон hrtest): mvn test, 3 мин", self.status())
+        queue = json.loads(self.status("--json"))["exclusive"]
+        self.assertEqual({k: queue[k] for k in ("held", "agent", "run_id", "pid", "command")},
+                         {"held": True, "agent": "hrtest-codex", "run_id": "hrtest", "pid": 42, "command": "mvn test"})
+
+    def test_a_holder_outside_a_review(self):
+        self.hold(pid=42, agent=None, run_id=None, command="make", started_at=iso_ago(5))
+        self.assertRegex(self.status(), r"очередь сборок: занята — pid 42 вне ревью: make, [5-9] с")
+
+    def test_a_free_queue(self):
+        self.assertIn("очередь сборок: свободна", self.status())
+        self.assertEqual(json.loads(self.status("--json"))["exclusive"], {"held": False})
+
+    def test_a_holder_file_left_by_a_dead_wrapper_is_not_believed(self):
+        self.hold(pid=42, agent="hrtest-codex", run_id="hrtest", command="mvn test", started_at=iso_ago(5)).release()
+        self.assertIn("очередь сборок: свободна", self.status())
+
+    def test_a_held_queue_without_a_holder_file(self):   # Review Focus 3
+        self.hold()
+        self.assertIn("очередь сборок: занята — процессом, который себя не назвал", self.status())
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a file whatever its mode")
+    def test_a_queue_file_it_cannot_read(self):
+        self.hold().release()
+        (self.runs / "exclusive.lock").chmod(0)
+        self.assertIn("очередь сборок: не удалось проверить (", self.status())
+        self.assertIsNone(json.loads(self.status("--json"))["exclusive"]["held"])
+
+
+class CloseQueueStopTest(unittest.TestCase):
+    """close's line on the command of its run that it stopped in the build queue."""
+
+    def stop(self, lets_go_after: float) -> str | None:
+        """What stop_holder reports on hrtest-codex's `mvn test`, whose wrapper lets the queue go <lets_go_after>
+        seconds after SIGTERM."""
+        held = {"held": True, "agent": "hrtest-codex", "run_id": "hrtest", "pid": 99999, "command": "mvn test", "since_sec": 5}
+        now = [0.0]
+
+        def queue_state(runs_dir: Path) -> dict:
+            return held if now[0] < lets_go_after else {"held": False}
+
+        with mock.patch("herdr_review.exclusive.queue_state", side_effect=queue_state), \
+                mock.patch("herdr_review.exclusive.is_wrapper", return_value=True), mock.patch("herdr_review.exclusive.os.kill"):
+            return exclusive.stop_holder(Path("/nowhere"), "hrtest", clock=lambda: now[0],
+                                         sleep=lambda s: now.__setitem__(0, now[0] + s))
+
+    def close(self, stopped: str | None, *flags: str) -> str:
+        result = {"closed": [], "already_closed": [], "left_open": [], "failed": {}, "exclusive_stopped": stopped}
+        out = io.StringIO()
+        with mock.patch("herdr_review.cli.Runner") as runner, redirect_stdout(out):
+            runner.return_value.close.return_value = result
+            self.assertEqual(main(["close", "/nowhere/run", *flags]), 0)
+        return out.getvalue()
+
+    def test_a_command_that_stopped(self):
+        self.assertIn("остановлена команда из очереди сборок: hrtest-codex: mvn test\n", self.close(self.stop(1)))
+
+    def test_a_command_still_running_after_the_wait(self):
+        text = self.close(self.stop(60))
+        self.assertIn("команда из очереди сборок не остановилась за 15 с после SIGTERM: hrtest-codex: mvn test; "
+                      "её остановит --timeout\n", text)
+        self.assertNotIn("still running", text)
+
+    def test_the_json_keeps_its_value(self):
+        self.assertEqual(json.loads(self.close(self.stop(60), "--json"))["exclusive_stopped"],
+                         "hrtest-codex: mvn test (still running after 15s)")
 
 
 if __name__ == "__main__":

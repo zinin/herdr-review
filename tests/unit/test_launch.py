@@ -256,6 +256,13 @@ class LaunchTest(unittest.TestCase):
         self.assertNotIn("Commit nothing.", orch)
         self.assertEqual(orch.count("git commit --only -F"), 2)
 
+    def test_the_reviewers_and_the_fixer_run_heavy_commands_through_this_runner(self):
+        res = self.do_launch()
+        run_dir = Path(res["run_dir"])
+        wrapped = f'"{self.runner}" exclusive -- <command> [args…]'
+        self.assertIn(wrapped, (run_dir / "prompts" / "codex.md").read_text())
+        self.assertEqual((run_dir / "orchestrator.md").read_text().count(wrapped), 2)    # both fixer skeletons
+
     def test_commits_scope_without_commits_is_refused(self):
         git(self.repo, "switch", "-q", "master")
         git(self.repo, "switch", "-q", "-c", "wip")
@@ -474,6 +481,14 @@ class LaunchTest(unittest.TestCase):
         self.assertTrue(Path(run_json["run_dir"]).is_dir())
         self.assertEqual(run_json["run_dir"], str(run_dir))
         self.assertIn(str(run_dir), (run_dir / "orchestrator.md").read_text())
+        self.assertEqual(run_json["runs_dir"], str((sub / ".review-runs").resolve()))
+
+    def test_the_run_records_its_runs_dir_and_the_orchestrator_names_itself(self):
+        res = self.do_launch()
+        run_json = json.loads((Path(res["run_dir"]) / "run.json").read_text())
+        self.assertEqual(run_json["runs_dir"], str((self.root / "runs").resolve()))
+        env = self.herdr.calls_named("tab_create")[0][4]
+        self.assertEqual((env["GIT_OPTIONAL_LOCKS"], env["HERDR_REVIEW_AGENT"]), ("0", "hrtest-orch"))
 
     def test_claude_profiles_start_with_the_session_mcp_setting(self):
         res = self.do_launch()

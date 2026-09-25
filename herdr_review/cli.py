@@ -4,12 +4,13 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import math
 import os
 import sys
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
-from . import PACKAGE_ROOT, __version__, gitutil
+from . import RUNNER_PATH, __version__, exclusive, gitutil
 from .config import SCOPES, ConfigError, load_config, public_json
 from .herdr import Herdr
 from .launch import LaunchError, LaunchOptions, basename_slug, launch, project_slug
@@ -18,7 +19,34 @@ from .runner import Runner, RunnerError
 from .scope import uncommitted_counts
 from .status import RunStatus, StatusError
 
-RUNNER_PATH = PACKAGE_ROOT / "bin" / "herdr-review"
+EXCLUSIVE_USAGE = "herdr-review exclusive [--wait SEC] [--timeout SEC] -- COMMAND [ARG...]"
+
+
+def seconds(zero_ok: bool) -> Callable[[str], float]:
+    """An argparse type: a finite number of seconds, 0 allowed only when <zero_ok>."""
+    def parse(text: str) -> float:
+        try:
+            value = float(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"not a number of seconds: {text!r}") from None
+        if not math.isfinite(value) or value < 0 or (value == 0 and not zero_ok):
+            raise argparse.ArgumentTypeError(f"must be {'0 or more' if zero_ok else 'more than 0'} seconds, not {text!r}")
+        return value
+    return parse
+
+
+def poll_sec_from(environ: Mapping[str, str], default: float) -> float:
+    """HERDR_REVIEW_POLL_SEC, the tests' knob for every polling loop; <default> without it."""
+    raw = environ.get("HERDR_REVIEW_POLL_SEC")
+    if raw is None:
+        return default
+    try:
+        poll = float(raw)
+    except ValueError:
+        raise RunnerError(f"HERDR_REVIEW_POLL_SEC={raw!r} is not a number") from None
+    if not poll > 0:
+        raise RunnerError(f"HERDR_REVIEW_POLL_SEC={raw!r} must be a positive number")
+    return poll
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -56,6 +84,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run", help="run directory or 'latest' (default: $HERDR_REVIEW_RUN, else latest)")
     p.add_argument("--force", action="store_true", help="close a run that is still in progress")
     p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("exclusive", help="run a heavy command (a build, tests, an install, a server) only while no other runs on this machine")
+    p.add_argument("--wait", type=seconds(zero_ok=True), default=exclusive.DEFAULT_WAIT_SEC, metavar="SEC",
+                   help="how long to wait for a turn before exiting 75 (default 60; 0 tries once)")
+    p.add_argument("--timeout", type=seconds(zero_ok=False), default=exclusive.DEFAULT_TIMEOUT_SEC, metavar="SEC",
+                   help="stop the command, with every process under it, after this many seconds and exit 124 (default 1800)")
+    p.add_argument("command", nargs=argparse.REMAINDER, help="the command and its arguments, after --")
 
     r = sub.add_parser("run", help="runner subcommands used by the orchestrator agent")
     rs = r.add_subparsers(dest="subcmd", required=True)
@@ -212,6 +247,36 @@ def cmd_launch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     return 0
 
 
+def queue_line(state: Mapping) -> str:
+    """The machine's build queue, in `status` text."""
+    held = state.get("held")
+    if held is None:
+        return f"очередь сборок: не удалось проверить ({state.get('error')})"
+    if not held:
+        return "очередь сборок: свободна"
+    pid = state.get("pid")
+    if pid is None:
+        return "очередь сборок: занята — процессом, который себя не назвал"
+    if state.get("run_id"):
+        name = state.get("agent") or f"pid {pid}"
+        who = f"{name} (прогон {state['run_id']})"
+    else:
+        who = f"pid {pid} вне ревью"
+    line = f"очередь сборок: занята — {who}: {state.get('command')}"
+    since = state.get("since_sec")
+    if since is not None:
+        line += f", {since} с" if since < 60 else f", {since // 60} мин"
+    return line
+
+
+def queue_stop_line(stopped: exclusive.Stopped) -> str:
+    """The command of its run that `close` stopped in the build queue, or that still ran after the stop's wait."""
+    if stopped.still_running_after is None:
+        return f"остановлена команда из очереди сборок: {stopped.what}"
+    return (f"команда из очереди сборок не остановилась за {stopped.still_running_after:.0f} с после SIGTERM: "
+            f"{stopped.what}; её остановит --timeout")
+
+
 def cmd_status(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     run_dir = resolve_status_run_dir(status_run_spec(args), environ, Path.cwd())
     try:
@@ -219,9 +284,11 @@ def cmd_status(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     except StatusError as e:
         raise RunnerError(str(e)) from e
     data = st.data
+    queue = exclusive.queue_state(exclusive.runs_dir_of(run_dir))
     if args.json:
         out = copy.deepcopy(data)
         out["run_dir"] = str(run_dir)
+        out["exclusive"] = queue
         for n in data.get("agents", {}):
             out["agents"][n]["since_sec"] = st.since_sec(n)
         print(json.dumps(out, ensure_ascii=False, indent=2))
@@ -237,6 +304,7 @@ def cmd_status(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
         print("ожидает ответа пользователя в панели оркестратора")
     if data.get("drift"):
         print("drift: рабочее дерево изменилось во время ревью")
+    print(queue_line(queue))
     print(f"{'agent':<28} {'role':<9} {'state':<15} {'since':>6}  file  reason")
     for n, a in data["agents"].items():
         reason = (a.get("reason") or "")[:60]
@@ -258,9 +326,26 @@ def cmd_close(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
             print(f"уже закрыты: {', '.join(result['already_closed'])}")
         if result["left_open"]:
             print(f"оставлены открытыми (ID теперь у чужой вкладки): {', '.join(result['left_open'])}")
+        if result.get("exclusive_stopped"):
+            print(queue_stop_line(result["exclusive_stopped"]))
         for ident, why in result["failed"].items():
             print(f"не удалось закрыть {ident}: {why}", file=sys.stderr)
     return 1 if result["failed"] else 0
+
+
+def cmd_exclusive(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
+    command = list(args.command)
+    if command[:1] == ["--"]:           # argparse keeps the separator in front of a REMAINDER
+        command = command[1:]
+    if not command:
+        print(f"{exclusive.PREFIX} no command given; usage: {EXCLUSIVE_USAGE}", file=sys.stderr)
+        return 2
+    try:
+        return exclusive.run(command, wait_sec=args.wait, timeout_sec=args.timeout, environ=environ, cwd=Path.cwd(),
+                             poll_sec=poll_sec_from(environ, exclusive.POLL_SEC))
+    except (exclusive.ExclusiveError, RunnerError, OSError) as e:
+        print(f"{exclusive.PREFIX} {e}", file=sys.stderr)
+        return 1
 
 
 def autodecide_now(runner: Runner) -> bool:
@@ -273,13 +358,7 @@ def autodecide_now(runner: Runner) -> bool:
 
 
 def cmd_run(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
-    raw_poll = environ.get("HERDR_REVIEW_POLL_SEC", "5")
-    try:
-        poll = float(raw_poll)
-    except ValueError:
-        raise RunnerError(f"HERDR_REVIEW_POLL_SEC={raw_poll!r} is not a number") from None
-    if not poll > 0:
-        raise RunnerError(f"HERDR_REVIEW_POLL_SEC={raw_poll!r} must be a positive number")
+    poll = poll_sec_from(environ, 5.0)
     runner = Runner(_run_dir_arg(args, environ), poll_sec=poll)
     sub = args.subcmd
     if sub == "start-reviewers":
@@ -322,6 +401,8 @@ def dispatch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
         return cmd_status(args, environ)
     if args.cmd == "close":
         return cmd_close(args, environ)
+    if args.cmd == "exclusive":
+        return cmd_exclusive(args, environ)
     if args.cmd == "run":
         return cmd_run(args, environ)
     return 2
