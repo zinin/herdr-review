@@ -12,14 +12,15 @@ from herdr_review import PROMPTS_DIR
 from herdr_review.gitutil import UntrackedFile
 from herdr_review.render import placeholders, render_file
 from herdr_review.runner import DRIFT_GONE
-from herdr_review.scope import fixer_skeleton, reviewer_steps
+from herdr_review.scope import exclusive_rules, fixer_skeleton, reviewer_steps
 
 NO_COMMIT = "Commit nothing. The change under review is uncommitted work"
 EXPECTED = {
     "terminal.md": {"FILE"},
-    "reviewer.md": {"DESCRIPTION", "PLAN_REFERENCE", "REPO", "BASE_REF", "MERGE_BASE", "RESULT_PATH", "REVIEWER", "SCOPE_STEPS", "SCRATCH_DIR"},
-    "fixer-auto.md": {"RUN_DIR", "COMMIT_RULES"},
-    "fixer-decision.md": {"RUN_DIR", "COMMIT_RULES"},
+    "reviewer.md": {"DESCRIPTION", "PLAN_REFERENCE", "REPO", "BASE_REF", "MERGE_BASE", "RESULT_PATH", "REVIEWER", "SCOPE_STEPS", "SCRATCH_DIR", "EXCLUSIVE_RULES"},
+    "fixer-auto.md": {"RUN_DIR", "COMMIT_RULES", "EXCLUSIVE_RULES"},
+    "fixer-decision.md": {"RUN_DIR", "COMMIT_RULES", "EXCLUSIVE_RULES"},
+    "exclusive.md": {"RUNNER"},
     "fixer-commit-auto.md": {"RUN_DIR"},
     "fixer-commit-decision.md": {"RUN_DIR"},
     "fixer-commit-none.md": {"RUN_DIR"},
@@ -384,6 +385,49 @@ class PromptTemplatesTest(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertIn(" --no-color", command)
                 self.assertIn(" --no-show-signature", command)
+
+    def test_the_heavy_command_rules_reach_the_reviewer_and_the_fixer(self):
+        runner = "/opt/hr/bin/herdr-review"
+        values = {k: "v" for k in EXPECTED["reviewer.md"]}
+        values["EXCLUSIVE_RULES"] = exclusive_rules(runner)
+        reviewer = render_file(PROMPTS_DIR / "reviewer.md", values)
+        texts = {"reviewer": reviewer}
+        for kind in ("auto", "decision"):
+            for scope in ("commits", "worktree"):
+                texts[f"fixer-{kind} ({scope})"] = fixer_skeleton(kind, scope, "/run", runner)
+        for name, text in texts.items():
+            with self.subTest(name=name):
+                self.assertIn('Run each one through `"/opt/hr/bin/herdr-review" exclusive -- <command> [args…]`', text)
+                self.assertIn("`\"/opt/hr/bin/herdr-review\" exclusive -- sh -c 'npm ci && npm test'`", text)
+                self.assertIn("a commit whose hooks build or test", text)
+                self.assertIn("Exit code 75 with a `herdr-review exclusive: busy` line means the command did not run.", text)
+                self.assertIn("never in a shell loop", text)
+                self.assertIn("pass `--timeout <seconds>` before the `--`", text)
+                self.assertIn("No server, container or watcher may outlive the call.", text)
+                self.assertIn("Never run the command without it.", text)
+                self.assertNotIn("{", text)
+        self.assertIn("## Heavy Commands", reviewer)
+        self.assertIn("running the project's own tests — through the wrapper that Heavy Commands below describes — are fine", reviewer)
+        self.assertIn("Do not give up a check you need because the queue is busy.", reviewer)
+        for kind in ("auto", "decision"):
+            text = texts[f"fixer-{kind} (commits)"]
+            self.assertIn("## Heavy commands", text)
+            self.assertIn("run them as the section Heavy commands below says", text)
+            self.assertIn("Never skip the tests because the queue is busy", text)
+
+    def test_the_orchestrator_judges_a_wrapped_command_by_the_command_and_refuses_an_unwrapped_heavy_one(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        values.update(RUNNER="/opt/hr/bin/herdr-review", RUN_DIR="/run")
+        text = render_file(PROMPTS_DIR / "orchestrator.md", values)
+        for phrase in (
+            'a command run through `"/opt/hr/bin/herdr-review" exclusive -- <command>` → judge `<command>` by the rules below',
+            "the wrapper itself writes only its queue files in the runs directory and the run's `runner.log`",
+            'Run builds, tests, dependency installs, servers and containers through \\"/opt/hr/bin/herdr-review\\" exclusive -- <command>, as your prompt says.',
+            "the project's own tests or build run through the wrapper",
+            'so is `herdr-review exclusive` waiting for its turn or running its command; `"/opt/hr/bin/herdr-review" status --run "/run"` names who holds the build queue',
+            '| Confirming a heavy command that a reviewer or the fixer runs without `"/opt/hr/bin/herdr-review" exclusive` | Refuse; point the agent at the wrapper. |',
+        ):
+            self.assertIn(phrase, text)
 
 
 # a global config under which a plain `git diff HEAD | git apply` fails

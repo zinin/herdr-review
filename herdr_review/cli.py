@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Callable, Mapping
 
-from . import PACKAGE_ROOT, __version__, exclusive, gitutil
+from . import RUNNER_PATH, __version__, exclusive, gitutil
 from .config import SCOPES, ConfigError, load_config, public_json
 from .herdr import Herdr
 from .launch import LaunchError, LaunchOptions, basename_slug, launch, project_slug
@@ -19,7 +19,6 @@ from .runner import Runner, RunnerError
 from .scope import uncommitted_counts
 from .status import RunStatus, StatusError
 
-RUNNER_PATH = PACKAGE_ROOT / "bin" / "herdr-review"
 EXCLUSIVE_USAGE = "herdr-review exclusive [--wait SEC] [--timeout SEC] -- COMMAND [ARG...]"
 
 

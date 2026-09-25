@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import PROMPTS_DIR
+from . import PROMPTS_DIR, RUNNER_PATH
 from .config import SCOPES
 from .gitutil import NESTED_REPO, UntrackedFile, quote_path
 from .render import render_file
@@ -89,14 +89,21 @@ def reviewer_steps(scope: str, merge_base: str, uncommitted: list[str], untracke
     }).strip()
 
 
-def fixer_skeleton(kind: str, scope: str, run_dir: Path | str) -> str:
-    """The fixer's task skeleton, `auto` or `decision`, with the commit rules of <scope>. In scope
-    `worktree` the change is uncommitted work and the fixer commits nothing: the rule reaches it in the
-    skeleton itself, not through the orchestrator's memory."""
+def exclusive_rules(runner: Path | str) -> str:
+    """The rules for heavy commands that the reviewer and the fixer prompts share: run them through <runner>'s
+    `exclusive`, one at a time on this machine."""
+    return render_file(PROMPTS_DIR / "exclusive.md", {"RUNNER": str(runner)}).strip()
+
+
+def fixer_skeleton(kind: str, scope: str, run_dir: Path | str, runner: Path | str = RUNNER_PATH) -> str:
+    """The fixer's task skeleton, `auto` or `decision`, with the commit rules of <scope> and the heavy-command
+    rules of <runner>. In scope `worktree` the change is uncommitted work and the fixer commits nothing: the rule
+    reaches it in the skeleton itself, not through the orchestrator's memory."""
     values = {"RUN_DIR": str(run_dir)}
     rules = f"fixer-commit-{kind}.md" if scope == "commits" else "fixer-commit-none.md"
     return render_file(PROMPTS_DIR / f"fixer-{kind}.md", {
         **values, "COMMIT_RULES": render_file(PROMPTS_DIR / rules, values).strip(),
+        "EXCLUSIVE_RULES": exclusive_rules(runner),
     })
 
 

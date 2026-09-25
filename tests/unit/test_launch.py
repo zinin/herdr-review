@@ -256,6 +256,13 @@ class LaunchTest(unittest.TestCase):
         self.assertNotIn("Commit nothing.", orch)
         self.assertEqual(orch.count("git commit --only -F"), 2)
 
+    def test_the_reviewers_and_the_fixer_run_heavy_commands_through_this_runner(self):
+        res = self.do_launch()
+        run_dir = Path(res["run_dir"])
+        wrapped = f'"{self.runner}" exclusive -- <command> [args…]'
+        self.assertIn(wrapped, (run_dir / "prompts" / "codex.md").read_text())
+        self.assertEqual((run_dir / "orchestrator.md").read_text().count(wrapped), 2)    # both fixer skeletons
+
     def test_commits_scope_without_commits_is_refused(self):
         git(self.repo, "switch", "-q", "master")
         git(self.repo, "switch", "-q", "-c", "wip")
