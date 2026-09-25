@@ -9,8 +9,9 @@ All notable changes to herdr-review will be documented here.
   while it holds the machine's build queue (`<runs_dir>/exclusive.lock`), one at a time among every review on the
   machine. It waits up to 60 s for its turn (`--wait`) and exits 75 without running the command when the turn does
   not come; a command still running after 30 minutes (`--timeout`) is stopped, with every process under it, and the
-  wrapper exits 124. The reviewer and fixer prompts require it for every heavy command, and the orchestrator refuses
-  a heavy command run without it when an agent's CLI asks.
+  wrapper exits 124. The reviewer and fixer prompts require it for every heavy command, the fixer's commits included,
+  since a commit's hooks may build or test; the orchestrator refuses a heavy command run without it when an agent's
+  CLI asks.
 - `herdr-review status` names who holds the build queue (`exclusive` in `--json`).
 
 ### Changed

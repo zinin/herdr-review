@@ -21,8 +21,8 @@ EXPECTED = {
     "fixer-auto.md": {"RUN_DIR", "COMMIT_RULES", "EXCLUSIVE_RULES"},
     "fixer-decision.md": {"RUN_DIR", "COMMIT_RULES", "EXCLUSIVE_RULES"},
     "exclusive.md": {"RUNNER"},
-    "fixer-commit-auto.md": {"RUN_DIR"},
-    "fixer-commit-decision.md": {"RUN_DIR"},
+    "fixer-commit-auto.md": {"RUN_DIR", "RUNNER"},
+    "fixer-commit-decision.md": {"RUN_DIR", "RUNNER"},
     "fixer-commit-none.md": {"RUN_DIR"},
     "scope-commits.md": {"MERGE_BASE", "UNCOMMITTED"},
     "scope-worktree.md": {"MERGE_BASE", "UNTRACKED"},
@@ -187,14 +187,23 @@ class PromptTemplatesTest(unittest.TestCase):
                     self.assertIn("one line per fix still marked `done`", text)
                     self.assertLess(text.index("then decide what to commit"), text.index("write the commit message"))
 
-    def test_the_fixers_commit_command_keeps_a_message_path_with_a_space_whole(self):
+    def test_the_fixers_commit_goes_through_the_build_queue_and_keeps_paths_with_a_space_whole(self):
+        runner = "/opt/my hr/bin/herdr-review"
         for kind, message in (("auto", "fix-auto-commit.txt"), ("decision", "fix-<ORCHESTRATOR: n>-commit.txt")):
             with self.subTest(kind=kind):
-                text = fixer_skeleton(kind, "commits", "/my runs/hr1")
-                commands = re.findall(r"`(git commit --only -F [^`]*)`", text)
+                text = fixer_skeleton(kind, "commits", "/my runs/hr1", runner)
+                commands = re.findall(r"`([^`]*git commit --only -F [^`]*)`", text)
                 self.assertEqual(len(commands), 1)
                 args = shlex.split(commands[0])
+                self.assertEqual(args[:6], [runner, "exclusive", "--", "git", "commit", "--only"])
                 self.assertEqual(args[args.index("-F") + 1], f"/my runs/hr1/{message}")
+
+    def test_the_fixers_commit_rules_say_what_a_busy_queue_and_a_failed_wrapper_mean(self):
+        for kind in ("auto", "decision"):
+            with self.subTest(kind=kind):
+                text = fixer_skeleton(kind, "commits", "/run", "/opt/hr/bin/herdr-review")
+                self.assertIn("means nothing was committed: run the same commit again later", text)
+                self.assertIn("`applied, not committed: the build queue failed: <that line>`", text)
 
     def test_orchestrator_prompt_names_the_dialogs_and_protects_the_users_files(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}

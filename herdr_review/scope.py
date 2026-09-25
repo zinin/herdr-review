@@ -97,12 +97,13 @@ def exclusive_rules(runner: Path | str) -> str:
 
 def fixer_skeleton(kind: str, scope: str, run_dir: Path | str, runner: Path | str = RUNNER_PATH) -> str:
     """The fixer's task skeleton, `auto` or `decision`, with the commit rules of <scope> and the heavy-command
-    rules of <runner>. In scope `worktree` the change is uncommitted work and the fixer commits nothing: the rule
-    reaches it in the skeleton itself, not through the orchestrator's memory."""
+    rules of <runner>; the commit, whose hooks may build or test, goes through <runner>'s build queue too. In scope
+    `worktree` the change is uncommitted work and the fixer commits nothing: the rule reaches it in the skeleton
+    itself, not through the orchestrator's memory."""
     values = {"RUN_DIR": str(run_dir)}
     rules = f"fixer-commit-{kind}.md" if scope == "commits" else "fixer-commit-none.md"
     return render_file(PROMPTS_DIR / f"fixer-{kind}.md", {
-        **values, "COMMIT_RULES": render_file(PROMPTS_DIR / rules, values).strip(),
+        **values, "COMMIT_RULES": render_file(PROMPTS_DIR / rules, {**values, "RUNNER": str(runner)}).strip(),
         "EXCLUSIVE_RULES": exclusive_rules(runner),
     })
 
