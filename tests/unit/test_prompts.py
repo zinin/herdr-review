@@ -429,6 +429,18 @@ class PromptTemplatesTest(unittest.TestCase):
         ):
             self.assertIn(phrase, text)
 
+    def test_the_orchestrator_carries_a_stopped_build_queue_command_into_the_report(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        values["RUN_DIR"] = "/run"
+        text = render_file(PROMPTS_DIR / "orchestrator.md", values)
+        rules = text[text.index("## Ground rules"):text.index("## Phase 1")]
+        report = text[text.index("## Phase 6"):text.index("## Red flags")]
+        self.assertIn("When the JSON of `run fail` or `run finish` carries `exclusive_stopped`, the runner stopped a command"
+                      " of this run that held the build queue: note the value for the report (Phase 6).", rules)
+        self.assertIn("**Очередь сборок**, если `run fail` или `run finish` вернули `exclusive_stopped`", report)
+        self.assertIn("When its JSON carries `exclusive_stopped`, add it to the «Очередь сборок» bullet of `/run/report.md` now.",
+                      report)
+
 
 # a global config under which a plain `git diff HEAD | git apply` fails
 HOSTILE_GIT_CONFIG = (
