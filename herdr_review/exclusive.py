@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Callable, Mapping, NamedTuple
 
 from .config import ConfigError, load_config
-from .status import now_iso
+from .status import RunStatus, StatusError, now_iso
 
 LOCK_NAME = "exclusive.lock"
 HOLDER_NAME = "exclusive.json"
@@ -224,6 +224,25 @@ def _log(where: Where, line: str) -> None:
             f.write(f"{now_iso()} exclusive: {line}\n")
     except OSError:
         pass
+
+
+def _taken_off(where: Where, agent: str | None) -> bool:
+    """Whether the run took <agent> off (`run fail` leaves it `failed`). Its CLI may still run and call the wrapper
+    again, which would hold the queue for as long as its --timeout. A status file that cannot be read takes nobody
+    off."""
+    if where.run_dir is None or not agent:
+        return False
+    try:
+        state = RunStatus.load(where.run_dir).agent(agent).get("state")
+    except (StatusError, AttributeError):
+        return False
+    return state == "failed"
+
+
+def _refuse(where: Where, who: str) -> int:
+    _say(f"{who} was taken off this review (run fail); nothing was run")
+    _log(where, f"{who} refused: taken off the review")
+    return 1
 
 
 def _take_turn(fd: int, runs_dir: Path, wait_sec: float, poll_sec: float, notice_sec: float, received: list[int]) -> Turn:
@@ -515,7 +534,10 @@ def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, timeout_sec: 
     if environ.get(NESTED_ENV):
         return _exec_in_turn(command, environ)
     where = locate(environ, Path.cwd() if cwd is None else Path(cwd))
-    who = environ.get(AGENT_ENV) or f"pid {os.getpid()}"
+    agent = environ.get(AGENT_ENV) or None
+    who = agent or f"pid {os.getpid()}"
+    if _taken_off(where, agent):
+        return _refuse(where, who)
     shown = command_text(command)
     received = _catch_stop_signals()
     fd = _open_queue(where.runs_dir)
@@ -531,10 +553,12 @@ def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, timeout_sec: 
             _say(f"busy — {text}; nothing was run. Do other work and run the same command again later.")
             _log(where, f"{who} busy after {format_duration(turn.waited or 0)}: {text}")
             return EXIT_BUSY
+        if _taken_off(where, agent):                 # taken off while it waited for its turn
+            return _refuse(where, who)
         pid = os.getpid()
         try:
             write_holder(where.runs_dir, {
-                "pid": pid, "agent": environ.get(AGENT_ENV) or None, "run_id": where.run_id,
+                "pid": pid, "agent": agent, "run_id": where.run_id,
                 "run_dir": None if where.run_dir is None else str(where.run_dir), "command": shown,
                 "cwd": os.getcwd(), "started_at": now_iso(),
             })

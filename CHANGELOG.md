@@ -14,8 +14,8 @@ All notable changes to herdr-review will be documented here.
 - `herdr-review status` names who holds the build queue (`exclusive` in `--json`).
 
 ### Changed
-- `run fail` stops the failed agent's command that still holds the build queue; `run finish` and `close` stop any
-  command of their run that still holds it.
+- `run fail` stops the failed agent's command that still holds the build queue, and the wrapper runs nothing more for
+  that agent; `run finish` and `close` stop any command of their run that still holds it.
 - Every agent starts with `HERDR_REVIEW_AGENT` naming it, and with `GIT_OPTIONAL_LOCKS=0`, so its `git status` no
   longer takes `.git/index.lock` from under the owner's `git commit`.
 - `run.json` records `runs_dir`.

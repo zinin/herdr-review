@@ -397,6 +397,60 @@ class TurnTest(ExclusiveBase):
         self.assertIn(f' exclusive: hrtest-codex running "{command}" after 0s of waiting\n', log)
         self.assertEqual(len(log.splitlines()), 2, log)                # running and done, one line each
 
+    def mark(self, state: str) -> None:
+        """This run's status.json, as the runner keeps it, with the wrapper's agent in <state>."""
+        agents = {
+            "hrtest-codex": {"state": state, "reason": None, "role": "reviewer", "profile": "codex", "kind": "codex"},
+            "hrtest-gemini": {"state": "working", "reason": None, "role": "reviewer", "profile": "gemini", "kind": "gemini"},
+        }
+        (self.run_dir / "status.json").write_text(json.dumps({"phase": "reviewing", "run_id": "hrtest", "agents": agents}))
+
+    def test_an_agent_its_run_took_off_runs_nothing(self):
+        marker = self.root / "ran"
+        self.mark("failed")
+        p = self.exclusive("--", "touch", str(marker))
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertFalse(marker.exists())
+        self.assertIn("herdr-review exclusive: hrtest-codex was taken off this review (run fail); nothing was run", p.stderr)
+        self.assertEqual(queue_state(self.runs), {"held": False})
+        self.assertIn(" exclusive: hrtest-codex refused: taken off the review\n", (self.run_dir / "runner.log").read_text())
+
+    def test_an_agent_its_run_took_off_does_not_wait_for_a_busy_queue(self):
+        self.mark("failed")
+        self.hold(pid=42, agent="hrtest-gemini", run_id="hrtest", command="mvn test", started_at=iso_ago(5))
+        p = self.exclusive("--wait", "5", "--", "true")
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertNotIn("waiting —", p.stderr)
+
+    def test_an_agent_taken_off_while_it_waited_runs_nothing_when_its_turn_comes(self):
+        marker = self.root / "ran"
+        self.mark("working")
+        held = self.hold(pid=42, agent="hrtest-gemini", run_id="hrtest", command="mvn test", started_at=iso_ago(5))
+        p = subprocess.Popen(exclusive_cmd("--wait", "30", "--", "touch", str(marker)), env=self.env,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(stop_quietly, p)
+        first = p.stderr.readline()                  # the waiting notice: the wrapper found the queue held
+        self.assertIn("waiting —", first)
+        self.mark("failed")                          # run fail, while the wrapper waits
+        held.release()
+        _, err = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 1, first + err)
+        self.assertFalse(marker.exists())
+        self.assertIn("nothing was run", err)
+        self.assertEqual(queue_state(self.runs), {"held": False})
+
+    def test_an_agent_still_in_its_run_or_an_unreadable_status_runs_the_command(self):
+        writes = {
+            "working": lambda: self.mark("working"),
+            "collected": lambda: self.mark("collected"),
+            "unreadable": lambda: (self.run_dir / "status.json").write_text("{not json"),
+        }
+        for label, write in writes.items():
+            with self.subTest(label=label):
+                write()
+                p = self.exclusive("--", "true")
+                self.assertEqual(p.returncode, 0, p.stderr)
+
 
 HARNESS = (
     "import os, sys\n"
