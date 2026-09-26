@@ -15,7 +15,7 @@ The plugin is two [Agent Skills](https://agentskills.io) — `review` launches a
 ### Claude Code
 
 ```
-/plugin marketplace add zinin/claude-plugins
+/plugin marketplace add zinin/agent-plugins
 /plugin install herdr-review@zinin
 ```
 
