@@ -1,7 +1,6 @@
-import json
 import unittest
 
-from herdr_review.dialogs import CLAUDE_SESSION_SETTINGS, MCP_REFUSAL, DialogOutcome, mcp_check, recognize, resolve_startup_dialog, startup_args
+from herdr_review.dialogs import MCP_REFUSAL, DialogOutcome, mcp_check, recognize, resolve_startup_dialog
 from tests.unit.fakeherdr import FakeHerdr
 
 CLAUDE_TRUST_ON_NO = "Quick safety check … ❯ No, exit\n  Yes, I trust this folder\nEnter to confirm · Esc to cancel\n"
@@ -270,23 +269,6 @@ class RecognizeTest(unittest.TestCase):
     def test_an_idle_agent_is_not_a_dialog(self):
         self.assertIsNone(recognize("❯ \n  ⏵⏵ auto mode on (shift+tab to cycle)\n"))
         self.assertIsNone(recognize("› Ask Codex to do anything\n"))
-
-
-class StartupArgsTest(unittest.TestCase):
-    def test_claude_starts_with_the_session_settings(self):
-        args = ["--model", "opus"]
-        self.assertEqual(startup_args("claude", args), ["--settings", CLAUDE_SESSION_SETTINGS, "--model", "opus"])
-        self.assertEqual(args, ["--model", "opus"])          # the profile's own list stays as it was
-        self.assertEqual(json.loads(CLAUDE_SESSION_SETTINGS), {"enableAllProjectMcpServers": True, "attribution": {"commit": ""}})
-
-    def test_a_profile_with_its_own_settings_is_left_alone(self):
-        for args in (["--settings", "/x.json"], ["--model", "opus", "--settings=/x.json"]):
-            with self.subTest(args=args):
-                self.assertEqual(startup_args("claude", args), args)
-
-    def test_other_kinds_are_left_alone(self):
-        self.assertEqual(startup_args("codex", ["-m", "gpt-5.5"]), ["-m", "gpt-5.5"])
-        self.assertEqual(startup_args("grok", []), [])
 
 
 if __name__ == "__main__":

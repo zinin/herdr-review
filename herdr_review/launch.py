@@ -14,7 +14,8 @@ from typing import Callable, Mapping
 
 from . import PROMPTS_DIR, __version__, exclusive, gitutil
 from .config import Config, is_secretish
-from .dialogs import MCP_UNCHECKED, mcp_check, resolve_startup_dialog, startup_args
+from .dialogs import MCP_UNCHECKED, mcp_check, resolve_startup_dialog
+from .kinds import startup_args
 from .herdr import Herdr, HerdrResult
 from .render import render_file
 from .scope import ScopeError, exclusive_rules, fixer_skeleton, orchestrator_scope, resolve_scope, reviewer_steps, untracked_line

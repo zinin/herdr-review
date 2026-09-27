@@ -5,11 +5,8 @@ import re
 from dataclasses import dataclass
 
 # Claude Code asks at startup to approve the servers of a project's .mcp.json, and saves every answer —
-# Esc included — into .claude/settings.local.json of that repository. The same setting given on the
-# command line makes the dialog unnecessary and is never written back.
-# attribution.commit set to an empty string keeps Claude Code's commit trailer out of the fixer's
-# commits: the fixer's task file forbids trailers too, and the setting makes it certain.
-CLAUDE_SESSION_SETTINGS = '{"enableAllProjectMcpServers": true, "attribution": {"commit": ""}}'
+# Esc included — into .claude/settings.local.json of that repository. kinds.CLAUDE_SESSION_SETTINGS, given
+# on the command line, makes the dialog unnecessary.
 MCP_DIALOG = re.compile(r"new MCP servers? found in this project", re.IGNORECASE)
 MCP_REFUSAL = (
     "Claude Code asks to approve this project's MCP servers (.mcp.json); herdr-review never answers "
@@ -42,14 +39,6 @@ SCREEN_LINES = 60
 class DialogOutcome:
     resolved: bool
     refusal: str | None = None      # a dialog the runner recognised and must never answer
-
-
-def startup_args(kind: str, args: list[str]) -> list[str]:
-    """The args an agent of <kind> starts with. A claude agent gets the session-only settings unless
-    its profile passes a --settings of its own: the last --settings wins, so one of the two would be lost."""
-    if kind == "claude" and not any(a == "--settings" or a.startswith("--settings=") for a in args):
-        return ["--settings", CLAUDE_SESSION_SETTINGS, *args]
-    return list(args)
 
 
 def _cursor_keys(screen: str, cursor: str, yes: re.Pattern, no: re.Pattern, back: str) -> tuple[str, ...] | None:

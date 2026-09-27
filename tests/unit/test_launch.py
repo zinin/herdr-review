@@ -8,7 +8,8 @@ from pathlib import Path
 from unittest import mock
 
 from herdr_review.config import parse_config
-from herdr_review.dialogs import CLAUDE_SESSION_SETTINGS, MCP_REFUSAL, MCP_UNCHECKED
+from herdr_review.dialogs import MCP_REFUSAL, MCP_UNCHECKED
+from herdr_review.kinds import CLAUDE_SESSION_SETTINGS
 from herdr_review.herdr import Herdr
 from herdr_review.launch import LaunchError, LaunchOptions, _unfinished_runs, launch, new_run_id, project_slug, resolve_selection
 from tests.unit.fakeherdr import FakeHerdr
