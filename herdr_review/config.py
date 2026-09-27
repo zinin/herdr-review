@@ -1,12 +1,13 @@
 """Load and validate ~/.config/herdr-review/config.yaml."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, NoReturn
 
 import yaml
 
@@ -16,9 +17,12 @@ LAYOUTS = ("tabs", "grid")
 SCOPES = ("auto", "commits", "worktree")
 DEFAULT_RUNS_DIR = "~/.local/state/herdr-review/runs"
 ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+LAUNCH_ENV_PREFIX = "HERDR_REVIEW_LAUNCH_ENV_"
 SETTINGS_KEYS = ("layout", "autodecide", "close_agents_on_finish", "checkin_sec", "runs_dir", "scope")
 SECRETISH_KEY_RE = re.compile(r"(TOKEN|KEY|SECRET|PASSWORD|PASSWD|AUTH|CREDENTIAL)", re.IGNORECASE)
 MIN_MASKED_VALUE_LEN = 16
+OPENCODE_CONFIG_CONTENT = "OPENCODE_CONFIG_CONTENT"
+JSON_TYPE_NAMES = {list: "an array", str: "a string", bool: "a boolean", int: "a number", float: "a number", type(None): "null"}
 
 
 class ConfigError(Exception):
@@ -117,6 +121,47 @@ def _refs_in(env: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(refs)
 
 
+def launch_environ(environ: Mapping[str, str]) -> dict[str, str]:
+    """The environment the runner expands the profiles' ${VAR} in: <environ>, with every variable that the
+    orchestrator's tab sets to a value of its own back at its launch value, which launch keeps under
+    LAUNCH_ENV_PREFIX."""
+    view = dict(environ)
+    for key, value in environ.items():
+        if key.startswith(LAUNCH_ENV_PREFIX) and len(key) > len(LAUNCH_ENV_PREFIX):
+            view[key[len(LAUNCH_ENV_PREFIX):]] = value
+    return view
+
+
+def _reject_constant(name: str) -> NoReturn:
+    """json.loads takes NaN, Infinity and -Infinity, while OpenCode's parser rejects such a document and silently drops
+    it: the agent would run on its default model."""
+    raise ValueError(f"{name} is not JSON")
+
+
+def _check_opencode_config(env: dict[str, str], errors: list[str], where: str) -> None:
+    """OPENCODE_CONFIG_CONTENT must be a JSON object. OpenCode 2 reads it as JSONC and drops a document it cannot
+    parse with only a line in its log: the agent then runs on its default model, and nothing points at the cause.
+    The check is strict JSON, stricter than OpenCode: a comment or a trailing comma is refused, and the message
+    says so. The message never holds the value, which may carry a key. A value whose ${VAR} is not set already has
+    its error."""
+    key = OPENCODE_CONFIG_CONTENT
+    if key not in env or any(e.startswith(f"{where}.env.{key}:") for e in errors):
+        return
+    if not env[key].strip():
+        errors.append(f"{where}.env.{key}: empty, not a JSON object")
+        return
+    try:
+        data = json.loads(env[key], parse_constant=_reject_constant)
+    except json.JSONDecodeError as e:
+        errors.append(f"{where}.env.{key}: not a JSON object ({e.msg}, line {e.lineno}, column {e.colno}; strict JSON: no comments or trailing commas)")
+        return
+    except ValueError as e:
+        errors.append(f"{where}.env.{key}: not a JSON object ({e})")
+        return
+    if not isinstance(data, dict):
+        errors.append(f"{where}.env.{key}: not a JSON object (it is {JSON_TYPE_NAMES[type(data)]})")
+
+
 def _parse_profiles(raw: object, environ: Mapping[str, str], errors: list[str]) -> dict[str, Profile]:
     profiles: dict[str, Profile] = {}
     if not isinstance(raw, dict) or not raw:
@@ -147,6 +192,7 @@ def _parse_profiles(raw: object, environ: Mapping[str, str], errors: list[str]) 
             env = {}
         refs = _refs_in(env)
         env = {k: _expand_env(str(v), environ, errors, f"{where}.env.{k}") for k, v in env.items()}
+        _check_opencode_config(env, errors, where)
         profiles[name] = Profile(name=name, kind=kind.strip(), args=[str(a) for a in args], env=env, env_refs=refs)
     return profiles
 

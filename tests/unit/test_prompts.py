@@ -224,6 +224,24 @@ class PromptTemplatesTest(unittest.TestCase):
         self.assertNotIn("review(auto-decide)", text)
         self.assertNotIn("review: auto-fix", text)
 
+    def test_the_orchestrator_answers_opencodes_dialogs_and_never_always_allow(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        values.update(RUNNER="/opt/hr/bin/herdr-review", RUN_DIR="/run", CHECKIN_SEC=300)
+        text = render_file(PROMPTS_DIR / "orchestrator.md", values)
+        for phrase in (
+            "OpenCode's permission dialog — `△ Permission required` over `Allow once` · `Always allow` · `Reject` — is decided by the rules above, but no letter answers it",
+            "confirm with `enter` while the cursor is on `Allow once`, where it starts",
+            "refuse with `esc`, then `enter` if a `Reject permission` box opens",
+            "Never select `Always allow`: OpenCode keeps it for this project in every later session",
+            "OpenCode asks in a `Questions` form, and herdr sends no prompt while it is open: dismiss the form with `esc`",
+            "quota or API error (OpenCode's: a red `Error: …` line under its reply)",
+            "| Selecting `Always allow` in OpenCode's permission dialog | `enter` on `Allow once`, or `esc` to refuse. |",
+            "The call can take all of those 300 s: when your shell tool stops a command after a timeout of its own, give this call a longer one.",
+            "(an OpenCode agent: two such calls, one right after the other — its first `esc` only arms the interrupt)",
+            "stuck → `esc` (OpenCode: twice, as in Phase 2) and",
+        ):
+            self.assertIn(phrase, text)
+
     def test_drift_is_worded_as_a_change_of_the_tree_not_of_a_reviewer(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
         texts = {"orchestrator.md": render_file(PROMPTS_DIR / "orchestrator.md", values)}
@@ -414,6 +432,7 @@ class PromptTemplatesTest(unittest.TestCase):
                 self.assertIn("pass `--timeout <seconds>` before the `--`", text)
                 self.assertIn("No server, container or watcher may outlive the call.", text)
                 self.assertIn("Never run the command without it.", text)
+                self.assertIn("give the call a timeout that covers the command and up to 60 s of waiting for the turn", text)
                 self.assertNotIn("{", text)
         self.assertIn("## Heavy Commands", reviewer)
         self.assertIn("running the project's own tests — through the wrapper that Heavy Commands below describes — are fine", reviewer)

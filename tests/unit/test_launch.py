@@ -8,7 +8,8 @@ from pathlib import Path
 from unittest import mock
 
 from herdr_review.config import parse_config
-from herdr_review.dialogs import CLAUDE_SESSION_SETTINGS, MCP_REFUSAL, MCP_UNCHECKED
+from herdr_review.dialogs import MCP_REFUSAL, MCP_UNCHECKED
+from herdr_review.kinds import CLAUDE_SESSION_SETTINGS, opencode_config
 from herdr_review.herdr import Herdr
 from herdr_review.launch import LaunchError, LaunchOptions, _unfinished_runs, launch, new_run_id, project_slug, resolve_selection
 from tests.unit.fakeherdr import FakeHerdr
@@ -25,6 +26,7 @@ RAW = {
     "settings": {"checkin_sec": 7},
 }
 ENV = {"HERDR_ENV": "1", "HERDR_WORKSPACE_ID": "w1"}
+MIMO_CONFIG = '{"model": "xiaomi-token-plan-sgp/mimo-v2.6-pro"}'
 
 
 def git(repo, *args):
@@ -68,6 +70,17 @@ class LaunchTest(unittest.TestCase):
     def do_launch(self, **kw):
         opts = LaunchOptions(**kw)
         return launch(opts, self.cfg, self.herdr, ENV, self.repo, self.runner, which=which_ok, run_id="hrtest")
+
+    def use_opencode(self, reviewers=("mimo", "codex"), orchestrator="claude-opus", fixer="claude-opus", args=(), env=None, profiles=None, environ=None):
+        """self.cfg with an opencode profile `mimo` next to the usual ones and <profiles>, parsed in <environ>."""
+        mimo = {"kind": "opencode", "args": list(args), "env": {"OPENCODE_CONFIG_CONTENT": MIMO_CONFIG, **(env or {})}}
+        raw = {
+            "profiles": {**RAW["profiles"], "mimo": mimo, **(profiles or {})},
+            "presets": {"default": {"reviewers": list(reviewers), "orchestrator": orchestrator, "fixer": fixer}},
+            "settings": {"checkin_sec": 7},
+        }
+        self.cfg = parse_config(raw, environ or {})
+        self.cfg.settings.runs_dir = self.root / "runs"
 
     def test_happy_path_creates_run_and_starts_orchestrator(self):
         res = self.do_launch(description="Added the thing", plan="docs/plan.md")
@@ -553,6 +566,121 @@ class LaunchTest(unittest.TestCase):
         self.assertEqual(len(self.herdr.calls_named("agent_read")), 2)
         self.assertEqual(res["orchestrator"], "hrtest-orch")
         self.assertEqual([c[1] for c in self.herdr.calls_named("agent_prompt")], ["hrtest-orch"])
+
+    def test_an_opencode_reviewer_gets_a_private_server_and_the_runs_session_config(self):
+        self.use_opencode()
+        res = self.do_launch()
+        run_dir = Path(res["run_dir"])
+        runs_dir = (self.root / "runs").resolve()
+        self.assertEqual(json.loads((run_dir / "opencode.json").read_text()), opencode_config(run_dir))
+        self.assertEqual(opencode_config(run_dir)["permission"]["external_directory"], {f"{run_dir}/*": "allow"})
+        self.assertTrue(run_dir.is_relative_to(runs_dir))
+        run_json = json.loads((run_dir / "run.json").read_text())
+        self.assertEqual(run_json["reviewers"][0]["args"], ["--standalone"])
+        self.assertEqual(run_json["reviewers"][0]["env_keys"], ["OPENCODE_CONFIG_CONTENT"])
+        orch_env = self.herdr.calls_named("tab_create")[0][4]
+        self.assertNotIn("OPENCODE_CONFIG", orch_env)             # a claude orchestrator gets nothing of OpenCode's
+
+    def test_a_run_without_an_opencode_agent_writes_no_session_config(self):
+        res = self.do_launch()
+        self.assertFalse((Path(res["run_dir"]) / "opencode.json").exists())
+
+    def test_an_opencode_orchestrator_reads_the_session_config_under_its_profiles_env(self):
+        self.use_opencode(orchestrator="mimo")
+        res = self.do_launch()
+        run_dir = Path(res["run_dir"])
+        env = self.herdr.calls_named("tab_create")[0][4]
+        self.assertEqual(env["OPENCODE_CONFIG"], str(run_dir / "opencode.json"))
+        self.assertEqual(env["OPENCODE_DISABLE_PROJECT_CONFIG"], "1")
+        self.assertEqual(env["OPENCODE_CONFIG_CONTENT"], MIMO_CONFIG)
+        keys = list(env)
+        self.assertLess(keys.index("OPENCODE_CONFIG"), keys.index("OPENCODE_CONFIG_CONTENT"))
+        self.assertEqual(keys[-1], "HERDR_REVIEW_AGENT")
+        self.assertEqual([k for k in keys if k.startswith("HERDR_REVIEW_LAUNCH_ENV_")], [])
+        self.assertEqual(self.herdr.calls_named("agent_start")[0], ("agent_start", "hrtest-orch", "opencode", "w1:p2", ["--standalone"]))
+
+    def test_a_variable_the_orchestrators_tab_overrides_keeps_its_launch_value(self):
+        environ = {**ENV, "OPENCODE_CONFIG": "/home/me/reviewer.json"}
+        own = {"kind": "opencode", "env": {"OPENCODE_CONFIG": "${OPENCODE_CONFIG}"}}
+        self.use_opencode(reviewers=("mimo-own", "codex"), orchestrator="mimo", profiles={"mimo-own": own}, environ=environ)
+        res = launch(LaunchOptions(), self.cfg, self.herdr, environ, self.repo, self.runner, which=which_ok, run_id="hrtest")
+        env = self.herdr.calls_named("tab_create")[0][4]
+        self.assertEqual(env["OPENCODE_CONFIG"], str(Path(res["run_dir"]) / "opencode.json"))
+        self.assertEqual(env["HERDR_REVIEW_LAUNCH_ENV_OPENCODE_CONFIG"], "/home/me/reviewer.json")
+        self.assertEqual(list(env)[-1], "HERDR_REVIEW_AGENT")
+
+    def test_a_profiles_own_opencode_config_replaces_the_runs(self):
+        self.use_opencode(orchestrator="mimo", env={"OPENCODE_CONFIG": "/home/me/opencode-review.json"})
+        self.do_launch()
+        self.assertEqual(self.herdr.calls_named("tab_create")[0][4]["OPENCODE_CONFIG"], "/home/me/opencode-review.json")
+
+    def test_an_opencode_fixer_alone_still_gets_the_session_config(self):
+        self.use_opencode(reviewers=("codex",), fixer="mimo")
+        res = self.do_launch()
+        run_dir = Path(res["run_dir"])
+        self.assertTrue((run_dir / "opencode.json").is_file())
+        self.assertEqual(json.loads((run_dir / "run.json").read_text())["fixer"]["args"], ["--standalone"])
+
+    def test_a_skipped_opencode_reviewer_writes_no_session_config(self):
+        self.use_opencode()
+        res = launch(LaunchOptions(), self.cfg, self.herdr, ENV, self.repo, self.runner,
+                     which=lambda kind: None if kind == "opencode" else which_ok(kind), run_id="hrtest")
+        self.assertEqual(res["skipped"], ["mimo"])
+        self.assertFalse((Path(res["run_dir"]) / "opencode.json").exists())
+
+    def test_an_opencode_profile_that_chose_its_server_starts_as_it_says(self):
+        self.use_opencode(args=["--server=http://127.0.0.1:4096"])
+        res = self.do_launch()
+        run_json = json.loads((Path(res["run_dir"]) / "run.json").read_text())
+        self.assertEqual(run_json["reviewers"][0]["args"], ["--server=http://127.0.0.1:4096"])
+
+    def test_the_session_config_names_a_relative_runs_dir_by_its_absolute_path(self):
+        self.use_opencode()
+        sub = self.repo / "sub"
+        sub.mkdir()
+        self.cfg.settings.runs_dir = Path(".review-runs")
+        res = launch(LaunchOptions(), self.cfg, self.herdr, ENV, sub, self.runner, which=which_ok, run_id="hrrel")
+        rules = json.loads((Path(res["run_dir"]) / "opencode.json").read_text())["permission"]["external_directory"]
+        self.assertEqual(rules, {f"{Path(res['run_dir'])}/*": "allow"})
+        self.assertTrue(Path(res["run_dir"]).is_relative_to((sub / '.review-runs').resolve()))
+
+    def test_a_plan_file_outside_the_repository_is_copied_into_the_run_directory(self):
+        plan = self.root / "plans" / "the plan.md"
+        plan.parent.mkdir()
+        plan.write_text("1. do the thing\n")
+        res = self.do_launch(plan=str(plan))
+        run_dir = Path(res["run_dir"])
+        copy = run_dir / "plan" / "the plan.md"
+        self.assertEqual(copy.read_text(), "1. do the thing\n")
+        ref = f"{copy} (a copy of {plan.resolve()})"
+        self.assertEqual(json.loads((run_dir / "run.json").read_text())["plan"], ref)
+        self.assertIn(f"**Requirements / plan:** {ref}", (run_dir / "prompts" / "codex.md").read_text())
+        self.assertIn(f"Plan / requirements: {ref}", (run_dir / "orchestrator.md").read_text())
+
+    def test_a_relative_plan_path_is_read_from_the_launch_directory(self):
+        plan = self.root / "plan.md"
+        plan.write_text("plan\n")
+        res = self.do_launch(plan="../plan.md")                   # do_launch runs from the repository root
+        run_dir = Path(res["run_dir"])
+        self.assertEqual((run_dir / "plan" / "plan.md").read_text(), "plan\n")
+
+    def test_a_plan_inside_the_repository_text_or_a_missing_path_stays_as_given(self):
+        for plan in ("a.txt", "docs/plan.md", "/nowhere/plan.md", "keep the retries; do not re-raise #3", "x" * 5000):
+            with self.subTest(plan=plan[:40]):
+                self.herdr = FakeHerdr()
+                res = launch(LaunchOptions(plan=plan), self.cfg, self.herdr, ENV, self.repo, self.runner, which=which_ok,
+                             run_id=f"hrp{len(plan) % 97}")
+                run_dir = Path(res["run_dir"])
+                self.assertFalse((run_dir / "plan").exists())
+                self.assertEqual(json.loads((run_dir / "run.json").read_text())["plan"], plan)
+
+    def test_the_session_config_keeps_a_runs_dir_with_a_space_whole(self):
+        self.use_opencode()
+        self.cfg.settings.runs_dir = self.root / "review runs"
+        res = self.do_launch()
+        rules = json.loads((Path(res["run_dir"]) / "opencode.json").read_text())["permission"]["external_directory"]
+        self.assertEqual(rules, {f"{Path(res['run_dir'])}/*": "allow"})
+        self.assertTrue(Path(res["run_dir"]).is_relative_to((self.root / 'review runs').resolve()))
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import json
 import os
 import stat
 import tempfile
@@ -11,6 +12,7 @@ from herdr_review.config import (
     ConfigNotFound,
     config_path,
     is_secretish,
+    launch_environ,
     load_config,
     parse_config,
     public_json,
@@ -115,6 +117,59 @@ class ParseConfigTest(unittest.TestCase):
         errs = errors_of({"profiles": {"p": {"kind": "x"}}, "settings": {"scope": "everything"}})
         self.assertTrue(any("settings.scope" in e and "auto, commits, worktree" in e for e in errs))
 
+    def test_opencode_config_content_must_be_a_json_object(self):
+        def mimo(value):
+            return {"profiles": {"mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG_CONTENT": value}}}}
+        self.assertEqual(errors_of(mimo('{"model": "xiaomi-token-plan-sgp/mimo-v2.6-pro"}')), [])
+        errs = errors_of(mimo('{"model": "x",}'))
+        self.assertEqual(len(errs), 1, errs)
+        self.assertRegex(errs[0], r"^profiles\.mimo\.env\.OPENCODE_CONFIG_CONTENT: not a JSON object \(.+, line 1, column \d+; strict JSON: no comments or trailing commas\)$")
+        for value, what in (('["model"]', "an array"), ('"model"', "a string"), ("42", "a number"), ("null", "null")):
+            with self.subTest(value=value):
+                self.assertEqual(errors_of(mimo(value)), [f"profiles.mimo.env.OPENCODE_CONFIG_CONTENT: not a JSON object (it is {what})"])
+
+    def test_a_broken_opencode_config_is_reported_without_its_value(self):
+        value = '{"provider": {"x": {"options": {"apiKey": "sk-live-1234567890"}}}'      # one closing brace short
+        errs = errors_of({"profiles": {"mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG_CONTENT": value}}}})
+        self.assertEqual(len(errs), 1, errs)
+        self.assertNotIn("sk-live-1234567890", errs[0])
+        self.assertNotIn("apiKey", errs[0])
+
+    def test_a_comment_or_a_trailing_comma_is_refused_as_strict_json(self):
+        for value in ('{"model": "a/b",}', '{"model": "a/b"} // m'):
+            with self.subTest(value=value):
+                errs = errors_of({"profiles": {"mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG_CONTENT": value}}}})
+                self.assertEqual(len(errs), 1, errs)
+                self.assertTrue(errs[0].endswith("; strict JSON: no comments or trailing commas)"), errs)
+
+    def test_the_opencode_config_is_checked_after_expansion(self):
+        ok = {"profiles": {"mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG_CONTENT": '{"model": "${OC_MODEL}"}'}}}}
+        self.assertEqual(errors_of(ok, {"OC_MODEL": "xiaomi-token-plan-sgp/mimo-v2.6-pro"}), [])
+        unset = {"profiles": {"mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG_CONTENT": '{"n": ${OC_N}}'}}}}
+        self.assertEqual(errors_of(unset), ["profiles.mimo.env.OPENCODE_CONFIG_CONTENT: environment variable ${OC_N} is not set"])
+
+    def test_an_opencode_config_that_expands_to_nothing_is_reported_as_empty(self):
+        raw = {"profiles": {"mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG_CONTENT": "${OC}"}}}}
+        self.assertEqual(errors_of(raw, {"OC": ""}), ["profiles.mimo.env.OPENCODE_CONFIG_CONTENT: empty, not a JSON object"])
+
+    def test_the_opencode_config_rejects_nan_and_infinity(self):
+        for value, constant in (('{"model": "a/b", "temperature": NaN}', "NaN"), ('{"model": "a/b", "temperature": Infinity}', "Infinity")):
+            with self.subTest(value=value):
+                errs = errors_of({"profiles": {"mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG_CONTENT": value}}}})
+                self.assertEqual(errs, [f"profiles.mimo.env.OPENCODE_CONFIG_CONTENT: not a JSON object ({constant} is not JSON)"])
+
+    def test_the_opencode_config_is_checked_for_any_kind(self):
+        errs = errors_of({"profiles": {"claude-x": {"kind": "claude", "env": {"OPENCODE_CONFIG_CONTENT": "nope"}}}})
+        self.assertEqual(len(errs), 1, errs)
+        self.assertTrue(errs[0].startswith("profiles.claude-x.env.OPENCODE_CONFIG_CONTENT: not a JSON object ("), errs)
+
+    def test_the_example_config_is_valid(self):
+        example = Path(__file__).resolve().parents[2] / "config.example.yaml"
+        cfg = load_config(example, environ={"HOME": "/home/u"})
+        self.assertEqual(cfg.profiles["mimo"].kind, "opencode")
+        self.assertEqual(json.loads(cfg.profiles["mimo"].env["OPENCODE_CONFIG_CONTENT"]), {"model": "xiaomi-token-plan-sgp/mimo-v2.6-pro"})
+        self.assertNotIn("mimo", cfg.presets["default"].reviewers)
+
 
 class IsSecretishTest(unittest.TestCase):
     def test_masks_a_long_value_or_a_secret_looking_name(self):
@@ -130,6 +185,16 @@ class IsSecretishTest(unittest.TestCase):
     def test_an_empty_value_is_never_masked(self):
         self.assertFalse(is_secretish("ANTHROPIC_AUTH_TOKEN", ""))
         self.assertFalse(is_secretish("ANTHROPIC_MODEL", ""))
+
+
+class LaunchEnvironTest(unittest.TestCase):
+    def test_a_prefixed_variable_brings_back_its_launch_value(self):
+        env = launch_environ({"A": "tab", "HERDR_REVIEW_LAUNCH_ENV_A": "launch", "B": "b"})
+        self.assertEqual((env["A"], env["B"]), ("launch", "b"))
+
+    def test_an_environ_without_prefixed_keys_comes_back_as_it_is(self):
+        environ = {"A": "tab", "B": "b"}
+        self.assertEqual(launch_environ(environ), environ)
 
 
 class LoadConfigTest(unittest.TestCase):

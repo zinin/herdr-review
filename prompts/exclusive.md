@@ -3,5 +3,6 @@ Heavy commands share this machine with every agent of every review running on it
 - Put steps that must run back to back into one call: `"{RUNNER}" exclusive -- sh -c 'npm ci && npm test'`. The command gets no input: its stdin is empty.
 - The wrapper waits up to 60 s for its turn. Exit code 75 with a `herdr-review exclusive: busy` line means the command did not run. Run the same call again later yourself, never in a shell loop (`until …; do sleep …; done`): such a loop holds one tool call for as long as the queue stays busy, and it never ends when the command itself fails.
 - A command still running after 30 minutes is stopped: exit code 124 with a `herdr-review exclusive: timed out` line. For a build you know takes longer, pass `--timeout <seconds>` before the `--`.
+- If your shell tool stops a call after a timeout of its own — OpenCode's does after 2 minutes unless the call sets a longer one — give the call a timeout that covers the command and up to 60 s of waiting for the turn: when the tool stops the call, the wrapper stops the command with it, and the build is lost.
 - Stop everything you start inside the same call: `sh -c 'docker compose up -d && …; docker compose down'`. No server, container or watcher may outlive the call.
 - Exit code 1 with a `herdr-review exclusive:` error line means the wrapper itself failed. Never run the command without it.

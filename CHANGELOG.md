@@ -2,6 +2,24 @@
 
 All notable changes to herdr-review will be documented here.
 
+## [Unreleased]
+
+### Added
+- Agents of kind `opencode` (OpenCode 2). herdr-review starts each with `--standalone`, a private OpenCode server
+  that gets the agent's environment, with `OPENCODE_CONFIG` naming `<run_dir>/opencode.json`, a session-only config
+  that allows the run directory and denies the question tool and reading `.env` files other than `.env.example`,
+  and with `OPENCODE_DISABLE_PROJECT_CONFIG=1`, so the repository's own OpenCode config, which could override those
+  rules, and its root `AGENTS.md` stay out; a profile may set it to `0`. The profile names its model in
+  `OPENCODE_CONFIG_CONTENT`, which the validator requires to be a JSON object.
+
+### Changed
+- A `--plan` file outside the repository is copied into `<run_dir>/plan/`, and the prompts name the copy: every
+  agent may read it there, while elsewhere an agent may have to ask and an opencode orchestrator has nobody to answer.
+- The orchestrator answers OpenCode's permission dialog with `Allow once` or `esc`, never `Always allow`, dismisses
+  its question form before it answers, and takes an agent with a red `Error: …` line off the run.
+- The heavy-command rules and `run wait` tell an agent whose shell tool stops a call after a timeout of its own to
+  give the call a longer one.
+
 ## [0.3.0] - 2026-09-26
 
 ### Added

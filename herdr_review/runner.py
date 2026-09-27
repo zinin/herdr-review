@@ -11,9 +11,10 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from . import PROMPTS_DIR, exclusive, gitutil
-from .config import ConfigError, is_secretish, load_config
+from .config import ConfigError, is_secretish, launch_environ, load_config
 from .dialogs import MCP_UNCHECKED, SCREEN_LINES, mcp_check, resolve_startup_dialog
 from .herdr import Herdr, HerdrResult
+from .kinds import startup_env
 from .layout import fixer_split, plan_grid
 from .render import render_file
 from .status import PHASES, RunStatus, StatusError, now_iso
@@ -183,7 +184,7 @@ class Runner:
     def _load_config(self):
         if self._config is None and self._config_error is None:
             try:
-                self._config = load_config()
+                self._config = load_config(environ=launch_environ(os.environ))
             except ConfigError as e:
                 self._config_error = str(e)
                 self.log(f"config unavailable, profile env not applied: {e}")
@@ -233,10 +234,11 @@ class Runner:
         # the locks that `git add` and `git commit` need are not optional and stay.
         return {"HERDR_REVIEW_RUN": str(self.run_dir), "GIT_OPTIONAL_LOCKS": "0"}
 
-    def _agent_env(self, name: str, profile: str) -> dict[str, str]:
-        """An agent's environment: the run's, then its profile's env, which may override the run's, then its own
-        name, which `herdr-review exclusive` records as the holder of the build queue."""
-        return {**self._base_env(), **self._profile_env(profile), exclusive.AGENT_ENV: name}
+    def _agent_env(self, name: str, profile: str, kind: str) -> dict[str, str]:
+        """An agent's environment: the run's, then what its kind takes from the run (kinds.startup_env: an opencode
+        agent's session config), then its profile's env, which may override both, then its own name, which
+        `herdr-review exclusive` records as the holder of the build queue."""
+        return {**self._base_env(), **startup_env(kind, self.run_dir), **self._profile_env(profile), exclusive.AGENT_ENV: name}
 
     def _agent(self, name: str) -> dict:
         try:
@@ -317,7 +319,7 @@ class Runner:
         created: list[tuple[str, str, str]] = []
         try:
             for s in specs:
-                env = self._agent_env(s["name"], s["profile"])
+                env = self._agent_env(s["name"], s["profile"], s["kind"])
                 r = self.herdr.tab_create(self.run["workspace_id"], self.repo, f"rv-{self.run_id}: {label_of(s)}", env)
                 if not r.ok or not r.result:
                     raise RunnerError(f"herdr tab create failed: {r.error_code}: {r.message}")
@@ -346,7 +348,7 @@ class Runner:
         try:
             for step in steps:
                 spec = owner.get(step.result)
-                env = self._agent_env(spec["name"], spec["profile"]) if spec else self._base_env()
+                env = self._agent_env(spec["name"], spec["profile"], spec["kind"]) if spec else self._base_env()
                 r = self.herdr.pane_split(ids[step.target], step.direction, step.ratio, self.repo, env)
                 if not r.ok or not r.result:
                     raise RunnerError(f"herdr pane split failed: {r.error_code}: {r.message}")
@@ -585,7 +587,7 @@ class Runner:
         name = fx["name"]
         if name in self.status.data["agents"]:
             raise RunnerError(f"fixer {name} is already started")
-        env = self._agent_env(name, fx["profile"])
+        env = self._agent_env(name, fx["profile"], fx["kind"])
         self.log(f"start-fixer {name} layout={self.layout}")
         if self.layout == "tabs":
             r = self.herdr.tab_create(self.run["workspace_id"], self.repo, f"rv-{self.run_id}: fixer", env)

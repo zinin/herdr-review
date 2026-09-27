@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from . import PROMPTS_DIR, __version__, exclusive, gitutil
-from .config import Config, is_secretish
-from .dialogs import MCP_UNCHECKED, mcp_check, resolve_startup_dialog, startup_args
+from .config import LAUNCH_ENV_PREFIX, Config, is_secretish
+from .dialogs import MCP_UNCHECKED, mcp_check, resolve_startup_dialog
+from .kinds import OPENCODE_CONFIG_NAME, opencode_config, startup_args, startup_env
 from .herdr import Herdr, HerdrResult
 from .render import render_file
 from .scope import ScopeError, exclusive_rules, fixer_skeleton, orchestrator_scope, resolve_scope, reviewer_steps, untracked_line
@@ -92,6 +93,25 @@ def _reviewers_table(reviewers: list[dict], run_dir: Path) -> str:
         f"result `{run_dir}/reviews/{rv['profile']}.md`; scratch `{run_dir}/scratch/{rv['profile']}/`"
         for rv in reviewers
     )
+
+
+def plan_reference(plan: str | None, repo: Path, cwd: Path, run_dir: Path) -> str:
+    """The plan as the prompts name it. A file outside the repository is copied into the run directory, which every
+    agent may read: elsewhere an agent may have to ask, and an opencode orchestrator has nobody to answer. A path
+    inside the repository, a path that names no file, and free text stay as given."""
+    text = (plan or "").strip()
+    if not text:
+        return "(not provided)"
+    try:
+        source = (Path(cwd) / Path(text).expanduser()).resolve()
+        if not source.is_file() or source.is_relative_to(Path(repo).resolve()):
+            return text
+        copy = run_dir / "plan" / source.name
+        copy.parent.mkdir(exist_ok=True)
+        shutil.copyfile(source, copy)
+    except (OSError, ValueError):
+        return text
+    return f"{copy} (a copy of {source})"
 
 
 def _unfinished_runs(project_dir: Path) -> list[str]:
@@ -195,7 +215,7 @@ def launch(
         orch = _profile_spec(cfg, orch_profile, f"{run_id}-orch")
         fixer = _profile_spec(cfg, fixer_profile, f"{run_id}-fixer")
         description = (opts.description or "").strip() or "(not provided)"
-        plan_ref = (opts.plan or "").strip() or "(not provided)"
+        plan_ref = plan_reference(opts.plan, repo, cwd, run_dir)
         branch = gitutil.current_branch(repo)
         run_json = {
             "version": __version__,
@@ -227,6 +247,10 @@ def launch(
             "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now())),
         }
         (run_dir / "run.json").write_text(json.dumps(run_json, indent=2, ensure_ascii=False), encoding="utf-8")
+        if any(spec["kind"] == "opencode" for spec in (*reviewers_spec, orch, fixer)):
+            # Every opencode agent of the run reads it through OPENCODE_CONFIG (kinds.startup_env), the fixer too,
+            # which the runner starts later.
+            (run_dir / OPENCODE_CONFIG_NAME).write_text(json.dumps(opencode_config(run_dir), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
         # ----- prompts
         steps = reviewer_steps(scope, mb, uncommitted, untracked, listing, untracked_listing)
@@ -293,10 +317,17 @@ def launch(
         if key in environ:
             env_all[key] = environ[key]
     selected = [*usable, orch_profile, fixer_profile]
-    for name in dict.fromkeys(ref for prof in selected for ref in cfg.profiles[prof].env_refs):
+    refs = list(dict.fromkeys(ref for prof in selected for ref in cfg.profiles[prof].env_refs))
+    for name in refs:
         if name in environ:
             env_all[name] = environ[name]
+    env_all.update(startup_env(orch["kind"], run_dir))
     env_all.update(cfg.profiles[orch_profile].env)
+    # The runner expands the profiles' ${VAR} again, in this tab (config.launch_environ): a variable that this tab
+    # sets to a value of its own keeps its launch value under LAUNCH_ENV_PREFIX.
+    for name in refs:
+        if name in environ and env_all[name] != environ[name]:
+            env_all[LAUNCH_ENV_PREFIX + name] = environ[name]
     env_all[exclusive.AGENT_ENV] = orch["name"]
     try:
         r = herdr.tab_create(workspace_id, str(repo), f"rv-{run_id}: orch", env_all, focus=False)
