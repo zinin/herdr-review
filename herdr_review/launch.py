@@ -95,6 +95,25 @@ def _reviewers_table(reviewers: list[dict], run_dir: Path) -> str:
     )
 
 
+def plan_reference(plan: str | None, repo: Path, cwd: Path, run_dir: Path) -> str:
+    """The plan as the prompts name it. A file outside the repository is copied into the run directory, which every
+    agent may read: elsewhere an agent may have to ask, and an opencode orchestrator has nobody to answer. A path
+    inside the repository, a path that names no file, and free text stay as given."""
+    text = (plan or "").strip()
+    if not text:
+        return "(not provided)"
+    try:
+        source = (Path(cwd) / Path(text).expanduser()).resolve()
+        if not source.is_file() or source.is_relative_to(Path(repo).resolve()):
+            return text
+        copy = run_dir / "plan" / source.name
+        copy.parent.mkdir(exist_ok=True)
+        shutil.copyfile(source, copy)
+    except (OSError, ValueError):
+        return text
+    return f"{copy} (a copy of {source})"
+
+
 def _unfinished_runs(project_dir: Path) -> list[str]:
     found = []
     if not project_dir.is_dir():
@@ -196,7 +215,7 @@ def launch(
         orch = _profile_spec(cfg, orch_profile, f"{run_id}-orch")
         fixer = _profile_spec(cfg, fixer_profile, f"{run_id}-fixer")
         description = (opts.description or "").strip() or "(not provided)"
-        plan_ref = (opts.plan or "").strip() or "(not provided)"
+        plan_ref = plan_reference(opts.plan, repo, cwd, run_dir)
         branch = gitutil.current_branch(repo)
         run_json = {
             "version": __version__,

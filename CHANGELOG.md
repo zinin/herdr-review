@@ -13,6 +13,8 @@ All notable changes to herdr-review will be documented here.
   `OPENCODE_CONFIG_CONTENT`, which the validator requires to be a JSON object.
 
 ### Changed
+- A `--plan` file outside the repository is copied into `<run_dir>/plan/`, and the prompts name the copy: every
+  agent may read it there, while elsewhere an agent may have to ask and an opencode orchestrator has nobody to answer.
 - The orchestrator answers OpenCode's permission dialog with `Allow once` or `esc`, never `Always allow`, dismisses
   its question form before it answers, and takes an agent with a red `Error: …` line off the run.
 - The heavy-command rules and `run wait` tell an agent whose shell tool stops a call after a timeout of its own to

@@ -156,7 +156,7 @@ Arguments, in any order:
 | `scope=worktree` / `scope=commits` / `scope=auto` | Review the working tree with its uncommitted work, only the branch's commits, or (`auto`) the commits, else the working tree. Default: `settings.scope`, `auto` unless you changed it. |
 | anything else | The description of the change, handed to the reviewers. |
 
-With a preset or `reviewers=` the skill asks nothing. Without either it asks four questions: reviewers, orchestrator, fixer, autodecide. It never asks about uncommitted files or startup dialogs. It also passes the plan when it knows one from the session: a file path, or free text — `git show <sha>:<path>` when the plan lives only in git history, and your rulings from earlier review rounds.
+With a preset or `reviewers=` the skill asks nothing. Without either it asks four questions: reviewers, orchestrator, fixer, autodecide. It never asks about uncommitted files or startup dialogs. It also passes the plan when it knows one from the session: a file path, or free text — `git show <sha>:<path>` when the plan lives only in git history, and your rulings from earlier review rounds. A plan file outside the repository, such as one under `~/.claude/plans/`, is copied into the run directory, and the prompts name the copy: every agent may read it there.
 
 ```
 /herdr-review:review default
