@@ -14,11 +14,13 @@ from herdr_review.status import RunStatus
 from tests.unit.fakeherdr import FakeHerdr
 from tests.unit.test_dialogs import CLAUDE_IDLE, MCP_MANY, MCP_MANY_NARROW, MCP_ONE
 
+MIMO_CONFIG = '{"model": "xiaomi-token-plan-sgp/mimo-v2.6-pro"}'
 RAW = {
     "profiles": {
         "claude-opus": {"kind": "claude", "args": ["--model", "opus"], "env": {"TOKEN": "s3cret"}},
         "codex": {"kind": "codex", "args": ["-m", "gpt-5.5"]},
         "gemini": {"kind": "gemini", "args": ["--yolo"]},
+        "mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG_CONTENT": MIMO_CONFIG}},
     },
     "presets": {"default": {"reviewers": ["claude-opus", "codex", "gemini"], "orchestrator": "claude-opus", "fixer": "codex"}},
 }
@@ -40,7 +42,7 @@ def make_repo(d: Path) -> Path:
     return repo
 
 
-def make_run(root: Path, repo: Path, layout="tabs", reviewers=("claude-opus", "codex", "gemini"), close=False) -> Path:
+def make_run(root: Path, repo: Path, layout="tabs", reviewers=("claude-opus", "codex", "gemini"), close=False, fixer="codex") -> Path:
     """Write run.json + status.json the way launch does (Task 10), without herdr."""
     run_dir = root / "runs" / "repo" / "20260908-100000-hrtest"
     (run_dir / "prompts").mkdir(parents=True)
@@ -54,7 +56,7 @@ def make_run(root: Path, repo: Path, layout="tabs", reviewers=("claude-opus", "c
         "merge_base": "0" * 40, "description": "d", "plan": "p", "autodecide": False, "layout": layout, "checkin_sec": 300,
         "close_agents_on_finish": close, "workspace_id": "w1",
         "reviewers": [spec(p, f"hrtest-{p}") for p in reviewers],
-        "orchestrator": spec("claude-opus", "hrtest-orch"), "fixer": spec("codex", "hrtest-fixer"),
+        "orchestrator": spec("claude-opus", "hrtest-orch"), "fixer": spec(fixer, "hrtest-fixer"),
         "runner": "/opt/hr/bin/herdr-review", "started_at": "2026-09-08T10:00:00+0000",
     }
     (run_dir / "run.json").write_text(json.dumps(run))
@@ -321,6 +323,37 @@ class StartReviewersTest(RunnerBase):
         self.runner(run_dir).start_fixer()
         env = self.herdr.calls_named("tab_create")[-1][4]
         self.assertEqual((env["GIT_OPTIONAL_LOCKS"], env["HERDR_REVIEW_AGENT"]), ("0", "hrtest-fixer"))
+
+    def test_an_opencode_reviewer_reads_the_runs_session_config(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("mimo", "codex"))
+        self.runner(run_dir).start_reviewers()
+        tabs = self.herdr.calls_named("tab_create")
+        self.assertEqual(tabs[0][4], {"HERDR_REVIEW_RUN": str(run_dir), "GIT_OPTIONAL_LOCKS": "0",
+                                      "OPENCODE_CONFIG": str(run_dir / "opencode.json"),
+                                      "OPENCODE_CONFIG_CONTENT": MIMO_CONFIG, "HERDR_REVIEW_AGENT": "hrtest-mimo"})
+        self.assertEqual(list(tabs[0][4]), ["HERDR_REVIEW_RUN", "GIT_OPTIONAL_LOCKS", "OPENCODE_CONFIG",
+                                            "OPENCODE_CONFIG_CONTENT", "HERDR_REVIEW_AGENT"])
+        self.assertNotIn("OPENCODE_CONFIG", tabs[1][4])          # codex gets nothing of OpenCode's
+
+    def test_an_opencode_reviewer_in_the_grid_reads_it_too(self):
+        run_dir = make_run(self.root, self.repo, layout="grid", reviewers=("mimo", "codex"))
+        self.runner(run_dir).start_reviewers()
+        envs = {e["HERDR_REVIEW_AGENT"]: e for e in (s[5] for s in self.herdr.calls_named("pane_split")) if "HERDR_REVIEW_AGENT" in e}
+        self.assertEqual(envs["hrtest-mimo"]["OPENCODE_CONFIG"], str(run_dir / "opencode.json"))
+        self.assertNotIn("OPENCODE_CONFIG", envs["hrtest-codex"])
+
+    def test_a_profiles_own_opencode_config_replaces_the_runs(self):
+        self.cfg.profiles["mimo"].env = {"OPENCODE_CONFIG": "/home/me/opencode-review.json"}
+        run_dir = make_run(self.root, self.repo, reviewers=("mimo",))
+        self.runner(run_dir).start_reviewers()
+        self.assertEqual(self.herdr.calls_named("tab_create")[0][4]["OPENCODE_CONFIG"], "/home/me/opencode-review.json")
+
+    def test_an_opencode_fixer_reads_the_runs_session_config(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",), fixer="mimo")
+        self.runner(run_dir).start_fixer()
+        env = self.herdr.calls_named("tab_create")[-1][4]
+        self.assertEqual((env["OPENCODE_CONFIG"], env["HERDR_REVIEW_AGENT"]), (str(run_dir / "opencode.json"), "hrtest-fixer"))
+        self.assertEqual(self.herdr.calls_named("agent_start")[-1][2], "opencode")
 
 
 class PromptFailFixerTest(RunnerBase):
