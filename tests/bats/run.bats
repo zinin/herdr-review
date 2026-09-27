@@ -255,7 +255,7 @@ EOF
   [ "$status" -eq 0 ]
   RUN="$(run_dir_of)"; export HERDR_REVIEW_RUN="$RUN"
   [ -f "$RUN/opencode.json" ]
-  json_has "$(cat "$RUN/opencode.json")" "d['permission']=={'external_directory': {'$RUN/*': 'allow'}, 'question': 'deny'}"
+  json_has "$(cat "$RUN/opencode.json")" "d['permission']=={'external_directory': {'$RUN/*': 'allow'}, 'read': {'*.env': 'deny', '*.env.*': 'deny', '*.env.example': 'allow'}, 'question': 'deny'}"
   [ "$(grep -c 'label rv-.*: orch .*OPENCODE_CONFIG' "$FAKE_HERDR_LOG")" -eq 0 ]   # a claude orchestrator gets nothing of OpenCode's
 
   run "$HR" run start-reviewers

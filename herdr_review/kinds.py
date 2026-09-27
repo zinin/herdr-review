@@ -48,12 +48,15 @@ def startup_env(kind: str, run_dir: Path | str) -> dict[str, str]:
 def opencode_config(run_dir: Path | str) -> dict:
     """The session config of a run's opencode agents. Every agent reads and writes its run directory, which lies
     outside the repository, where OpenCode asks first; the rule allows that directory alone, not the other runs
-    beside it: OpenCode checks `<directory>/*`, and its `*` crosses `/`. The question tool's form would block an
-    agent nobody sits at; denied, the tool answers the model with `Permission denied` instead."""
+    beside it: OpenCode checks `<directory>/*`, and its `*` crosses `/`. OpenCode also asks before it reads a
+    `.env` file, and an opencode orchestrator has nobody to answer: such reads are denied instead, the examples
+    still allowed, which OpenCode's last matching rule decides. The question tool's form would block an agent
+    nobody sits at. A denied tool answers the model with `Permission denied`."""
     return {
         "$schema": "https://opencode.ai/config.json",
         "permission": {
             "external_directory": {f"{run_dir}/*": "allow"},
+            "read": {"*.env": "deny", "*.env.*": "deny", "*.env.example": "allow"},
             "question": "deny",
         },
     }

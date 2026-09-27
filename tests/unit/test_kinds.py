@@ -55,15 +55,18 @@ class StartupEnvTest(unittest.TestCase):
 
 
 class OpencodeConfigTest(unittest.TestCase):
-    def test_the_run_directory_is_allowed_and_the_question_tool_denied(self):
+    def test_the_run_directory_is_allowed_and_the_question_tool_and_env_files_denied(self):
         cfg = opencode_config(Path("/home/u/.local/state/herdr-review/runs/app-0a1b2c/20260927-120000-r1"))
         self.assertEqual(cfg, {
             "$schema": "https://opencode.ai/config.json",
             "permission": {
                 "external_directory": {"/home/u/.local/state/herdr-review/runs/app-0a1b2c/20260927-120000-r1/*": "allow"},
+                "read": {"*.env": "deny", "*.env.*": "deny", "*.env.example": "allow"},
                 "question": "deny",
             },
         })
+        # OpenCode takes the last rule that matches: the examples' allow must come after the denials
+        self.assertEqual(list(cfg["permission"]["read"]), ["*.env", "*.env.*", "*.env.example"])
         self.assertEqual(json.loads(json.dumps(cfg)), cfg)
 
 
