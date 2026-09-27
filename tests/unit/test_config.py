@@ -1,3 +1,4 @@
+import json
 import os
 import stat
 import tempfile
@@ -143,6 +144,13 @@ class ParseConfigTest(unittest.TestCase):
         errs = errors_of({"profiles": {"claude-x": {"kind": "claude", "env": {"OPENCODE_CONFIG_CONTENT": "nope"}}}})
         self.assertEqual(len(errs), 1, errs)
         self.assertTrue(errs[0].startswith("profiles.claude-x.env.OPENCODE_CONFIG_CONTENT: not a JSON object ("), errs)
+
+    def test_the_example_config_is_valid(self):
+        example = Path(__file__).resolve().parents[2] / "config.example.yaml"
+        cfg = load_config(example, environ={"HOME": "/home/u"})
+        self.assertEqual(cfg.profiles["mimo"].kind, "opencode")
+        self.assertEqual(json.loads(cfg.profiles["mimo"].env["OPENCODE_CONFIG_CONTENT"]), {"model": "xiaomi-token-plan-sgp/mimo-v2.6-pro"})
+        self.assertNotIn("mimo", cfg.presets["default"].reviewers)
 
 
 class IsSecretishTest(unittest.TestCase):

@@ -9,6 +9,7 @@ The plugin is two [Agent Skills](https://agentskills.io) — `review` launches a
 - herdr ≥ 0.9.0 with a running server; the launching session must be a herdr-managed pane (`HERDR_ENV=1`).
 - Python ≥ 3.11 with PyYAML; git.
 - The agent CLIs you want to use in PATH (`claude`, `codex`, `gemini`, `grok`, `opencode`, …). `herdr agent start --help` lists every kind herdr can start.
+- For kind `opencode`: OpenCode 2.x, and herdr's opencode integration (`herdr integration install opencode`); without it herdr reads an opencode agent's state from its screen, less exactly.
 
 ## Install
 
@@ -72,6 +73,11 @@ profiles:                        # a profile = herdr agent kind + CLI args + env
     kind: grok
     args: [-m, grok-4.6, --permission-mode, auto]
     # args: [-m, grok-4.6, --always-approve]
+  mimo:                          # OpenCode 2: its TUI has no --model, so the model goes into its config
+    kind: opencode
+    env:
+      OPENCODE_CONFIG_CONTENT: '{"model": "xiaomi-token-plan-sgp/mimo-v2.6-pro"}'
+    # args: [--auto]             # yolo
   glm:                           # an alt-provider model: the claude kind plus env
     kind: claude
     args: [--model, glm-5, --dangerously-skip-permissions]   # the classifier is a model call too: auto mode untested here
@@ -102,16 +108,17 @@ Each profile's `args` is one of two lines, the other commented out. **Auto mode*
 | `codex` | `--approve-for-me --add-dir <runs_dir>` | `--dangerously-bypass-approvals-and-sandbox` |
 | `grok` | `--permission-mode auto` | `--always-approve` |
 | `gemini` | none: `--approval-mode auto_edit` still asks about every shell command | `--yolo` |
+| `opencode` | no flag: its own rules allow every command and edit and ask about paths outside the repository; herdr-review allows the run directory | `--auto` |
 
-`<runs_dir>` is `settings.runs_dir`, where the agents write outside the repository; both CLIs expand the `~`. The codex sandbox refuses that write without `--add-dir`; claude only consults its classifier more often. The auto mode flags need Claude Code ≥ 2.1.111 (auto mode is also gated by the subscription plan) and Codex ≥ 0.147.0; an older CLI rejects the flag, and that agent leaves the run as ` ✗` with the reason in `herdr-review status`. Checked with Claude Code 2.1.267, Codex 0.153.4 and Grok 1.0.25: reviewers, orchestrator and fixer all in auto mode finished a run with no dialog left for a human.
+`<runs_dir>` is `settings.runs_dir`, where the agents write outside the repository; both CLIs expand the `~`. The codex sandbox refuses that write without `--add-dir`; claude only consults its classifier more often. OpenCode needs no such flag: herdr-review allows the run directory in the config it gives every opencode agent (OpenCode below). The auto mode flags need Claude Code ≥ 2.1.111 (auto mode is also gated by the subscription plan) and Codex ≥ 0.147.0; an older CLI rejects the flag, and that agent leaves the run as ` ✗` with the reason in `herdr-review status`. Checked with Claude Code 2.1.267, Codex 0.153.4 and Grok 1.0.25: reviewers, orchestrator and fixer all in auto mode finished a run with no dialog left for a human.
 
 Rules the validator enforces and facts worth knowing:
 
 | What | Rule |
 |---|---|
 | `kind` | A herdr agent kind, which is also the executable name; `herdr agent start --help` lists them. |
-| `args` | Passed verbatim, with one addition: a profile of kind `claude` without a `--settings` of its own starts with `--settings '{"enableAllProjectMcpServers": true, "attribution": {"commit": ""}}'` (see MCP servers below). The permission flags go here (the mode table above). Copied as they are into `run.json` and `runner.log`: never a secret. |
-| `env` | For tokens and base URLs. Masked in `runner.log`; still visible in `/proc/<pid>/cmdline` while herdr creates the tab and possibly in the herdr server's own log. |
+| `args` | Passed verbatim, with two additions: a profile of kind `claude` without a `--settings` of its own starts with `--settings '{"enableAllProjectMcpServers": true, "attribution": {"commit": ""}}'` (see MCP servers below), and a profile of kind `opencode` without `--standalone` or `--server` starts with `--standalone` (see OpenCode below). The permission flags go here (the mode table above). Copied as they are into `run.json` and `runner.log`: never a secret. |
+| `env` | For tokens and base URLs. A profile of kind `opencode` names its model here (see OpenCode below). Masked in `runner.log`; still visible in `/proc/<pid>/cmdline` while herdr creates the tab and possibly in the herdr server's own log. |
 | Profile names | `^[a-z][a-z0-9_-]{0,24}$`; `orch` and `fixer` are reserved. |
 | Presets | Every name must be a profile; `default` is used when nothing else is named. Each reviewer is a full review of the diff, so a preset's size is its cost. |
 | The file | 600 permissions (the plugin warns otherwise). The plugin never edits it: validation prints the problems and stops. |
@@ -119,6 +126,8 @@ Rules the validator enforces and facts worth knowing:
 Check the result: `herdr-review profiles`.
 
 **MCP servers.** Claude Code asks at startup to approve the servers of a project's `.mcp.json` that you have not decided on, and saves every answer — Esc included — into the repository's `.claude/settings.local.json`. So that no run stops at that dialog or changes your MCP settings, every profile of kind `claude` starts with `--settings '{"enableAllProjectMcpServers": true, "attribution": {"commit": ""}}'`: the agents of a run get the project's servers, your user servers and the claude.ai connectors, a server you disabled explicitly stays disabled, and the settings live on the command line only; `attribution.commit` set to an empty string keeps Claude Code's commit trailer out of the fixer's commits. Two consequences: an MCP server that the branch under review adds to `.mcp.json` starts in every claude agent of the run without approval; and a profile that passes its own `--settings` gets nothing added — put `"enableAllProjectMcpServers": true` into that settings file, or its agents stop at the dialog and leave the run with that reason, and `"attribution": {"commit": ""}` if its fix commits are to carry no trailer. Codex and Grok load a project's servers without asking; the runner answers their trust dialogs, as it answers Claude Code's. The trust answers the runner gives are saved by each CLI, so after one run the repository stays trusted in Claude Code, Codex and Grok. For a branch you do not fully trust, put `--strict-mcp-config` into the claude profile's `args`: its agents then load no MCP servers at all, project or user.
+
+**OpenCode.** The OpenCode 2 TUI has no `--model`: a profile of kind `opencode` names its model in `env`, as `OPENCODE_CONFIG_CONTENT: '{"model": "<provider>/<model>"}'` (`opencode models` lists the ids), and the validator checks that the value is a JSON object. OpenCode reads its config in its server, once, at start, so every opencode agent starts with `--standalone`: a private server that inherits the agent's environment and exits with it. Without it the agent would talk to your shared OpenCode server, which ignores the profile's config, or start that server with the agent's environment for your own sessions afterwards. A profile that passes `--standalone` or `--server` gets nothing added, and with `--server` neither its `env` nor the run's config reaches that server. OpenCode asks before it reads or writes outside the repository, and every agent of a run works in the run directory, so herdr-review writes `<run_dir>/opencode.json`, which allows `<runs_dir>/*` and denies the question tool, whose form would block an agent nobody sits at, and hands it to every opencode agent as `OPENCODE_CONFIG`. A profile that sets `OPENCODE_CONFIG` itself replaces that file; its own file must then allow the run directory, or its agents ask. The orchestrator answers OpenCode's permission dialog with `Allow once` or `esc`, never with `Always allow`, which OpenCode keeps for the project in every later session. OpenCode's shell tool stops a call after 2 minutes unless the call sets a longer timeout; the prompts tell the agents to set one for a build and for `run wait`. OpenCode 1.x is not supported.
 
 ## Usage
 
@@ -201,6 +210,9 @@ herdr-review exclusive -- ./gradlew build   # your own heavy command, in turn wi
 - A reviewer shows ` ✗` — `herdr-review status` gives the reason and `status.json` the last screen.
 - A reviewer or the fixer shows ` ✗` with "Claude Code asks to approve this project's MCP servers" — its profile passes its own `--settings`; add `"enableAllProjectMcpServers": true` to that file (see MCP servers in Configure). Do not answer the dialog left in its tab: any answer, Esc included, is saved; `herdr-review close` closes the tab once the run has finished.
 - A reviewer or the fixer shows ` ❓` — a dialog is waiting in its tab; in auto mode that is the CLI asking about an action. `run wait` reports it to the orchestrator within seconds, and the orchestrator answers it or fails the agent when it does not understand the dialog. `herdr agent read <name> --source visible` shows what is asked.
+- An opencode agent shows ` ✗` and its last screen says `Unrecognized flag: --model` — the OpenCode 2 TUI takes no `--model`: move the model into `OPENCODE_CONFIG_CONTENT` (OpenCode in Configure).
+- An opencode agent's prompt stalls and its tab shows `Model unavailable` — OpenCode does not know the model id in `OPENCODE_CONFIG_CONTENT`: check it with `opencode models`.
+- An opencode agent shows ` ❓` over a red `Error: …` line — its provider refused the request (authentication or quota); the orchestrator takes it off the run.
 - A reviewer stays ` ⏳` a long time and its tab shows `herdr-review exclusive: waiting` — another heavy command holds the build queue; `herdr-review status` names it and says how long it has run. A command stops by itself after 30 minutes unless its caller asked for more with `--timeout`.
 - `herdr-review exclusive` exits 75 with a `herdr-review exclusive: busy` line — its turn did not come within `--wait`, and the command did not run; run it again later. Exit 124 with a `herdr-review exclusive: timed out` line — the command ran past `--timeout` and was stopped. Without such a line the code is the command's own: a command may exit 75 or 124 itself, and GNU `timeout` exits 124.
 - The orchestrator's tab shows ` ❓` — it is waiting for your answer in that tab.

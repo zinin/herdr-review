@@ -21,6 +21,14 @@
 # be saved into the repository's .claude/settings.local.json; the second, attribution.commit set to
 # "", keeps Claude Code's trailer out of the fix commits. A profile that passes its own --settings
 # gets nothing added and must carry those keys in its settings file itself.
+#
+# Every profile of kind opencode (OpenCode 2) starts with --standalone, a private OpenCode server
+# that gets the agent's environment, and with OPENCODE_CONFIG naming the run's session config,
+# which allows settings.runs_dir and denies the question tool. OpenCode's own rules allow every
+# command and edit and ask only about paths outside the repository, so an opencode profile needs
+# no auto mode flag and no --add-dir; --auto is its yolo. Its TUI has no --model: the model goes
+# into OPENCODE_CONFIG_CONTENT in env, a JSON object (`opencode models` lists the ids). A profile
+# that sets its own OPENCODE_CONFIG replaces the run's, and its file must allow settings.runs_dir.
 
 profiles:                        # one mechanism for every engine: herdr kind + CLI args + env
   claude-opus:
@@ -42,6 +50,11 @@ profiles:                        # one mechanism for every engine: herdr kind + 
     kind: grok
     args: [-m, grok-4.6, --permission-mode, auto]
     # args: [-m, grok-4.6, --always-approve]
+  mimo:                          # OpenCode 2; see the note on opencode above
+    kind: opencode
+    env:
+      OPENCODE_CONFIG_CONTENT: '{"model": "xiaomi-token-plan-sgp/mimo-v2.6-pro"}'
+    # args: [--auto]
   # glm:                         # an alt-provider model is the same claude kind plus env
   #   kind: claude
   #   env:                       # secrets go here, never in args: args are copied verbatim into
