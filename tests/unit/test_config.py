@@ -140,6 +140,16 @@ class ParseConfigTest(unittest.TestCase):
         unset = {"profiles": {"mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG_CONTENT": '{"n": ${OC_N}}'}}}}
         self.assertEqual(errors_of(unset), ["profiles.mimo.env.OPENCODE_CONFIG_CONTENT: environment variable ${OC_N} is not set"])
 
+    def test_an_opencode_config_that_expands_to_nothing_is_reported_as_empty(self):
+        raw = {"profiles": {"mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG_CONTENT": "${OC}"}}}}
+        self.assertEqual(errors_of(raw, {"OC": ""}), ["profiles.mimo.env.OPENCODE_CONFIG_CONTENT: empty, not a JSON object"])
+
+    def test_the_opencode_config_rejects_nan_and_infinity(self):
+        for value, constant in (('{"model": "a/b", "temperature": NaN}', "NaN"), ('{"model": "a/b", "temperature": Infinity}', "Infinity")):
+            with self.subTest(value=value):
+                errs = errors_of({"profiles": {"mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG_CONTENT": value}}}})
+                self.assertEqual(errs, [f"profiles.mimo.env.OPENCODE_CONFIG_CONTENT: not a JSON object ({constant} is not JSON)"])
+
     def test_the_opencode_config_is_checked_for_any_kind(self):
         errs = errors_of({"profiles": {"claude-x": {"kind": "claude", "env": {"OPENCODE_CONFIG_CONTENT": "nope"}}}})
         self.assertEqual(len(errs), 1, errs)

@@ -237,6 +237,8 @@ class PromptTemplatesTest(unittest.TestCase):
             "quota or API error (OpenCode's: a red `Error: …` line under its reply)",
             "| Selecting `Always allow` in OpenCode's permission dialog | `enter` on `Allow once`, or `esc` to refuse. |",
             "The call can take all of those 300 s: when your shell tool stops a command after a timeout of its own, give this call a longer one.",
+            "(an OpenCode agent: two such calls, one right after the other — its first `esc` only arms the interrupt)",
+            "stuck → `esc` (OpenCode: twice, as in Phase 2) and",
         ):
             self.assertIn(phrase, text)
 

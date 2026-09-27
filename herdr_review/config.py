@@ -7,7 +7,7 @@ import re
 import stat
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, NoReturn
 
 import yaml
 
@@ -120,6 +120,12 @@ def _refs_in(env: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(refs)
 
 
+def _reject_constant(name: str) -> NoReturn:
+    """json.loads takes NaN, Infinity and -Infinity, while OpenCode's parser rejects such a document and silently drops
+    it: the agent would run on its default model."""
+    raise ValueError(f"{name} is not JSON")
+
+
 def _check_opencode_config(env: dict[str, str], errors: list[str], where: str) -> None:
     """OPENCODE_CONFIG_CONTENT must be a JSON object: OpenCode's config loader dies on one it cannot parse, and the
     agent would fail in its tab, far from the cause. The message never holds the value, which may carry a key. A
@@ -127,10 +133,16 @@ def _check_opencode_config(env: dict[str, str], errors: list[str], where: str) -
     key = OPENCODE_CONFIG_CONTENT
     if key not in env or any(e.startswith(f"{where}.env.{key}:") for e in errors):
         return
+    if not env[key].strip():
+        errors.append(f"{where}.env.{key}: empty, not a JSON object")
+        return
     try:
-        data = json.loads(env[key])
+        data = json.loads(env[key], parse_constant=_reject_constant)
     except json.JSONDecodeError as e:
         errors.append(f"{where}.env.{key}: not a JSON object ({e.msg}, line {e.lineno}, column {e.colno})")
+        return
+    except ValueError as e:
+        errors.append(f"{where}.env.{key}: not a JSON object ({e})")
         return
     if not isinstance(data, dict):
         errors.append(f"{where}.env.{key}: not a JSON object (it is {JSON_TYPE_NAMES[type(data)]})")
