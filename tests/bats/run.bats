@@ -239,3 +239,28 @@ teardown() { teardown_env; }
   [[ "$output" == *"уже закрыты: w1:t2, w1:t4"* ]]
   [ "$(grep 'уже закрыты' <<< "$output" | grep -c 'w1:t3')" -eq 0 ]
 }
+
+@test "run: an opencode reviewer starts with its own server and the run's session config" {
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/opencode"; chmod +x "$TMP/bin/opencode"
+  cat > "$XDG_CONFIG_HOME/herdr-review/config.yaml" <<EOF
+profiles:
+  claude-opus: {kind: claude, args: [--model, opus]}
+  mimo: {kind: opencode, env: {OPENCODE_CONFIG_CONTENT: '{"model": "xiaomi-token-plan-sgp/mimo-v2.6-pro"}'}}
+presets:
+  default: {reviewers: [mimo], orchestrator: claude-opus, fixer: claude-opus}
+settings: {runs_dir: $TMP/runs, checkin_sec: 1}
+EOF
+  chmod 600 "$XDG_CONFIG_HOME/herdr-review/config.yaml"
+  run "$HR" launch --json
+  [ "$status" -eq 0 ]
+  RUN="$(run_dir_of)"; export HERDR_REVIEW_RUN="$RUN"
+  RUNS="$(cd "$TMP/runs" && pwd -P)"
+  [ -f "$RUN/opencode.json" ]
+  json_has "$(cat "$RUN/opencode.json")" "d['permission']=={'external_directory': {'$RUNS/*': 'allow'}, 'question': 'deny'}"
+  [ "$(grep -c 'label rv-.*: orch .*OPENCODE_CONFIG' "$FAKE_HERDR_LOG")" -eq 0 ]   # a claude orchestrator gets nothing of OpenCode's
+
+  run "$HR" run start-reviewers
+  [ "$status" -eq 0 ]
+  grep -q "tab create --workspace w1 --cwd $REPO --label rv-.*: mimo --env HERDR_REVIEW_RUN=$RUN --env GIT_OPTIONAL_LOCKS=0 --env OPENCODE_CONFIG=$RUN/opencode.json --env OPENCODE_CONFIG_CONTENT=.* --env HERDR_REVIEW_AGENT=hr.*-mimo --no-focus" "$FAKE_HERDR_LOG"
+  grep -q 'agent start hr.*-mimo --kind opencode --pane w1:p3 --timeout 300000 -- --standalone$' "$FAKE_HERDR_LOG"
+}
