@@ -2,7 +2,7 @@
 
 All notable changes to herdr-review will be documented here.
 
-## [Unreleased]
+## [0.4.0] - 2026-09-28
 
 ### Added
 - Agents of kind `opencode` (OpenCode 2). herdr-review starts each with `--standalone`, a private OpenCode server
@@ -10,15 +10,22 @@ All notable changes to herdr-review will be documented here.
   that allows the run directory and denies the question tool and reading `.env` files other than `.env.example`,
   and with `OPENCODE_DISABLE_PROJECT_CONFIG=1`, so the repository's own OpenCode config, which could override those
   rules, and its root `AGENTS.md` stay out; a profile may set it to `0`. The profile names its model in
-  `OPENCODE_CONFIG_CONTENT`, which the validator requires to be a JSON object.
+  `OPENCODE_CONFIG_CONTENT`. The validator requires that value, in a profile of any kind, to be a strict JSON
+  object: comments, trailing commas, `NaN`, `Infinity` and an empty value are refused.
 
 ### Changed
 - A `--plan` file outside the repository is copied into `<run_dir>/plan/`, and the prompts name the copy: every
   agent may read it there, while elsewhere an agent may have to ask and an opencode orchestrator has nobody to answer.
 - The orchestrator answers OpenCode's permission dialog with `Allow once` or `esc`, never `Always allow`, dismisses
-  its question form before it answers, and takes an agent with a red `Error: …` line off the run.
+  its question form before it answers, interrupts a stuck OpenCode agent with two `esc`, and takes an agent with a
+  red `Error: …` line off the run.
 - The heavy-command rules and `run wait` tell an agent whose shell tool stops a call after a timeout of its own to
   give the call a longer one.
+
+### Fixed
+- A profile's `${VAR}` expands to its launch value for the reviewers and the fixer of every kind, even when the
+  orchestrator's tab sets that variable to a value of its own: its profile's `env`, or an opencode orchestrator's
+  `OPENCODE_CONFIG`.
 
 ## [0.3.0] - 2026-09-26
 
