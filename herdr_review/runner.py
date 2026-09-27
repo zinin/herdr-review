@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from . import PROMPTS_DIR, exclusive, gitutil
-from .config import ConfigError, is_secretish, load_config
+from .config import ConfigError, is_secretish, launch_environ, load_config
 from .dialogs import MCP_UNCHECKED, SCREEN_LINES, mcp_check, resolve_startup_dialog
 from .herdr import Herdr, HerdrResult
 from .kinds import startup_env
@@ -184,7 +184,7 @@ class Runner:
     def _load_config(self):
         if self._config is None and self._config_error is None:
             try:
-                self._config = load_config()
+                self._config = load_config(environ=launch_environ(os.environ))
             except ConfigError as e:
                 self._config_error = str(e)
                 self.log(f"config unavailable, profile env not applied: {e}")

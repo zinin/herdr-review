@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 from . import PROMPTS_DIR, __version__, exclusive, gitutil
-from .config import Config, is_secretish
+from .config import LAUNCH_ENV_PREFIX, Config, is_secretish
 from .dialogs import MCP_UNCHECKED, mcp_check, resolve_startup_dialog
 from .kinds import OPENCODE_CONFIG_NAME, opencode_config, startup_args, startup_env
 from .herdr import Herdr, HerdrResult
@@ -298,11 +298,17 @@ def launch(
         if key in environ:
             env_all[key] = environ[key]
     selected = [*usable, orch_profile, fixer_profile]
-    for name in dict.fromkeys(ref for prof in selected for ref in cfg.profiles[prof].env_refs):
+    refs = list(dict.fromkeys(ref for prof in selected for ref in cfg.profiles[prof].env_refs))
+    for name in refs:
         if name in environ:
             env_all[name] = environ[name]
     env_all.update(startup_env(orch["kind"], run_dir))
     env_all.update(cfg.profiles[orch_profile].env)
+    # The runner expands the profiles' ${VAR} again, in this tab (config.launch_environ): a variable that this tab
+    # sets to a value of its own keeps its launch value under LAUNCH_ENV_PREFIX.
+    for name in refs:
+        if name in environ and env_all[name] != environ[name]:
+            env_all[LAUNCH_ENV_PREFIX + name] = environ[name]
     env_all[exclusive.AGENT_ENV] = orch["name"]
     try:
         r = herdr.tab_create(workspace_id, str(repo), f"rv-{run_id}: orch", env_all, focus=False)

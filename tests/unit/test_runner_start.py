@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -347,6 +348,18 @@ class StartReviewersTest(RunnerBase):
         run_dir = make_run(self.root, self.repo, reviewers=("mimo",))
         self.runner(run_dir).start_reviewers()
         self.assertEqual(self.herdr.calls_named("tab_create")[0][4]["OPENCODE_CONFIG"], "/home/me/opencode-review.json")
+
+    def test_a_reviewer_expands_a_variable_to_its_launch_value_not_the_orchestrators(self):
+        raw = {**RAW, "profiles": {**RAW["profiles"], "mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG": "${OPENCODE_CONFIG}"}}}}
+        run_dir = make_run(self.root, self.repo, reviewers=("mimo",))
+        tab_env = {"OPENCODE_CONFIG": str(run_dir / "opencode.json"), "HERDR_REVIEW_LAUNCH_ENV_OPENCODE_CONFIG": "/home/me/reviewer.json"}
+
+        def load_config(path=None, environ=os.environ):
+            return parse_config(raw, environ)
+
+        with mock.patch.dict(os.environ, tab_env), mock.patch("herdr_review.runner.load_config", side_effect=load_config):
+            self.runner(run_dir).start_reviewers()
+        self.assertEqual(self.herdr.calls_named("tab_create")[0][4]["OPENCODE_CONFIG"], "/home/me/reviewer.json")
 
     def test_an_opencode_fixer_reads_the_runs_session_config(self):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",), fixer="mimo")

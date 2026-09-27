@@ -17,6 +17,7 @@ LAYOUTS = ("tabs", "grid")
 SCOPES = ("auto", "commits", "worktree")
 DEFAULT_RUNS_DIR = "~/.local/state/herdr-review/runs"
 ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+LAUNCH_ENV_PREFIX = "HERDR_REVIEW_LAUNCH_ENV_"
 SETTINGS_KEYS = ("layout", "autodecide", "close_agents_on_finish", "checkin_sec", "runs_dir", "scope")
 SECRETISH_KEY_RE = re.compile(r"(TOKEN|KEY|SECRET|PASSWORD|PASSWD|AUTH|CREDENTIAL)", re.IGNORECASE)
 MIN_MASKED_VALUE_LEN = 16
@@ -118,6 +119,17 @@ def _refs_in(env: Mapping[str, object]) -> tuple[str, ...]:
             if name not in refs:
                 refs.append(name)
     return tuple(refs)
+
+
+def launch_environ(environ: Mapping[str, str]) -> dict[str, str]:
+    """The environment the runner expands the profiles' ${VAR} in: <environ>, with every variable that the
+    orchestrator's tab sets to a value of its own back at its launch value, which launch keeps under
+    LAUNCH_ENV_PREFIX."""
+    view = dict(environ)
+    for key, value in environ.items():
+        if key.startswith(LAUNCH_ENV_PREFIX) and len(key) > len(LAUNCH_ENV_PREFIX):
+            view[key[len(LAUNCH_ENV_PREFIX):]] = value
+    return view
 
 
 def _reject_constant(name: str) -> NoReturn:

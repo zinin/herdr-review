@@ -71,15 +71,15 @@ class LaunchTest(unittest.TestCase):
         opts = LaunchOptions(**kw)
         return launch(opts, self.cfg, self.herdr, ENV, self.repo, self.runner, which=which_ok, run_id="hrtest")
 
-    def use_opencode(self, reviewers=("mimo", "codex"), orchestrator="claude-opus", fixer="claude-opus", args=(), env=None):
-        """self.cfg with an opencode profile `mimo` next to the usual ones."""
+    def use_opencode(self, reviewers=("mimo", "codex"), orchestrator="claude-opus", fixer="claude-opus", args=(), env=None, profiles=None, environ=None):
+        """self.cfg with an opencode profile `mimo` next to the usual ones and <profiles>, parsed in <environ>."""
         mimo = {"kind": "opencode", "args": list(args), "env": {"OPENCODE_CONFIG_CONTENT": MIMO_CONFIG, **(env or {})}}
         raw = {
-            "profiles": {**RAW["profiles"], "mimo": mimo},
+            "profiles": {**RAW["profiles"], "mimo": mimo, **(profiles or {})},
             "presets": {"default": {"reviewers": list(reviewers), "orchestrator": orchestrator, "fixer": fixer}},
             "settings": {"checkin_sec": 7},
         }
-        self.cfg = parse_config(raw, {})
+        self.cfg = parse_config(raw, environ or {})
         self.cfg.settings.runs_dir = self.root / "runs"
 
     def test_happy_path_creates_run_and_starts_orchestrator(self):
@@ -595,7 +595,18 @@ class LaunchTest(unittest.TestCase):
         keys = list(env)
         self.assertLess(keys.index("OPENCODE_CONFIG"), keys.index("OPENCODE_CONFIG_CONTENT"))
         self.assertEqual(keys[-1], "HERDR_REVIEW_AGENT")
+        self.assertEqual([k for k in keys if k.startswith("HERDR_REVIEW_LAUNCH_ENV_")], [])
         self.assertEqual(self.herdr.calls_named("agent_start")[0], ("agent_start", "hrtest-orch", "opencode", "w1:p2", ["--standalone"]))
+
+    def test_a_variable_the_orchestrators_tab_overrides_keeps_its_launch_value(self):
+        environ = {**ENV, "OPENCODE_CONFIG": "/home/me/reviewer.json"}
+        own = {"kind": "opencode", "env": {"OPENCODE_CONFIG": "${OPENCODE_CONFIG}"}}
+        self.use_opencode(reviewers=("mimo-own", "codex"), orchestrator="mimo", profiles={"mimo-own": own}, environ=environ)
+        res = launch(LaunchOptions(), self.cfg, self.herdr, environ, self.repo, self.runner, which=which_ok, run_id="hrtest")
+        env = self.herdr.calls_named("tab_create")[0][4]
+        self.assertEqual(env["OPENCODE_CONFIG"], str(Path(res["run_dir"]) / "opencode.json"))
+        self.assertEqual(env["HERDR_REVIEW_LAUNCH_ENV_OPENCODE_CONFIG"], "/home/me/reviewer.json")
+        self.assertEqual(list(env)[-1], "HERDR_REVIEW_AGENT")
 
     def test_a_profiles_own_opencode_config_replaces_the_runs(self):
         self.use_opencode(orchestrator="mimo", env={"OPENCODE_CONFIG": "/home/me/opencode-review.json"})

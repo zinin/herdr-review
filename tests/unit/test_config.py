@@ -12,6 +12,7 @@ from herdr_review.config import (
     ConfigNotFound,
     config_path,
     is_secretish,
+    launch_environ,
     load_config,
     parse_config,
     public_json,
@@ -177,6 +178,16 @@ class IsSecretishTest(unittest.TestCase):
     def test_an_empty_value_is_never_masked(self):
         self.assertFalse(is_secretish("ANTHROPIC_AUTH_TOKEN", ""))
         self.assertFalse(is_secretish("ANTHROPIC_MODEL", ""))
+
+
+class LaunchEnvironTest(unittest.TestCase):
+    def test_a_prefixed_variable_brings_back_its_launch_value(self):
+        env = launch_environ({"A": "tab", "HERDR_REVIEW_LAUNCH_ENV_A": "launch", "B": "b"})
+        self.assertEqual((env["A"], env["B"]), ("launch", "b"))
+
+    def test_an_environ_without_prefixed_keys_comes_back_as_it_is(self):
+        environ = {"A": "tab", "B": "b"}
+        self.assertEqual(launch_environ(environ), environ)
 
 
 class LoadConfigTest(unittest.TestCase):
