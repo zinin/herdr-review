@@ -139,9 +139,11 @@ def _reject_constant(name: str) -> NoReturn:
 
 
 def _check_opencode_config(env: dict[str, str], errors: list[str], where: str) -> None:
-    """OPENCODE_CONFIG_CONTENT must be a JSON object: OpenCode's config loader dies on one it cannot parse, and the
-    agent would fail in its tab, far from the cause. The message never holds the value, which may carry a key. A
-    value whose ${VAR} is not set already has its error."""
+    """OPENCODE_CONFIG_CONTENT must be a JSON object. OpenCode 2 reads it as JSONC and drops a document it cannot
+    parse with only a line in its log: the agent then runs on its default model, and nothing points at the cause.
+    The check is strict JSON, stricter than OpenCode: a comment or a trailing comma is refused, and the message
+    says so. The message never holds the value, which may carry a key. A value whose ${VAR} is not set already has
+    its error."""
     key = OPENCODE_CONFIG_CONTENT
     if key not in env or any(e.startswith(f"{where}.env.{key}:") for e in errors):
         return
@@ -151,7 +153,7 @@ def _check_opencode_config(env: dict[str, str], errors: list[str], where: str) -
     try:
         data = json.loads(env[key], parse_constant=_reject_constant)
     except json.JSONDecodeError as e:
-        errors.append(f"{where}.env.{key}: not a JSON object ({e.msg}, line {e.lineno}, column {e.colno})")
+        errors.append(f"{where}.env.{key}: not a JSON object ({e.msg}, line {e.lineno}, column {e.colno}; strict JSON: no comments or trailing commas)")
         return
     except ValueError as e:
         errors.append(f"{where}.env.{key}: not a JSON object ({e})")

@@ -123,7 +123,7 @@ class ParseConfigTest(unittest.TestCase):
         self.assertEqual(errors_of(mimo('{"model": "xiaomi-token-plan-sgp/mimo-v2.6-pro"}')), [])
         errs = errors_of(mimo('{"model": "x",}'))
         self.assertEqual(len(errs), 1, errs)
-        self.assertRegex(errs[0], r"^profiles\.mimo\.env\.OPENCODE_CONFIG_CONTENT: not a JSON object \(.+, line 1, column \d+\)$")
+        self.assertRegex(errs[0], r"^profiles\.mimo\.env\.OPENCODE_CONFIG_CONTENT: not a JSON object \(.+, line 1, column \d+; strict JSON: no comments or trailing commas\)$")
         for value, what in (('["model"]', "an array"), ('"model"', "a string"), ("42", "a number"), ("null", "null")):
             with self.subTest(value=value):
                 self.assertEqual(errors_of(mimo(value)), [f"profiles.mimo.env.OPENCODE_CONFIG_CONTENT: not a JSON object (it is {what})"])
@@ -134,6 +134,13 @@ class ParseConfigTest(unittest.TestCase):
         self.assertEqual(len(errs), 1, errs)
         self.assertNotIn("sk-live-1234567890", errs[0])
         self.assertNotIn("apiKey", errs[0])
+
+    def test_a_comment_or_a_trailing_comma_is_refused_as_strict_json(self):
+        for value in ('{"model": "a/b",}', '{"model": "a/b"} // m'):
+            with self.subTest(value=value):
+                errs = errors_of({"profiles": {"mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG_CONTENT": value}}}})
+                self.assertEqual(len(errs), 1, errs)
+                self.assertTrue(errs[0].endswith("; strict JSON: no comments or trailing commas)"), errs)
 
     def test_the_opencode_config_is_checked_after_expansion(self):
         ok = {"profiles": {"mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG_CONTENT": '{"model": "${OC_MODEL}"}'}}}}
