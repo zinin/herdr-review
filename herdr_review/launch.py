@@ -15,7 +15,7 @@ from typing import Callable, Mapping
 from . import PROMPTS_DIR, __version__, exclusive, gitutil
 from .config import Config, is_secretish
 from .dialogs import MCP_UNCHECKED, mcp_check, resolve_startup_dialog
-from .kinds import startup_args
+from .kinds import OPENCODE_CONFIG_NAME, opencode_config, startup_args, startup_env
 from .herdr import Herdr, HerdrResult
 from .render import render_file
 from .scope import ScopeError, exclusive_rules, fixer_skeleton, orchestrator_scope, resolve_scope, reviewer_steps, untracked_line
@@ -228,6 +228,10 @@ def launch(
             "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(now())),
         }
         (run_dir / "run.json").write_text(json.dumps(run_json, indent=2, ensure_ascii=False), encoding="utf-8")
+        if any(spec["kind"] == "opencode" for spec in (*reviewers_spec, orch, fixer)):
+            # Every opencode agent of the run reads it through OPENCODE_CONFIG (kinds.startup_env), the fixer too,
+            # which the runner starts later.
+            (run_dir / OPENCODE_CONFIG_NAME).write_text(json.dumps(opencode_config(runs_dir), indent=2) + "\n", encoding="utf-8")
 
         # ----- prompts
         steps = reviewer_steps(scope, mb, uncommitted, untracked, listing, untracked_listing)
@@ -297,6 +301,7 @@ def launch(
     for name in dict.fromkeys(ref for prof in selected for ref in cfg.profiles[prof].env_refs):
         if name in environ:
             env_all[name] = environ[name]
+    env_all.update(startup_env(orch["kind"], run_dir))
     env_all.update(cfg.profiles[orch_profile].env)
     env_all[exclusive.AGENT_ENV] = orch["name"]
     try:
