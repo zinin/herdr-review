@@ -260,6 +260,6 @@ EOF
 
   run "$HR" run start-reviewers
   [ "$status" -eq 0 ]
-  grep -q "tab create --workspace w1 --cwd $REPO --label rv-.*: mimo --env HERDR_REVIEW_RUN=$RUN --env GIT_OPTIONAL_LOCKS=0 --env OPENCODE_CONFIG=$RUN/opencode.json --env OPENCODE_CONFIG_CONTENT=.* --env HERDR_REVIEW_AGENT=hr.*-mimo --no-focus" "$FAKE_HERDR_LOG"
+  grep -q "tab create --workspace w1 --cwd $REPO --label rv-.*: mimo --env HERDR_REVIEW_RUN=$RUN --env GIT_OPTIONAL_LOCKS=0 --env OPENCODE_CONFIG=$RUN/opencode.json --env OPENCODE_DISABLE_PROJECT_CONFIG=1 --env OPENCODE_CONFIG_CONTENT=.* --env HERDR_REVIEW_AGENT=hr.*-mimo --no-focus" "$FAKE_HERDR_LOG"
   grep -q 'agent start hr.*-mimo --kind opencode --pane w1:p3 --timeout 300000 -- --standalone$' "$FAKE_HERDR_LOG"
 }

@@ -15,6 +15,11 @@ CLAUDE_SESSION_SETTINGS = '{"enableAllProjectMcpServers": true, "attribution": {
 # server, which never sees the profile's config, or starts that server with the agent's environment.
 OPENCODE_CONFIG_ENV = "OPENCODE_CONFIG"
 OPENCODE_CONFIG_NAME = "opencode.json"
+# The repository's own OpenCode config is read after OPENCODE_CONFIG: its rules would override the run's, and an
+# opencode orchestrator has nobody to answer the dialog that follows; a branch under review could also start its
+# MCP servers and plugins with the profile's env. The flag also keeps the repository's root AGENTS.md out of the
+# agent's instructions at start.
+OPENCODE_PROJECT_CONFIG_ENV = "OPENCODE_DISABLE_PROJECT_CONFIG"
 
 
 def _has_option(args: list[str], *names: str) -> bool:
@@ -34,9 +39,9 @@ def startup_args(kind: str, args: list[str]) -> list[str]:
 
 def startup_env(kind: str, run_dir: Path | str) -> dict[str, str]:
     """What an agent of <kind> takes into its environment from the run, under its profile's env: an opencode
-    agent's server reads the run's session config from OPENCODE_CONFIG."""
+    agent's server reads the run's session config from OPENCODE_CONFIG, and none of the repository's own."""
     if kind == "opencode":
-        return {OPENCODE_CONFIG_ENV: str(Path(run_dir) / OPENCODE_CONFIG_NAME)}
+        return {OPENCODE_CONFIG_ENV: str(Path(run_dir) / OPENCODE_CONFIG_NAME), OPENCODE_PROJECT_CONFIG_ENV: "1"}
     return {}
 
 

@@ -331,10 +331,19 @@ class StartReviewersTest(RunnerBase):
         tabs = self.herdr.calls_named("tab_create")
         self.assertEqual(tabs[0][4], {"HERDR_REVIEW_RUN": str(run_dir), "GIT_OPTIONAL_LOCKS": "0",
                                       "OPENCODE_CONFIG": str(run_dir / "opencode.json"),
+                                      "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
                                       "OPENCODE_CONFIG_CONTENT": MIMO_CONFIG, "HERDR_REVIEW_AGENT": "hrtest-mimo"})
         self.assertEqual(list(tabs[0][4]), ["HERDR_REVIEW_RUN", "GIT_OPTIONAL_LOCKS", "OPENCODE_CONFIG",
-                                            "OPENCODE_CONFIG_CONTENT", "HERDR_REVIEW_AGENT"])
+                                            "OPENCODE_DISABLE_PROJECT_CONFIG", "OPENCODE_CONFIG_CONTENT",
+                                            "HERDR_REVIEW_AGENT"])
         self.assertNotIn("OPENCODE_CONFIG", tabs[1][4])          # codex gets nothing of OpenCode's
+        self.assertNotIn("OPENCODE_DISABLE_PROJECT_CONFIG", tabs[1][4])
+
+    def test_a_profile_may_let_the_repositorys_opencode_config_apply(self):
+        self.cfg.profiles["mimo"].env = {"OPENCODE_DISABLE_PROJECT_CONFIG": "0"}
+        run_dir = make_run(self.root, self.repo, reviewers=("mimo",))
+        self.runner(run_dir).start_reviewers()
+        self.assertEqual(self.herdr.calls_named("tab_create")[0][4]["OPENCODE_DISABLE_PROJECT_CONFIG"], "0")
 
     def test_an_opencode_reviewer_in_the_grid_reads_it_too(self):
         run_dir = make_run(self.root, self.repo, layout="grid", reviewers=("mimo", "codex"))

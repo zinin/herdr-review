@@ -42,9 +42,10 @@ class StartupArgsTest(unittest.TestCase):
 
 
 class StartupEnvTest(unittest.TestCase):
-    def test_an_opencode_agent_reads_the_runs_session_config(self):
-        self.assertEqual(startup_env("opencode", Path("/runs/p/r1")), {"OPENCODE_CONFIG": "/runs/p/r1/opencode.json"})
-        self.assertEqual(startup_env("opencode", "/runs/p/r1"), {"OPENCODE_CONFIG": "/runs/p/r1/opencode.json"})
+    def test_an_opencode_agent_reads_the_runs_session_config_and_none_of_the_repositorys(self):
+        expected = {"OPENCODE_CONFIG": "/runs/p/r1/opencode.json", "OPENCODE_DISABLE_PROJECT_CONFIG": "1"}
+        self.assertEqual(startup_env("opencode", Path("/runs/p/r1")), expected)
+        self.assertEqual(startup_env("opencode", "/runs/p/r1"), expected)
         self.assertEqual(OPENCODE_CONFIG_NAME, "opencode.json")
 
     def test_other_kinds_get_nothing(self):

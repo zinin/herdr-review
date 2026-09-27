@@ -591,6 +591,7 @@ class LaunchTest(unittest.TestCase):
         run_dir = Path(res["run_dir"])
         env = self.herdr.calls_named("tab_create")[0][4]
         self.assertEqual(env["OPENCODE_CONFIG"], str(run_dir / "opencode.json"))
+        self.assertEqual(env["OPENCODE_DISABLE_PROJECT_CONFIG"], "1")
         self.assertEqual(env["OPENCODE_CONFIG_CONTENT"], MIMO_CONFIG)
         keys = list(env)
         self.assertLess(keys.index("OPENCODE_CONFIG"), keys.index("OPENCODE_CONFIG_CONTENT"))
