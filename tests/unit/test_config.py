@@ -115,6 +115,35 @@ class ParseConfigTest(unittest.TestCase):
         errs = errors_of({"profiles": {"p": {"kind": "x"}}, "settings": {"scope": "everything"}})
         self.assertTrue(any("settings.scope" in e and "auto, commits, worktree" in e for e in errs))
 
+    def test_opencode_config_content_must_be_a_json_object(self):
+        def mimo(value):
+            return {"profiles": {"mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG_CONTENT": value}}}}
+        self.assertEqual(errors_of(mimo('{"model": "xiaomi-token-plan-sgp/mimo-v2.6-pro"}')), [])
+        errs = errors_of(mimo('{"model": "x",}'))
+        self.assertEqual(len(errs), 1, errs)
+        self.assertRegex(errs[0], r"^profiles\.mimo\.env\.OPENCODE_CONFIG_CONTENT: not a JSON object \(.+, line 1, column \d+\)$")
+        for value, what in (('["model"]', "an array"), ('"model"', "a string"), ("42", "a number"), ("null", "null")):
+            with self.subTest(value=value):
+                self.assertEqual(errors_of(mimo(value)), [f"profiles.mimo.env.OPENCODE_CONFIG_CONTENT: not a JSON object (it is {what})"])
+
+    def test_a_broken_opencode_config_is_reported_without_its_value(self):
+        value = '{"provider": {"x": {"options": {"apiKey": "sk-live-1234567890"}}}'      # one closing brace short
+        errs = errors_of({"profiles": {"mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG_CONTENT": value}}}})
+        self.assertEqual(len(errs), 1, errs)
+        self.assertNotIn("sk-live-1234567890", errs[0])
+        self.assertNotIn("apiKey", errs[0])
+
+    def test_the_opencode_config_is_checked_after_expansion(self):
+        ok = {"profiles": {"mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG_CONTENT": '{"model": "${OC_MODEL}"}'}}}}
+        self.assertEqual(errors_of(ok, {"OC_MODEL": "xiaomi-token-plan-sgp/mimo-v2.6-pro"}), [])
+        unset = {"profiles": {"mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG_CONTENT": '{"n": ${OC_N}}'}}}}
+        self.assertEqual(errors_of(unset), ["profiles.mimo.env.OPENCODE_CONFIG_CONTENT: environment variable ${OC_N} is not set"])
+
+    def test_the_opencode_config_is_checked_for_any_kind(self):
+        errs = errors_of({"profiles": {"claude-x": {"kind": "claude", "env": {"OPENCODE_CONFIG_CONTENT": "nope"}}}})
+        self.assertEqual(len(errs), 1, errs)
+        self.assertTrue(errs[0].startswith("profiles.claude-x.env.OPENCODE_CONFIG_CONTENT: not a JSON object ("), errs)
+
 
 class IsSecretishTest(unittest.TestCase):
     def test_masks_a_long_value_or_a_secret_looking_name(self):

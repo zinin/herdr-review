@@ -1,6 +1,7 @@
 """Load and validate ~/.config/herdr-review/config.yaml."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import stat
@@ -19,6 +20,8 @@ ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 SETTINGS_KEYS = ("layout", "autodecide", "close_agents_on_finish", "checkin_sec", "runs_dir", "scope")
 SECRETISH_KEY_RE = re.compile(r"(TOKEN|KEY|SECRET|PASSWORD|PASSWD|AUTH|CREDENTIAL)", re.IGNORECASE)
 MIN_MASKED_VALUE_LEN = 16
+OPENCODE_CONFIG_CONTENT = "OPENCODE_CONFIG_CONTENT"
+JSON_TYPE_NAMES = {list: "an array", str: "a string", bool: "a boolean", int: "a number", float: "a number", type(None): "null"}
 
 
 class ConfigError(Exception):
@@ -117,6 +120,22 @@ def _refs_in(env: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(refs)
 
 
+def _check_opencode_config(env: dict[str, str], errors: list[str], where: str) -> None:
+    """OPENCODE_CONFIG_CONTENT must be a JSON object: OpenCode's config loader dies on one it cannot parse, and the
+    agent would fail in its tab, far from the cause. The message never holds the value, which may carry a key. A
+    value whose ${VAR} is not set already has its error."""
+    key = OPENCODE_CONFIG_CONTENT
+    if key not in env or any(e.startswith(f"{where}.env.{key}:") for e in errors):
+        return
+    try:
+        data = json.loads(env[key])
+    except json.JSONDecodeError as e:
+        errors.append(f"{where}.env.{key}: not a JSON object ({e.msg}, line {e.lineno}, column {e.colno})")
+        return
+    if not isinstance(data, dict):
+        errors.append(f"{where}.env.{key}: not a JSON object (it is {JSON_TYPE_NAMES[type(data)]})")
+
+
 def _parse_profiles(raw: object, environ: Mapping[str, str], errors: list[str]) -> dict[str, Profile]:
     profiles: dict[str, Profile] = {}
     if not isinstance(raw, dict) or not raw:
@@ -147,6 +166,7 @@ def _parse_profiles(raw: object, environ: Mapping[str, str], errors: list[str]) 
             env = {}
         refs = _refs_in(env)
         env = {k: _expand_env(str(v), environ, errors, f"{where}.env.{k}") for k, v in env.items()}
+        _check_opencode_config(env, errors, where)
         profiles[name] = Profile(name=name, kind=kind.strip(), args=[str(a) for a in args], env=env, env_refs=refs)
     return profiles
 
