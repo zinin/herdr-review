@@ -40,15 +40,15 @@ def startup_env(kind: str, run_dir: Path | str) -> dict[str, str]:
     return {}
 
 
-def opencode_config(runs_dir: Path | str) -> dict:
-    """The session config of a run's opencode agents. Every agent reads and writes the run directory, which lies
-    outside the repository, where OpenCode asks first: OpenCode checks `<directory>/*`, and its `*` crosses `/`.
-    The question tool's form would block an agent nobody sits at; denied, the tool answers the model with
-    `Permission denied` instead."""
+def opencode_config(run_dir: Path | str) -> dict:
+    """The session config of a run's opencode agents. Every agent reads and writes its run directory, which lies
+    outside the repository, where OpenCode asks first; the rule allows that directory alone, not the other runs
+    beside it: OpenCode checks `<directory>/*`, and its `*` crosses `/`. The question tool's form would block an
+    agent nobody sits at; denied, the tool answers the model with `Permission denied` instead."""
     return {
         "$schema": "https://opencode.ai/config.json",
         "permission": {
-            "external_directory": {f"{runs_dir}/*": "allow"},
+            "external_directory": {f"{run_dir}/*": "allow"},
             "question": "deny",
         },
     }

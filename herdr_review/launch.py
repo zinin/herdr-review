@@ -231,7 +231,7 @@ def launch(
         if any(spec["kind"] == "opencode" for spec in (*reviewers_spec, orch, fixer)):
             # Every opencode agent of the run reads it through OPENCODE_CONFIG (kinds.startup_env), the fixer too,
             # which the runner starts later.
-            (run_dir / OPENCODE_CONFIG_NAME).write_text(json.dumps(opencode_config(runs_dir), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            (run_dir / OPENCODE_CONFIG_NAME).write_text(json.dumps(opencode_config(run_dir), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
         # ----- prompts
         steps = reviewer_steps(scope, mb, uncommitted, untracked, listing, untracked_listing)

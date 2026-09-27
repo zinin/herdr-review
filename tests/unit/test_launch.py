@@ -572,8 +572,9 @@ class LaunchTest(unittest.TestCase):
         res = self.do_launch()
         run_dir = Path(res["run_dir"])
         runs_dir = (self.root / "runs").resolve()
-        self.assertEqual(json.loads((run_dir / "opencode.json").read_text()), opencode_config(runs_dir))
-        self.assertEqual(opencode_config(runs_dir)["permission"]["external_directory"], {f"{runs_dir}/*": "allow"})
+        self.assertEqual(json.loads((run_dir / "opencode.json").read_text()), opencode_config(run_dir))
+        self.assertEqual(opencode_config(run_dir)["permission"]["external_directory"], {f"{run_dir}/*": "allow"})
+        self.assertTrue(run_dir.is_relative_to(runs_dir))
         run_json = json.loads((run_dir / "run.json").read_text())
         self.assertEqual(run_json["reviewers"][0]["args"], ["--standalone"])
         self.assertEqual(run_json["reviewers"][0]["env_keys"], ["OPENCODE_CONFIG_CONTENT"])
@@ -628,14 +629,16 @@ class LaunchTest(unittest.TestCase):
         self.cfg.settings.runs_dir = Path(".review-runs")
         res = launch(LaunchOptions(), self.cfg, self.herdr, ENV, sub, self.runner, which=which_ok, run_id="hrrel")
         rules = json.loads((Path(res["run_dir"]) / "opencode.json").read_text())["permission"]["external_directory"]
-        self.assertEqual(rules, {f"{(sub / '.review-runs').resolve()}/*": "allow"})
+        self.assertEqual(rules, {f"{Path(res['run_dir'])}/*": "allow"})
+        self.assertTrue(Path(res["run_dir"]).is_relative_to((sub / '.review-runs').resolve()))
 
     def test_the_session_config_keeps_a_runs_dir_with_a_space_whole(self):
         self.use_opencode()
         self.cfg.settings.runs_dir = self.root / "review runs"
         res = self.do_launch()
         rules = json.loads((Path(res["run_dir"]) / "opencode.json").read_text())["permission"]["external_directory"]
-        self.assertEqual(rules, {f"{(self.root / 'review runs').resolve()}/*": "allow"})
+        self.assertEqual(rules, {f"{Path(res['run_dir'])}/*": "allow"})
+        self.assertTrue(Path(res["run_dir"]).is_relative_to((self.root / 'review runs').resolve()))
 
 
 if __name__ == "__main__":
