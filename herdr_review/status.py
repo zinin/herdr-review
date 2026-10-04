@@ -143,13 +143,6 @@ class RunStatus:
                 token = self._dirty_generations.get(name, 0)
                 if int(previous.get("codex_launch_generation", 0)) > token:
                     entry = copy.deepcopy(previous)
-                    local, baseline = mine.get(name) or {}, self._agent_snapshot.get(name) or {}
-                    if "retries" in local and local["retries"] != baseline.get("retries", 0):
-                        delta = int(local["retries"]) - int(baseline.get("retries", 0))
-                        entry["retries"] = max(int(previous.get("retries", 0)), int(previous.get("retries", 0)) + delta)
-                    if "collect_retries" in local and local["collect_retries"] != baseline.get("collect_retries", 0):
-                        entry["collect_retries"] = max(int(previous.get("collect_retries", 0)), int(local["collect_retries"]))
-                    agents[name] = entry
                 elif name in mine:
                     entry = copy.deepcopy(mine[name])
                     if "update_restarts" in entry or "update_restarts" in previous:
@@ -162,9 +155,17 @@ class RunStatus:
                     if entry.get("codex_startup_closed") or previous.get("codex_startup_closed"):
                         entry.update(codex_startup_closed=True, codex_startup_pending=False,
                                      codex_update_seen=False, codex_update_pending=False, codex_update_deadline=None)
-                    agents[name] = entry
                 else:
                     agents.pop(name, None)      # this process rolled that agent back
+                    continue
+                # Prompt retries are owned increments; collect retries consume a one-shot quota.
+                local, baseline = mine.get(name) or {}, self._agent_snapshot.get(name) or {}
+                if "retries" in local:
+                    delta = int(local["retries"]) - int(baseline.get("retries", 0))
+                    entry["retries"] = int(previous.get("retries", 0)) + max(delta, 0)
+                if "collect_retries" in local:
+                    entry["collect_retries"] = max(int(previous.get("collect_retries", 0)), int(local["collect_retries"]))
+                agents[name] = entry
             merged["agents"] = agents
         return merged
 

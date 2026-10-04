@@ -199,6 +199,52 @@ class RunStatusTest(unittest.TestCase):
         self.assertFalse(owner.claim_codex_update_restart("hrtest-codex"))
         self.assertEqual(RunStatus.load(self.run_dir).agent("hrtest-codex")["codex_launch_generation"], 1)
 
+    def test_same_generation_update_save_keeps_a_spent_prompt_retry(self):
+        seed = RunStatus.create(self.run_dir)
+        seed.add_agent("hrtest-codex", role="reviewer", kind="codex", codex_update_pending=False)
+        prompt, waiting = RunStatus.load(self.run_dir), RunStatus.load(self.run_dir)
+        prompt.agent("hrtest-codex")["retries"] = 1
+        prompt.mark_agent("hrtest-codex")
+        prompt.save()
+        waiting.agent("hrtest-codex")["codex_update_pending"] = True
+        waiting.mark_agent("hrtest-codex")
+        waiting.save()
+        a = RunStatus.load(self.run_dir).agent("hrtest-codex")
+        self.assertEqual((a["codex_launch_generation"], a["retries"], a["collect_retries"]), (0, 1, 0))
+        self.assertTrue(a["codex_update_pending"])
+        self.assertEqual(waiting.agent("hrtest-codex")["retries"], 1)
+
+    def test_same_generation_update_save_keeps_a_spent_collect_retry(self):
+        seed = RunStatus.create(self.run_dir)
+        seed.add_agent("hrtest-codex", role="reviewer", kind="codex", codex_update_pending=False)
+        collecting, waiting = RunStatus.load(self.run_dir), RunStatus.load(self.run_dir)
+        collecting.agent("hrtest-codex")["collect_retries"] = 1
+        collecting.mark_agent("hrtest-codex")
+        collecting.save()
+        waiting.agent("hrtest-codex")["codex_update_pending"] = True
+        waiting.mark_agent("hrtest-codex")
+        waiting.save()
+        a = RunStatus.load(self.run_dir).agent("hrtest-codex")
+        self.assertEqual((a["codex_launch_generation"], a["retries"], a["collect_retries"]), (0, 0, 1))
+        self.assertTrue(a["codex_update_pending"])
+        self.assertEqual(waiting.agent("hrtest-codex")["collect_retries"], 1)
+
+    def test_same_generation_saves_keep_both_owned_prompt_retry_increments(self):
+        seed = RunStatus.create(self.run_dir)
+        seed.add_agent("hrtest-codex", role="reviewer", kind="codex")
+        first, second = RunStatus.load(self.run_dir), RunStatus.load(self.run_dir)
+        first.agent("hrtest-codex")["retries"] += 1
+        first.mark_agent("hrtest-codex")
+        first.save()
+        second.agent("hrtest-codex")["retries"] += 1
+        second.mark_agent("hrtest-codex")
+        second.save()
+        a = RunStatus.load(self.run_dir).agent("hrtest-codex")
+        self.assertEqual((a["codex_launch_generation"], a["retries"]), (0, 2))
+        second.mark_agent("hrtest-codex")
+        second.save()
+        self.assertEqual(RunStatus.load(self.run_dir).agent("hrtest-codex")["retries"], 2)
+
     def test_a_stale_generation_save_preserves_the_new_lifecycle_and_owned_retry_bookkeeping(self):
         for owned in (False, True):
             with self.subTest(owned=owned):
