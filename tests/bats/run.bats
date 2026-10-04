@@ -78,6 +78,119 @@ teardown() { teardown_env; }
   [[ "$output" == *"phase: finished"* ]]
 }
 
+@test "run: Codex exits after updating, restarts once in its pane, and finishes its review" {
+  run "$HR" launch --json --reviewers codex
+  [ "$status" -eq 0 ]
+  RUN="$(run_dir_of)"; export HERDR_REVIEW_RUN="$RUN"
+  CODEX="$(agent_name "$RUN" 0)"
+  cat > "$FAKE_HERDR_SCENARIO" <<'EOF'
+{"agent_prompt": {"*-codex": {"code": "agent_prompt_stalled", "message": "no activity"}},
+ "screens": {"*-codex": "Update available · 0.159.2 → 0.160.0\n› 1. Update now\n  2. Skip\n",
+             "w1:p3": "user@host$ \n"}}
+EOF
+  run "$HR" run start-reviewers
+  [ "$status" -eq 0 ]
+  json_has "$output" 'list(d["agents"].values())[0]["state"]=="prompt_stalled"'
+
+  cat > "$FAKE_HERDR_SCENARIO" <<'EOF'
+{"agent_get": {"*-codex": ["gone", "working", "done"]},
+ "screens": {"w1:p3": "user@host$ \nUpdate available · 0.159.2 → 0.160.0\n› 1. Update now\n  2. Skip\nUpdating Codex via `installer`...\n🎉 Update ran successfully! Please restart Codex.\nuser@host$ "}}
+EOF
+  run "$HR" run wait
+  [ "$status" -eq 0 ]
+  json_has "$output" 'list(d["agents"].values())[0]["state"]=="working" and list(d["agents"].values())[0]["update_restarts"]==1 and len(d["pending"])==1'
+  [ "$(grep -c "agent start $CODEX --kind codex --pane w1:p3 " "$FAKE_HERDR_LOG")" -eq 2 ]
+  [ "$(grep -c "agent prompt $CODEX Read $RUN/prompts/codex.md and follow it exactly." "$FAKE_HERDR_LOG")" -eq 2 ]
+  [ "$(grep -c 'tab create' "$FAKE_HERDR_LOG")" -eq 2 ]
+
+  good_review "$RUN/reviews/codex.md"
+  run "$HR" run wait
+  [ "$status" -eq 0 ]
+  run "$HR" run collect
+  [ "$status" -eq 0 ]
+  json_has "$output" 'len(d["collected"])==1 and d["pending"]==[] and d["failed"]=={}'
+}
+
+@test "run: Codex running-update deadline persists across commands and honors a live blocked dialog" {
+  run "$HR" launch --json --reviewers codex
+  [ "$status" -eq 0 ]
+  RUN="$(run_dir_of)"; export HERDR_REVIEW_RUN="$RUN"
+  CODEX="$(agent_name "$RUN" 0)"
+  cat > "$FAKE_HERDR_SCENARIO" <<'EOF'
+{"agent_get": {"*-codex": ["idle"]},
+ "screens": {"*-codex": "Updating Codex via `installer`...\nDownloading Codex CLI\n",
+             "w1:p3": "user@host$ \n"}}
+EOF
+  run "$HR" run start-reviewers
+  [ "$status" -eq 0 ]
+  json_has "$output" 'list(d["agents"].values())[0]["codex_update_pending"] is True'
+  DEADLINE="$(python3 -c 'import json,sys; print(next(iter(json.load(open(sys.argv[1]))["agents"].values()))["codex_update_deadline"])' "$RUN/status.json")"
+  run "$HR" run prompt "$CODEX" --retry
+  [ "$status" -eq 0 ]
+  json_has "$(cat "$RUN/status.json")" "all(a['codex_update_deadline']==$DEADLINE and a['retries']==0 and a['collect_retries']==0 for a in d['agents'].values())"
+
+  python3 - "$RUN/status.json" <<'PY'
+import json, sys, time
+from pathlib import Path
+p = Path(sys.argv[1]); d = json.loads(p.read_text())
+next(iter(d["agents"].values()))["codex_update_deadline"] = time.time() - 1
+p.write_text(json.dumps(d))
+PY
+  cat > "$FAKE_HERDR_SCENARIO" <<'EOF'
+{"agent_get": {"*-codex": ["blocked"]},
+ "screens": {"*-codex": "Updating Codex via `installer`...\nAuthentication required\n",
+             "w1:p3": "user@host$ \nUpdating Codex via `installer`...\nSECRET_TOKEN=s3cret-value\nAuthentication required\n"}}
+EOF
+  run "$HR" run wait
+  [ "$status" -eq 0 ]
+  json_has "$output" 'list(d["agents"].values())[0]["state"]=="blocked" and len(d["pending"])==1'
+  run "$HR" run collect
+  [ "$status" -eq 0 ]
+  json_has "$output" 'len(d["pending"])==1 and d["failed"]=={}'
+
+  cat > "$FAKE_HERDR_SCENARIO" <<'EOF'
+{"agent_get": {"*-codex": ["idle"]},
+ "screens": {"*-codex": "Updating Codex via `installer`...\nInstalling package\n",
+             "w1:p3": "user@host$ \nUpdating Codex via `installer`...\nSECRET_TOKEN=s3cret-value\nInstalling package\n"}}
+EOF
+  run "$HR" run collect
+  [ "$status" -eq 0 ]
+  json_has "$output" 'd["pending"]==[] and list(d["failed"].values())==["Codex startup update did not finish within 600 seconds"]'
+  json_has "$(cat "$RUN/status.json")" 'all(a["state"]=="failed" and a["codex_update_pending"] is False and a["last_screen"]=="user@host$ \nUpdating Codex via `installer`...\nSECRET_TOKEN=***\nInstalling package\n" and a["retries"]==0 and a["collect_retries"]==0 and a.get("update_restarts",0)==0 for a in d["agents"].values())'
+  run "$HR" run wait
+  [ "$status" -eq 0 ]
+  json_has "$output" 'd["settled"] is True and list(d["agents"].values())[0]["state"]=="failed"'
+  [ "$(grep -c "agent start $CODEX --kind codex --pane w1:p3 " "$FAKE_HERDR_LOG")" -eq 1 ]
+  [ "$(grep -c "agent prompt $CODEX " "$FAKE_HERDR_LOG")" -eq 0 ]
+  [ "$(grep -c "agent send-keys $CODEX " "$FAKE_HERDR_LOG")" -eq 0 ]
+}
+
+@test "run: old Codex update scrollback cannot recover a current ordinary startup failure" {
+  run "$HR" launch --json --reviewers codex
+  [ "$status" -eq 0 ]
+  RUN="$(run_dir_of)"; export HERDR_REVIEW_RUN="$RUN"
+  CODEX="$(agent_name "$RUN" 0)"
+  cat > "$FAKE_HERDR_SCENARIO" <<'EOF'
+{"agent_prompt": {"*-codex": {"code": "agent_prompt_stalled", "message": "startup stalled"}},
+ "screens": {"*-codex": "Starting Codex...\n",
+             "w1:p3": "user@host$ \nUpdating Codex via `installer`...\n🎉 Update ran successfully! Please restart Codex.\nuser@host$ \n"}}
+EOF
+  run "$HR" run start-reviewers
+  [ "$status" -eq 0 ]
+  json_has "$output" 'list(d["agents"].values())[0]["state"]=="prompt_stalled"'
+
+  cat > "$FAKE_HERDR_SCENARIO" <<'EOF'
+{"agent_get": {"*-codex": ["gone"]},
+ "screens": {"w1:p3": "user@host$ \nUpdating Codex via `installer`...\n🎉 Update ran successfully! Please restart Codex.\nuser@host$ \nStarting Codex...\nFatal: current startup failed\nuser@host$ "}}
+EOF
+  run "$HR" run wait
+  [ "$status" -eq 0 ]
+  json_has "$output" 'list(d["agents"].values())[0]["state"]=="gone" and d["pending"]==[] and list(d["agents"].values())[0]["update_restarts"]==0'
+  json_has "$(cat "$RUN/status.json")" 'all(a["codex_update_seen"] is False and a["codex_update_pending"] is False and "Update ran successfully!" in a["last_screen"] and "Fatal: current startup failed" in a["last_screen"] for a in d["agents"].values())'
+  [ "$(grep -c "agent start $CODEX --kind codex --pane w1:p3 " "$FAKE_HERDR_LOG")" -eq 1 ]
+  [ "$(grep -c "agent prompt $CODEX Read $RUN/prompts/codex.md and follow it exactly." "$FAKE_HERDR_LOG")" -eq 1 ]
+}
+
 @test "run: grid layout splits the orchestrator pane" {
   run "$HR" launch --json --layout grid
   [ "$status" -eq 0 ]
