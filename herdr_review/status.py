@@ -54,6 +54,7 @@ class RunStatus:
         self._dirty_agents: set[str] = set()   # agents it added, changed or removed
         self._dirty_generations: dict[str, int] = {}
         self._agent_snapshot: dict[str, dict] = {}
+        self._codex_restart_owners: set[str] = set()
 
     @classmethod
     def create(cls, run_dir: Path, **fields) -> "RunStatus":
@@ -215,6 +216,39 @@ class RunStatus:
                 yield
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    @contextmanager
+    def codex_restart_guard(self, name: str):
+        """Keep observations outside replacement startup; status writes stay available."""
+        if name in self._codex_restart_owners:
+            yield True
+            return
+        with open(self.run_dir / f"codex-restart-{name}.lock", "a", encoding="utf-8") as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                yield False
+                return
+            self._codex_restart_owners.add(name)
+            try:
+                yield True
+            finally:
+                self._codex_restart_owners.discard(name)
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+    def codex_restart_busy(self, name: str) -> bool:
+        if name in self._codex_restart_owners:
+            return False
+        path = self.run_dir / f"codex-restart-{name}.lock"
+        if not path.exists():
+            return False
+        with open(path, "a", encoding="utf-8") as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            return False
 
     def save(self) -> None:
         with self._locked():

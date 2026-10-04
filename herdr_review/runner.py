@@ -274,8 +274,11 @@ class Runner:
 
     def _summary(self, name: str) -> dict:
         a = self.status.agent(name)
-        return {"state": a["state"], "tab": a.get("tab"), "pane": a.get("pane"), "reason": a.get("reason"),
-                "codex_update_pending": bool(a.get("codex_update_pending")), "update_restarts": int(a.get("update_restarts", 0))}
+        out = {"state": a["state"], "tab": a.get("tab"), "pane": a.get("pane"), "reason": a.get("reason"),
+               "codex_update_pending": bool(a.get("codex_update_pending")), "update_restarts": int(a.get("update_restarts", 0))}
+        if a["state"] not in TERMINAL_STATES and self._restart_busy(name):
+            out["codex_restart_pending"] = True
+        return out
 
     def _prompt_file(self, file: str | Path) -> Path:
         p = Path(file).expanduser()
@@ -426,8 +429,14 @@ class Runner:
         except StatusError as e:
             raise RunnerError(str(e)) from e
 
+    def _restart_busy(self, name: str) -> bool:
+        return self._codex_generation(name) is not None and self.status.codex_restart_busy(name)
+
     def _start_current(self, name: str, generation: int | None) -> bool:
         """Passive startup belongs to a current, nonterminal Codex launch."""
+        if self._restart_busy(name):
+            self._generation_current(name, generation)
+            return False
         if not self._generation_current(name, generation):
             self._observe(name)
             return False
@@ -536,19 +545,24 @@ class Runner:
         spec = next((s for s in self.run.get("reviewers", []) if s["name"] == name and s["kind"] == "codex"), None)
         if not spec or not a.get("pane"):
             return None
-        # Claim against the live file before starting; a stale wait or prompt cannot spend the budget twice.
-        # The pane retains its original cwd and environment.
-        try:
-            claimed = self.status.claim_codex_update_restart(name)
-        except StatusError as e:
-            raise RunnerError(str(e)) from e
-        if not claimed:
-            self.status.save()
-            return "changed"
-        self._relabel(name, "starting")
-        self.log(f"{name}: restarting after successful Codex update in {a['pane']}")
-        self._start_agent(name, spec, a["pane"])
-        return "restarted"
+        # Keep exit observations outside the claim, startup and first prompt; fail uses status.lock.
+        with self.status.codex_restart_guard(name) as acquired:
+            if not acquired:
+                self._generation_current(name, generation)
+                return "changed"
+            try:
+                claimed = self.status.claim_codex_update_restart(name)
+            except StatusError as e:
+                raise RunnerError(str(e)) from e
+            if not claimed:
+                self.status.save()
+                return "changed"
+            self._relabel(name, "starting")
+            self.log(f"{name}: restarting after successful Codex update in {a['pane']}")
+            self._start_agent(name, spec, a["pane"])
+            if a["state"] == "idle" and not a.get("codex_update_pending"):
+                self._send_review_prompt(name)
+            return "restarted"
 
     def _agent_exited(self, name: str, *, generation: int | None = None) -> None:
         generation = self._codex_generation(name) if generation is None else generation
@@ -556,11 +570,7 @@ class Runner:
         update_output = self._codex_pane_output(name, generation=generation)
         self._record_codex_update(name, update_output or "", generation=generation)
         recovery = self._restart_after_codex_update(name, update_output, gone=True, generation=generation)
-        if recovery == "restarted":
-            a = self.status.agent(name)
-            if a["state"] == "idle" and not a.get("codex_update_pending"):
-                self._send_review_prompt(name)
-        elif recovery == "changed":
+        if recovery == "changed":
             self._observe(name)
         elif recovery is None:
             a = self.status.agent(name)
@@ -722,6 +732,9 @@ class Runner:
         """Refresh one agent's state from herdr. False when herdr could not be asked at all."""
         before = self.status.agent(name)["state"]
         generation = self._codex_generation(name)
+        if self._restart_busy(name):
+            self._generation_current(name, generation)
+            return True
         # Keep this response's startup context through intermediate status adoptions.
         observation = dict(self.status.agent(name)) if generation is not None else None
         r = self.herdr.agent_get(name)
@@ -769,8 +782,9 @@ class Runner:
         pending = []
         for n in names:
             a = self.status.agent(n)
-            if (STATE_CLASS.get(a["state"], "unknown") in PENDING_CLASSES
-                    or (a["state"] not in TERMINAL_STATES and a.get("codex_update_pending"))):
+            if (a["state"] not in TERMINAL_STATES
+                    and (STATE_CLASS.get(a["state"], "unknown") in PENDING_CLASSES
+                         or a.get("codex_update_pending") or self._restart_busy(n))):
                 pending.append(n)
         return pending
 
@@ -840,6 +854,8 @@ class Runner:
                 "codex_update_pending": bool(a.get("codex_update_pending")),
                 "update_restarts": int(a.get("update_restarts", 0)),
             }
+            if a["state"] not in TERMINAL_STATES and self._restart_busy(n):
+                agents[n]["codex_restart_pending"] = True
         pending = self._pending(names)
         return {"reason": reason, "agents": agents, "pending": pending, "settled": not pending}
 
@@ -855,6 +871,8 @@ class Runner:
                 f"{name} is collected ({a['result_file']}); re-prompting would discard that review"
                 " — use run fail if it must leave the run"
             )
+        if self._restart_busy(name):
+            return {"name": name, **self._summary(name), "codex_restart_pending": True}
         if state in TERMINAL_STATES:
             self.log(f"{name}: prompted while {state} (manual revival)")
         if file:
@@ -1016,6 +1034,9 @@ class Runner:
             if not self._generation_current(n, generation):
                 self._observe(n)
                 generation = self._codex_generation(n)
+            if a["state"] not in TERMINAL_STATES and self._restart_busy(n):
+                pending.append(n)
+                continue
             if a.get("codex_update_pending") and a["state"] not in TERMINAL_STATES:
                 self._observe(n)
                 generation = self._codex_generation(n)

@@ -1191,6 +1191,95 @@ class CodexUpdateTest(RunnerBase):
         self.assertEqual(len(self.herdr.calls_named("agent_prompt")), 1)
         self.assertEqual(len(self.herdr.calls_named("agent_start")), 1)
 
+    def test_commands_defer_during_claimed_restart_and_first_prompt(self):
+        name = "hrtest-codex"
+        for point in ("claim", "agent_start", "first_prompt"):
+            for command in ("wait", "prompt", "collect"):
+                with self.subTest(point=point, command=command):
+                    run_dir, _ = self.start_update(herdr=UpdatingCodex(still_updating=True),
+                                                   root=self.root / f"{point}-{command}")
+                    self.herdr.agent_status[name] = ["gone"]
+                    self.herdr.append_pane_output("w1:p2", UPDATED)
+                    restarting = self.runner(run_dir)
+                    original_claim = restarting.status.claim_codex_update_restart
+                    original_start, original_read = self.herdr.agent_start, self.herdr.agent_read
+                    original_send = restarting._send_review_prompt
+                    raced = False
+
+                    def observe_during_restart():
+                        nonlocal raced
+                        raced = True
+                        prompts = len(self.herdr.calls_named("agent_prompt"))
+                        gets = len(self.herdr.calls_named("agent_get"))
+                        peer = self.runner(run_dir)
+                        reply = peer.prompt(name) if command == "prompt" else getattr(peer, command)()
+                        expected = "idle" if point == "first_prompt" else "starting"
+                        self.assertEqual(peer.status.agent(name)["state"], expected)
+                        if command == "prompt":
+                            self.assertTrue(reply.get("codex_restart_pending"))
+                        else:
+                            self.assertEqual(reply["pending"], [name])
+                        self.assertEqual(len(self.herdr.calls_named("agent_prompt")), prompts)
+                        self.assertEqual(len(self.herdr.calls_named("agent_get")), gets)
+                        self.assertEqual((peer.status.agent(name)["retries"], peer.status.agent(name)["collect_retries"]), (0, 0))
+
+                    def claim(agent):
+                        claimed = original_claim(agent)
+                        if claimed and point == "claim":
+                            observe_during_restart()
+                        return claimed
+
+                    def start(*args, **kwargs):
+                        if point == "agent_start":
+                            observe_during_restart()
+                        return original_start(*args, **kwargs)
+
+                    def read(agent, source="visible", lines=60):
+                        if self.herdr.agent_status[agent][0] == "gone":
+                            return None
+                        return original_read(agent, source, lines)
+
+                    def send(agent):
+                        if point == "first_prompt":
+                            observe_during_restart()
+                        original_send(agent)
+
+                    restarting.status.claim_codex_update_restart = claim
+                    self.herdr.agent_start, self.herdr.agent_read = start, read
+                    restarting._send_review_prompt = send
+                    out = restarting.wait()
+                    self.assertTrue(raced)
+                    self.assertEqual(out["agents"][name]["state"], "working")
+                    self.assertEqual(out["pending"], [name])
+                    self.assertNotIn("codex_restart_pending", out["agents"][name])
+                    a = RunStatus.load(run_dir).agent(name)
+                    self.assertEqual((a["codex_launch_generation"], a["update_restarts"]), (1, 1))
+                    self.assertEqual(len(self.herdr.calls_named("agent_start")), 2)
+                    self.assertEqual(len(self.herdr.calls_named("agent_prompt")), 2)
+
+    def test_an_abandoned_claim_releases_startup_observers(self):
+        name = "hrtest-codex"
+        run_dir, _ = self.start_update(herdr=UpdatingCodex(still_updating=True))
+        self.herdr.agent_status[name] = ["gone"]
+        self.herdr.append_pane_output("w1:p2", UPDATED)
+        restarting = self.runner(run_dir)
+        original_claim = restarting.status.claim_codex_update_restart
+
+        def claim(agent):
+            self.assertTrue(original_claim(agent))
+            raise RuntimeError("restart owner stopped")
+
+        restarting.status.claim_codex_update_restart = claim
+        with self.assertRaisesRegex(RuntimeError, "restart owner stopped"):
+            restarting.wait()
+        out = self.runner(run_dir).wait()
+        self.assertEqual(out["agents"][name]["state"], "gone")
+        self.assertTrue(out["settled"])
+        self.assertNotIn("codex_restart_pending", out["agents"][name])
+        self.assertEqual(RunStatus.load(run_dir).agent(name)["update_restarts"], 1)
+        self.assertEqual(len(self.herdr.calls_named("agent_start")), 1)
+        self.assertEqual(len(self.herdr.calls_named("agent_prompt")), 1)
+
     def test_concurrent_fail_is_preserved_through_codex_restart_startup(self):
         name = "hrtest-codex"
         for race_at in ("restart_claim", "pane_read", "agent_start", "agent_read", "closure_save", "closed_save",
