@@ -25,10 +25,11 @@ class UpdatingCodex(FakeHerdr):
 
     def __init__(self, *, name="hrtest-codex", repeat=False, exit_during_start=False,
                  first_prompt_error="agent_prompt_stalled", still_updating=False, restart_error=None,
-                 restarted_prompt_error=None, startup_screen=UPDATE_MENU, blocked_start=False):
+                 restarted_prompt_error=None, startup_screen=UPDATE_MENU, blocked_start=False, progress_lines=0):
         super().__init__()
         self.name = name
         self.starts = 0
+        self.updated = UPDATING + "".join(f"installer progress {i}\n" for i in range(progress_lines)) + UPDATED[len(UPDATING):]
         self.repeat = repeat
         self.exit_during_start = exit_during_start
         self.first_prompt_error = first_prompt_error
@@ -57,7 +58,7 @@ class UpdatingCodex(FakeHerdr):
                 self.agent_status[name] = ["blocked"]
                 return HerdrResult(False, 1, error_code="agent_not_ready", message="startup menu is blocking")
             if self.exit_during_start:
-                self.append_pane_output(pane, UPDATED)
+                self.append_pane_output(pane, self.updated)
                 self.agent_status[name] = ["gone"]
                 return HerdrResult(False, 1, error_code="agent_start_failed", message="agent exited during startup")
         else:
@@ -76,7 +77,7 @@ class UpdatingCodex(FakeHerdr):
             result = super().agent_prompt(name, text, until, timeout_ms)
             pane = self.panes[name]
             self.screens[name] = UPDATING
-            self.append_pane_output(pane, UPDATING if self.still_updating else UPDATED)
+            self.append_pane_output(pane, UPDATING if self.still_updating else self.updated)
             self.agent_status[name] = ["idle" if self.still_updating else "gone"]
             return result
         result = super().agent_prompt(name, text, until, timeout_ms)
@@ -94,6 +95,30 @@ class CodexUpdateTest(RunnerBase):
 
     def runner(self, run_dir):
         return Runner(run_dir, herdr=self.herdr, poll_sec=5, clock=self.clock, sleep=self.clock.sleep, wall_clock=self.wall_clock)
+
+    def test_verbose_update_exits_recover_from_pane_history(self):
+        for layout in ("tabs", "grid"):
+            for command in ("wait", "collect"):
+                with self.subTest(layout=layout, command=command):
+                    run_dir, _ = self.start_update(herdr=UpdatingCodex(progress_lines=400), layout=layout,
+                                                   root=self.root / f"{layout}-{command}")
+                    out = getattr(self.runner(run_dir), command)()
+                    self.assertEqual(out["pending"], ["hrtest-codex"])
+                    a = RunStatus.load(run_dir).agent("hrtest-codex")
+                    self.assertEqual(a["state"], "working")
+                    self.assertEqual((a["codex_launch_generation"], a["update_restarts"]), (1, 1))
+                    self.assertEqual(len(self.herdr.calls_named("agent_start")), 2)
+                    self.assertEqual(len(self.herdr.calls_named("agent_prompt")), 2)
+
+    def test_verbose_fast_startup_update_exits_recover_from_pane_history(self):
+        run_dir, runner = self.start_update(herdr=UpdatingCodex(exit_during_start=True, progress_lines=400))
+        a = RunStatus.load(run_dir).agent("hrtest-codex")
+        self.assertEqual(a["state"], "working")
+        self.assertEqual((a["codex_launch_generation"], a["update_restarts"]), (1, 1))
+        self.assertTrue(a["prompted"])
+        self.assertEqual(len(self.herdr.calls_named("agent_start")), 2)
+        self.assertEqual(len(self.herdr.calls_named("agent_prompt")), 1)
+        self.assertEqual(runner.status.agent("hrtest-codex"), a)
 
     def test_running_update_fails_at_600_seconds_without_spending_budgets(self):
         run_dir, runner = self.start_update(herdr=UpdatingCodex(still_updating=True))
@@ -404,6 +429,24 @@ class CodexUpdateTest(RunnerBase):
         self.assertEqual(a["last_screen"], history + marker)
         self.assertEqual(len(self.herdr.calls_named("agent_start")), 1)
 
+    def test_long_prelaunch_history_is_excluded_from_verbose_update_evidence(self):
+        for fresh in (False, True):
+            with self.subTest(fresh=fresh):
+                history = "prior secret: s3cret\n" + SHELL_SCREEN + UPDATED + "".join(f"past line {i}\n" for i in range(400))
+                run_dir, _ = self.start_stalled_with_history(history, screen=UPDATE_MENU, root=self.root / str(fresh))
+                self.herdr.screens["hrtest-codex"] = CODEX_IDLE
+                self.herdr.prompt_errors.pop("hrtest-codex", None)
+                suffix = UPDATED[len(UPDATING):] if fresh else "Error: download failed\nuser@host$ "
+                output = UPDATING + "".join(f"current progress {i}\n" for i in range(400)) + suffix
+                self.herdr.append_pane_output("w1:p2", output)
+                self.herdr.agent_status["hrtest-codex"] = ["gone"]
+                self.runner(run_dir).wait()
+                a = RunStatus.load(run_dir).agent("hrtest-codex")
+                self.assertEqual(a["state"], "working" if fresh else "gone")
+                self.assertEqual(a.get("update_restarts", 0), 1 if fresh else 0)
+                self.assertEqual(len(self.herdr.calls_named("agent_start")), 2 if fresh else 1)
+                self.assertNotIn("s3cret", (run_dir / "status.json").read_text())
+
     def test_a_success_marker_split_across_the_baseline_is_not_fresh(self):
         history = SHELL_SCREEN + UPDATING + "🎉 Update ran successfully!"
         run_dir, _ = self.start_stalled_with_history(history, screen=UPDATE_MENU)
@@ -463,6 +506,7 @@ class CodexUpdateTest(RunnerBase):
                 self.herdr.append_pane_output("w1:p2", appended)
                 self.herdr.agent_status["hrtest-codex"] = ["gone"]
                 snapshot = "".join((history + appended).splitlines(keepends=True)[-40:])
+                self.herdr.pane_screens["w1:p2"] = snapshot  # the host discarded older rows
                 out = self.runner(run_dir).wait()
                 self.assertEqual(out["agents"]["hrtest-codex"]["state"], "gone")
                 self.assertEqual(RunStatus.load(run_dir).agent("hrtest-codex")["last_screen"], snapshot)
@@ -475,6 +519,7 @@ class CodexUpdateTest(RunnerBase):
                 run_dir, _ = self.start_stalled_with_history(history, screen=UPDATE_MENU, layout=layout, root=self.root / layout)
                 appended = "new output\n" * 30 + UPDATED
                 self.herdr.append_pane_output("w1:p2", appended)
+                self.herdr.pane_screens["w1:p2"] = "".join((history + appended).splitlines(keepends=True)[-40:])
                 self.herdr.agent_status["hrtest-codex"] = ["gone"]
                 out = self.runner(run_dir).wait()
                 self.assertEqual(out["agents"]["hrtest-codex"]["state"], "working")

@@ -47,6 +47,7 @@ LABEL_SUFFIX = {
 FIXER_DONE_STATES = {"idle", "done"}
 PROMPT_TIMEOUT_MS = 30000
 LAST_SCREEN_LINES = 40
+CODEX_PANE_HISTORY_LINES = 10000
 CODEX_BASELINE_MIN_LINES = 3  # tail alignment needs complete, unique retained context
 CODEX_UPDATE_TIMEOUT_SEC = 600
 LIVE_STATUSES = ("idle", "working", "blocked", "done", "unknown")
@@ -330,9 +331,9 @@ class Runner:
         if not self._generation_current(name, generation):
             self._observe(name)
 
-    def _pane_screen(self, pane: str) -> str | None:
+    def _pane_screen(self, pane: str, *, lines: int = LAST_SCREEN_LINES) -> str | None:
         """A pane dump for status.json — masked, because it can hold an echoed secret."""
-        text = self.herdr.pane_read(pane, lines=LAST_SCREEN_LINES)
+        text = self.herdr.pane_read(pane, lines=lines)
         return self.herdr.mask(text) if text is not None else None
 
     def _last_screen(self, name: str) -> str | None:
@@ -432,13 +433,16 @@ class Runner:
             return False
         return generation is None or self.status.agent(name)["state"] not in TERMINAL_STATES
 
-    def _codex_pane_output(self, name: str, screen: str | None, *, generation: int | None = None) -> str | None:
+    def _codex_pane_output(self, name: str, *, generation: int | None = None) -> str | None:
+        """Read launch-attributed history independently of the short diagnostic screen."""
         generation = self._codex_generation(name) if generation is None else generation
         a = self.status.agent(name)
         if (generation is None or int(a.get("codex_launch_generation", 0)) != generation
-                or a.get("codex_pane_baseline_generation") != generation):
+                or a.get("codex_pane_baseline_generation") != generation
+                or not isinstance(a.get("codex_pane_baseline"), str) or not a.get("pane")):
             return None
-        return appended_pane_output(a.get("codex_pane_baseline"), screen)
+        history = self._pane_screen(a["pane"], lines=CODEX_PANE_HISTORY_LINES)
+        return appended_pane_output(a["codex_pane_baseline"], history)
 
     def _close_codex_startup(self, name: str, *, generation: int | None = None) -> None:
         a = self.status.agent(name)
@@ -504,7 +508,7 @@ class Runner:
             return False
         screen = self.herdr.agent_read(name, source="visible", lines=SCREEN_LINES)
         if screen is None:
-            screen = self._codex_pane_output(name, self._last_screen(name), generation=generation)
+            screen = self._codex_pane_output(name, generation=generation)
         if screen is not None and codex_session_ready(screen):
             self._close_codex_startup(name, generation=generation)
             return False
@@ -549,7 +553,7 @@ class Runner:
     def _agent_exited(self, name: str, *, generation: int | None = None) -> None:
         generation = self._codex_generation(name) if generation is None else generation
         screen = self._last_screen(name)
-        update_output = self._codex_pane_output(name, screen, generation=generation)
+        update_output = self._codex_pane_output(name, generation=generation)
         self._record_codex_update(name, update_output or "", generation=generation)
         recovery = self._restart_after_codex_update(name, update_output, gone=True, generation=generation)
         if recovery == "restarted":
@@ -570,7 +574,7 @@ class Runner:
         codex_reviewer = spec["kind"] == "codex" and a.get("role") == "reviewer"
         if codex_reviewer:
             a.update(codex_startup_pending=True, codex_update_seen=False, codex_update_pending=False,
-                     codex_pane_baseline=self._pane_screen(pane), codex_pane_baseline_generation=generation)
+                     codex_pane_baseline=self._pane_screen(pane, lines=CODEX_PANE_HISTORY_LINES), codex_pane_baseline_generation=generation)
             self.status.mark_agent(name, generation=generation)
             self.status.save()
             if not self._start_current(name, generation):
@@ -590,7 +594,7 @@ class Runner:
         else:
             screen = self._pane_screen(pane)
             if codex_reviewer and r.error_code not in HERDR_ERROR_CODES:
-                update_output = self._codex_pane_output(name, screen, generation=generation)
+                update_output = self._codex_pane_output(name, generation=generation)
                 self._record_codex_update(name, update_output or "", generation=generation)
                 recovery = self._restart_after_codex_update(name, update_output, generation=generation)
                 if recovery:
@@ -611,8 +615,7 @@ class Runner:
                 a["codex_update_pending"] = outcome.codex_updating
                 self._ensure_codex_update_deadline(name, generation=generation)
         if codex_reviewer and not outcome.resolved and not outcome.refusal and a.get("codex_startup_pending"):
-            screen = self._pane_screen(pane)
-            update_output = self._codex_pane_output(name, screen, generation=generation)
+            update_output = self._codex_pane_output(name, generation=generation)
             self._record_codex_update(name, update_output or "", generation=generation)
             recovery = self._restart_after_codex_update(name, update_output, generation=generation)
             if recovery:
