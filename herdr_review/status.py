@@ -141,7 +141,10 @@ class RunStatus:
             for name in self._dirty_agents:
                 previous = agents.get(name) or {}
                 token = self._dirty_generations.get(name, 0)
-                if int(previous.get("codex_launch_generation", 0)) > token:
+                baseline = self._agent_snapshot.get(name) or {}
+                # A pre-session snapshot cannot overwrite a concurrently confirmed startup.
+                if (int(previous.get("codex_launch_generation", 0)) > token
+                        or (previous.get("codex_startup_closed") and not baseline.get("codex_startup_closed"))):
                     entry = copy.deepcopy(previous)
                 elif name in mine:
                     entry = copy.deepcopy(mine[name])
@@ -159,7 +162,7 @@ class RunStatus:
                     agents.pop(name, None)      # this process rolled that agent back
                     continue
                 # Prompt retries are owned increments; collect retries consume a one-shot quota.
-                local, baseline = mine.get(name) or {}, self._agent_snapshot.get(name) or {}
+                local = mine.get(name) or {}
                 if "retries" in local:
                     delta = int(local["retries"]) - int(baseline.get("retries", 0))
                     entry["retries"] = int(previous.get("retries", 0)) + max(delta, 0)
@@ -302,7 +305,10 @@ class RunStatus:
             a["last_screen"] = last_screen
         self.mark_agent(name, generation=token)
         self.save()
-        return int(self.agent(name).get("codex_launch_generation", 0)) == token
+        current = self.agent(name)
+        return (int(current.get("codex_launch_generation", 0)) == token and current["state"] == state
+                and (reason is None or current.get("reason") == reason)
+                and (last_screen is None or current.get("last_screen") == last_screen))
 
     def since_sec(self, name: str, now: datetime | None = None) -> int:
         a = self.agent(name)

@@ -946,6 +946,45 @@ class CodexUpdateTest(RunnerBase):
         self.assertEqual(len(self.herdr.calls_named("agent_prompt")), 2)
         self.assertNotIn(("tab_rename", "w1:t2", "rv-hrtest: codex ✗"), self.herdr.calls)
 
+    def test_a_wait_screen_save_keeps_a_concurrently_prompted_session(self):
+        name = "hrtest-codex"
+        herdr = FakeHerdr()
+        herdr.screens[name] = UPDATING
+        run_dir, _ = self.start_update(herdr=herdr)
+        first, stale = self.runner(run_dir), self.runner(run_dir)
+        self.assertFalse(stale.status.agent(name)["prompted"])
+        original_save = stale.status.save
+        raced = False
+
+        def save():
+            nonlocal raced
+            if not raced and stale.status.agent(name).get("screen_hash"):
+                raced = True
+                self.herdr.screens[name] = CODEX_IDLE
+                self.herdr.agent_status[name] = ["idle"]
+                first._observe(name)
+                first.prompt(name)
+                self.herdr.agent_status[name] = ["working"]
+            original_save()
+
+        stale.status.save = save
+        out = stale.wait()
+        self.assertTrue(raced)
+        self.assertEqual(out["agents"][name]["state"], "working")
+        self.assertEqual(out["pending"], [name])
+        a = RunStatus.load(run_dir).agent(name)
+        self.assertTrue(a["prompted"])
+        self.assertTrue(a["codex_startup_closed"])
+        self.assertFalse(a["codex_update_pending"])
+        self.assertIsNone(a["reason"])
+        self.herdr.agent_status[name] = ["idle"]
+        settled = self.runner(run_dir)
+        self.assertTrue(settled.wait()["settled"])
+        (run_dir / "reviews" / "codex.md").write_text(REVIEW)
+        self.assertEqual(settled.collect()["collected"], [name])
+        self.assertEqual(len(self.herdr.calls_named("agent_prompt")), 1)
+        self.assertEqual(len(self.herdr.calls_named("agent_start")), 1)
+
     def test_fail_reports_a_generation_conflict_without_stopping_the_replacement_queue(self):
         run_dir, _ = self.start_update(herdr=UpdatingCodex(still_updating=True))
         first, stale = self.runner(run_dir), self.runner(run_dir)
@@ -964,7 +1003,7 @@ class CodexUpdateTest(RunnerBase):
 
         stale.status.save = save
         with mock.patch.object(stale, "_stop_queue_holder", return_value="replacement command") as stop:
-            with self.assertRaisesRegex(RunnerError, "restarted.*run fail again"):
+            with self.assertRaisesRegex(RunnerError, "run fail again"):
                 stale.fail("hrtest-codex", "remove old startup")
             stop.assert_not_called()
         self.assertTrue(raced)
