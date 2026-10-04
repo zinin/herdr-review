@@ -2,6 +2,40 @@
 
 All notable changes to herdr-review will be documented here.
 
+## [0.5.0] - 2026-10-04
+
+### Added
+- One automatic restart per reviewer of kind `codex` and run after a successful startup update followed by a
+  confirmed process exit. The replacement keeps the original pane, working directory, environment, arguments
+  and review prompt. `update_restarts` records the persistent one-shot budget separately from prompt retries.
+- A persisted, launch-specific 600-second deadline for running startup installers. `wait` and `collect` keep
+  them pending without sending extra input; an expired, still-live, non-blocked installer becomes `failed`
+  with its masked diagnostic screen. Genuine permission dialogs retain their existing handling.
+- Launch-generation fencing and a per-reviewer guard across restart claims, replacement startup and every Codex
+  prompt submission. Concurrent commands defer while another runner owns startup or input, reporting
+  `codex_restart_pending: true`; `run fail` stays available for explicit removal.
+
+### Changed
+- Update provenance compares masked baselines and evidence from up to 10,000 available `recent-unwrapped` pane
+  history rows, independently of the 40-row `last_screen` diagnostics. Exact prefix or unique retained-tail
+  alignment is required; unavailable, wrong-generation, discarded or ambiguous history follows ordinary failure
+  handling. Confirmed sessions and manual revival close startup recovery; a second update exit gets no restart.
+- Codex prompt delivery revalidates its original generation, current lifecycle and retry quota inside the shared
+  startup guard. Deferred or superseded commands send no input and consume no retry quota.
+
+### Fixed
+- Overlapping status saves retain current lifecycle state, successful prompt delivery, owned retry increments,
+  collect quotas and the spent restart budget.
+- Delayed Herdr responses are re-read after concurrent startup progress, keeping an active reviewer pending.
+- Accepted failures survive restart claims, startup, state writes and automatic prompt completion. A rejected
+  `run fail` reports a conflict before stopping a replacement's queue holder. Explicit terminal revival through
+  `run prompt` preserves diagnostics until its result.
+- Observers cannot mark the newly claimed generation `gone` before its replacement has started, or submit an
+  extra first review prompt. Startup guards release on completion, errors or process exit; abandoned claims
+  keep their spent restart budget and resume ordinary failure handling.
+- Successful updates with verbose installer output are recognized while old success messages remain excluded
+  from the current launch's evidence.
+
 ## [0.4.0] - 2026-09-28
 
 ### Added
