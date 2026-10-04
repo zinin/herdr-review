@@ -7,6 +7,7 @@ import re
 import shutil
 import stat
 import time
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Callable, Mapping
 
@@ -680,15 +681,26 @@ class Runner:
         else:
             self._set_state(name, "failed", reason=f"{code}: {r.message}", last_screen=self._last_screen(name), generation=generation)
 
-    def _send_review_prompt(self, name: str) -> None:
-        a = self.status.agent(name)
-        generation = self._codex_generation(name)
-        if not self._start_current(name, generation):
-            return
-        if a.get("codex_update_pending"):
-            return
-        text = self._terminal_text(self.run_dir / "prompts" / f"{a['profile']}.md")
-        self._apply_prompt_result(name, self.herdr.agent_prompt(name, text, until="working", timeout_ms=PROMPT_TIMEOUT_MS), generation=generation)
+    @contextmanager
+    def _prompt_transaction(self, name: str, generation: int | None):
+        """Keep the original launch guarded through its prompt result."""
+        guard = self.status.codex_restart_guard(name) if generation is not None else nullcontext(True)
+        with guard as acquired:
+            if acquired and generation is not None:
+                self.status.save()
+            current = self._generation_current(name, generation)
+            yield acquired and current
+
+    def _send_review_prompt(self, name: str, *, generation: int | None = None) -> None:
+        generation = self._codex_generation(name) if generation is None else generation
+        with self._prompt_transaction(name, generation) as current:
+            if not current or not self._start_current(name, generation):
+                return
+            a = self.status.agent(name)
+            if a.get("codex_update_pending"):
+                return
+            text = self._terminal_text(self.run_dir / "prompts" / f"{a['profile']}.md")
+            self._apply_prompt_result(name, self.herdr.agent_prompt(name, text, until="working", timeout_ms=PROMPT_TIMEOUT_MS), generation=generation)
 
     # ----- subcommands
     def start_reviewers(self) -> dict:
@@ -860,8 +872,18 @@ class Runner:
         return {"reason": reason, "agents": agents, "pending": pending, "settled": not pending}
 
     def prompt(self, name: str, file: str | None = None, retry: bool = False) -> dict:
-        a = self._agent(name)
+        self._agent(name)
         generation = self._codex_generation(name)
+        with self._prompt_transaction(name, generation) as current:
+            if not current:
+                out = {"name": name, **self._summary(name)}
+                if self._restart_busy(name):
+                    out["codex_restart_pending"] = True
+                return out
+            return self._prompt_current(name, file, retry, generation)
+
+    def _prompt_current(self, name: str, file: str | None, retry: bool, generation: int | None) -> dict:
+        a = self._agent(name)
         if not self._generation_current(name, generation):
             self._observe(name)
             return {"name": name, **self._summary(name)}
@@ -1074,16 +1096,25 @@ class Runner:
                     pending.append(n)
                     continue
                 if not a.get("prompted"):
-                    self._send_review_prompt(n)
+                    self._send_review_prompt(n, generation=generation)
                     pending.append(n)
                     continue
                 # collect's own quota: `prompt --retry` spends `retries`, not this one.
                 if int(a.get("collect_retries", 0)) == 0:
-                    a["collect_retries"] = 1
-                    self.status.mark_agent(n, generation=generation)
-                    prompt = str(self.run_dir / "prompts" / f"{a['profile']}.md")
-                    r = self.herdr.agent_prompt(n, retry_text(a["result_file"], why, prompt), until="working", timeout_ms=PROMPT_TIMEOUT_MS)
-                    self._apply_prompt_result(n, r, generation=generation)
+                    with self._prompt_transaction(n, generation) as current:
+                        if not current:
+                            pending.append(n)
+                            continue
+                        a = self.status.agent(n)
+                        if (a["state"] not in ("idle", "done") or a.get("codex_update_pending")
+                                or int(a.get("collect_retries", 0)) != 0):
+                            pending.append(n)
+                            continue
+                        a["collect_retries"] = 1
+                        self.status.mark_agent(n, generation=generation)
+                        prompt = str(self.run_dir / "prompts" / f"{a['profile']}.md")
+                        r = self.herdr.agent_prompt(n, retry_text(a["result_file"], why, prompt), until="working", timeout_ms=PROMPT_TIMEOUT_MS)
+                        self._apply_prompt_result(n, r, generation=generation)
                     if self.status.agent(n)["state"] in TERMINAL_STATES:
                         failed[n] = self.status.agent(n).get("reason") or self.status.agent(n)["state"]
                     else:

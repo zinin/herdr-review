@@ -1,5 +1,6 @@
 import json
 import unittest
+from contextlib import contextmanager
 from unittest import mock
 
 from herdr_review.herdr import HerdrResult
@@ -1782,6 +1783,109 @@ class CodexUpdateTest(RunnerBase):
         out = self.runner(run_dir).wait()
         self.assertEqual(out["agents"]["hrtest-codex"]["state"], "working")
         self.assertEqual(len(self.herdr.calls_named("agent_start")), 2)
+
+
+class CodexPromptGuardTest(RunnerBase):
+    def prepare_delivery(self, delivery, state):
+        name = "hrtest-codex"
+        self.herdr = FakeHerdr()
+        self.herdr.tab_labels["w1:t1"] = "rv-hrtest: orch"
+        self.herdr.tab_labels["w1:t2"] = "rv-hrtest: codex"
+        self.herdr.agent_status[name] = ["idle"]
+        self.herdr.screens[name] = UPDATE_MENU
+        run_dir = make_run(self.root / f"{delivery}-{state}", self.repo, reviewers=("codex",))
+        runner = self.runner(run_dir)
+        terminal = state in ("failed", "gone")
+        runner.status.add_agent(
+            name, role="reviewer", profile="codex", kind="codex", state=state,
+            tab="w1:t2", pane="w1:p2", result_file=str(run_dir / "reviews" / "codex.md"),
+            prompted=delivery == "collect_retry", codex_startup_pending=True,
+            codex_update_seen=True, codex_update_pending=False,
+            reason="old startup failure" if terminal else None,
+            last_screen="old failure screen\n" if terminal else None,
+        )
+        return run_dir, runner
+
+    def deliver(self, runner, delivery):
+        if delivery == "prompt":
+            return runner.prompt("hrtest-codex", retry=True)
+        return runner.collect()
+
+    def test_input_holds_restart_guard(self):
+        for delivery, state in (("prompt", "idle"), ("prompt", "failed"), ("prompt", "gone"),
+                                ("collect_unprompted", "idle"), ("collect_retry", "done")):
+            with self.subTest(delivery=delivery, state=state):
+                run_dir, runner = self.prepare_delivery(delivery, state)
+                peer = self.runner(run_dir)
+                original_prompt = self.herdr.agent_prompt
+                acquisitions = []
+
+                def prompt(name, text, until=None, timeout_ms=None):
+                    current = RunStatus.load(run_dir).agent(name)
+                    if state in ("failed", "gone"):
+                        self.assertEqual((current["reason"], current["last_screen"]),
+                                         ("old startup failure", "old failure screen\n"))
+                        self.assertTrue(current["codex_startup_closed"])
+                    with peer.status.codex_restart_guard(name) as acquired:
+                        acquisitions.append(acquired)
+                        return original_prompt(name, text, until, timeout_ms)
+
+                with mock.patch.object(self.herdr, "agent_prompt", side_effect=prompt):
+                    self.deliver(runner, delivery)
+                self.assertEqual(len(self.herdr.calls_named("agent_prompt")), 1)
+                current = RunStatus.load(run_dir).agent("hrtest-codex")
+                self.assertEqual(current["state"], "working")
+                if state in ("failed", "gone"):
+                    self.assertIsNone(current["reason"])
+                    self.assertIsNone(current["last_screen"])
+                self.assertEqual(acquisitions, [False], "restart guard was acquired during agent_prompt")
+                with peer.status.codex_restart_guard("hrtest-codex") as acquired:
+                    self.assertTrue(acquired)
+
+    def test_generation_advanced_before_guard_drops_input(self):
+        for delivery, state in (("prompt", "idle"), ("collect_unprompted", "idle"), ("collect_retry", "done")):
+            with self.subTest(delivery=delivery):
+                run_dir, runner = self.prepare_delivery(delivery, state)
+                peer = self.runner(run_dir)
+                original_guard = runner.status.codex_restart_guard
+                original_prompt = self.herdr.agent_prompt
+                generations = []
+                delivered_generations = []
+
+                def advance_generation():
+                    if generations:
+                        return
+                    with peer.status.codex_restart_guard("hrtest-codex") as acquired:
+                        self.assertTrue(acquired)
+                        self.assertTrue(peer.status.claim_codex_update_restart("hrtest-codex"))
+                        generation = peer.status.agent("hrtest-codex")["codex_launch_generation"]
+                        generations.append(generation)
+                        peer.status.set_agent_state("hrtest-codex", "working", generation=generation)
+                        self.herdr.agent_status["hrtest-codex"] = ["working"]
+                        self.herdr.screens["hrtest-codex"] = CODEX_IDLE
+
+                @contextmanager
+                def guard(name):
+                    advance_generation()
+                    with original_guard(name) as acquired:
+                        yield acquired
+
+                def prompt(name, text, until=None, timeout_ms=None):
+                    # Unguarded delivery reaches the transport hook before the acquisition hook.
+                    advance_generation()
+                    delivered_generations.append(RunStatus.load(run_dir).agent(name)["codex_launch_generation"])
+                    return original_prompt(name, text, until, timeout_ms)
+
+                with mock.patch.object(runner.status, "codex_restart_guard", side_effect=guard), \
+                        mock.patch.object(self.herdr, "agent_prompt", side_effect=prompt):
+                    self.deliver(runner, delivery)
+                self.assertEqual(generations, [1])
+                self.assertEqual(delivered_generations, [], "stale input was delivered to the replacement generation")
+                self.assertEqual(self.herdr.calls_named("agent_prompt"), [])
+                current = RunStatus.load(run_dir).agent("hrtest-codex")
+                self.assertEqual((current["codex_launch_generation"], current["state"]), (1, "working"))
+                self.assertFalse(current["prompted"])
+                self.assertEqual((current["retries"], current["collect_retries"]), (0, 0))
 
 
 if __name__ == "__main__":
