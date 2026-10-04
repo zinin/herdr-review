@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import copy
+import fcntl
 import json
+import math
 import os
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +26,16 @@ def _parse_iso(s: str) -> datetime:
     return datetime.fromisoformat(s)
 
 
+def valid_codex_update_deadline(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        deadline = float(value)
+    except OverflowError:
+        return None
+    return deadline if math.isfinite(deadline) and deadline >= 0 else None
+
+
 class RunStatus:
     """One run's status document.
 
@@ -38,6 +51,8 @@ class RunStatus:
         self.data: dict = {}
         self._dirty: set[str] = set()          # top-level keys this process changed
         self._dirty_agents: set[str] = set()   # agents it added, changed or removed
+        self._dirty_generations: dict[str, int] = {}
+        self._agent_snapshot: dict[str, dict] = {}
 
     @classmethod
     def create(cls, run_dir: Path, **fields) -> "RunStatus":
@@ -58,6 +73,7 @@ class RunStatus:
         }
         s.data.update(fields)
         s._write(s.data)   # this call establishes the file, so there is nothing to merge with
+        s._agent_snapshot = copy.deepcopy(s.data["agents"])
         return s
 
     @classmethod
@@ -71,6 +87,7 @@ class RunStatus:
             raise StatusError(f"cannot read {s.path}: {e}") from e
         if not isinstance(s.data, dict) or "agents" not in s.data:
             raise StatusError(f"{s.path} is not a run status file")
+        s._agent_snapshot = copy.deepcopy(s.data["agents"])
         return s
 
     # ----- writes this process owns
@@ -79,10 +96,13 @@ class RunStatus:
         self.data[key] = value
         self._dirty.add(key)
 
-    def mark_agent(self, name: str) -> None:
-        """Record that this process changed <name>'s entry in place."""
+    def mark_agent(self, name: str, *, generation: int | None = None) -> None:
+        """Keep the request's generation even when an intermediate save adopted a newer launch."""
         self._dirty.add("agents")
         self._dirty_agents.add(name)
+        entry = self.data["agents"].get(name) or self._agent_snapshot.get(name) or {}
+        token = int(entry.get("codex_launch_generation", 0)) if generation is None else generation
+        self._dirty_generations[name] = min(token, self._dirty_generations.get(name, token))
 
     def remove_agent(self, name: str) -> None:
         self.data["agents"].pop(name, None)
@@ -119,8 +139,30 @@ class RunStatus:
             agents = merged["agents"] if isinstance(merged.get("agents"), dict) else {}
             mine = self.data.get("agents") or {}
             for name in self._dirty_agents:
-                if name in mine:
-                    agents[name] = copy.deepcopy(mine[name])
+                previous = agents.get(name) or {}
+                token = self._dirty_generations.get(name, 0)
+                if int(previous.get("codex_launch_generation", 0)) > token:
+                    entry = copy.deepcopy(previous)
+                    local, baseline = mine.get(name) or {}, self._agent_snapshot.get(name) or {}
+                    if "retries" in local and local["retries"] != baseline.get("retries", 0):
+                        delta = int(local["retries"]) - int(baseline.get("retries", 0))
+                        entry["retries"] = max(int(previous.get("retries", 0)), int(previous.get("retries", 0)) + delta)
+                    if "collect_retries" in local and local["collect_retries"] != baseline.get("collect_retries", 0):
+                        entry["collect_retries"] = max(int(previous.get("collect_retries", 0)), int(local["collect_retries"]))
+                    agents[name] = entry
+                elif name in mine:
+                    entry = copy.deepcopy(mine[name])
+                    if "update_restarts" in entry or "update_restarts" in previous:
+                        entry["update_restarts"] = max(int(entry.get("update_restarts", 0)), int(previous.get("update_restarts", 0)))
+                    if int(entry.get("codex_launch_generation", 0)) == int(previous.get("codex_launch_generation", 0)):
+                        deadlines = [d for value in (entry.get("codex_update_deadline"), previous.get("codex_update_deadline"))
+                                     if (d := valid_codex_update_deadline(value)) is not None]
+                        if deadlines:
+                            entry["codex_update_deadline"] = min(deadlines)
+                    if entry.get("codex_startup_closed") or previous.get("codex_startup_closed"):
+                        entry.update(codex_startup_closed=True, codex_startup_pending=False,
+                                     codex_update_seen=False, codex_update_pending=False, codex_update_deadline=None)
+                    agents[name] = entry
                 else:
                     agents.pop(name, None)      # this process rolled that agent back
             merged["agents"] = agents
@@ -145,13 +187,66 @@ class RunStatus:
         self.data.clear()
         self.data.update(merged)
         self.data["agents"] = container
+        self._agent_snapshot = copy.deepcopy(container)
+
+    @contextmanager
+    def _locked(self):
+        with open(self.run_dir / "status.lock", "a", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
     def save(self) -> None:
-        merged = self._merged()
-        self._write(merged)
-        self._adopt(merged)
-        self._dirty.clear()
-        self._dirty_agents.clear()
+        with self._locked():
+            merged = self._merged()
+            self._write(merged)
+            self._adopt(merged)
+            self._dirty.clear()
+            self._dirty_agents.clear()
+            self._dirty_generations.clear()
+
+    def codex_generation_current(self, name: str, generation: int) -> bool:
+        """Adopt a competing launch, preserving independently owned retry bookkeeping."""
+        with self._locked():
+            disk = self._on_disk()
+            if disk is None or name not in disk["agents"]:
+                raise StatusError(f"cannot observe Codex generation for {name}: status.json is unavailable")
+            if int(disk["agents"][name].get("codex_launch_generation", 0)) == generation:
+                return True
+            merged = self._merged()
+            if self._dirty:
+                self._write(merged)
+            self._adopt(merged)
+            self._dirty.clear()
+            self._dirty_agents.clear()
+            self._dirty_generations.clear()
+            return False
+
+    def claim_codex_update_restart(self, name: str) -> bool:
+        """Reserve the one restart against the live file, atomically with every other status writer."""
+        with self._locked():
+            disk = self._on_disk()
+            if disk is None or name not in disk["agents"]:
+                raise StatusError(f"cannot claim Codex restart for {name}: status.json is unavailable")
+            current = disk["agents"][name]
+            generation = int(current.get("codex_launch_generation", 0))
+            if (int(current.get("update_restarts", 0)) >= 1 or current.get("codex_startup_closed")
+                    or generation != int(self.agent(name).get("codex_launch_generation", 0))):
+                return False
+            merged = self._merged()
+            merged["agents"][name].update(update_restarts=1, codex_launch_generation=generation + 1,
+                                         state="starting", state_since=now_iso(),
+                                         codex_startup_pending=True, codex_update_seen=False, codex_update_pending=False,
+                                         codex_update_deadline=None,
+                                         prompted=False, result_ok=False, reason=None, last_screen=None, screen_hash=None)
+            self._write(merged)
+            self._adopt(merged)
+            self._dirty.clear()
+            self._dirty_agents.clear()
+            self._dirty_generations.clear()
+            return True
 
     def run_json(self) -> dict:
         p = self.run_dir / "run.json"
@@ -173,6 +268,9 @@ class RunStatus:
     def add_agent(self, name: str, **fields) -> dict:
         agent = {"state": "starting", "state_since": now_iso(), "reason": None, "last_screen": None, "retries": 0, "collect_retries": 0, "prompted": False, "result_ok": False, "screen_hash": None}
         agent.update(fields)
+        if agent.get("role") == "reviewer" and agent.get("kind") == "codex":
+            agent.setdefault("codex_launch_generation", 0)
+            agent.setdefault("codex_update_deadline", None)
         if agent["state"] not in AGENT_STATES:
             raise StatusError(f"unknown agent state '{agent['state']}'")
         self.data["agents"][name] = agent
@@ -189,10 +287,11 @@ class RunStatus:
     def agents_by_role(self, role: str) -> dict[str, dict]:
         return {n: a for n, a in self.data["agents"].items() if a.get("role") == role}
 
-    def set_agent_state(self, name: str, state: str, reason: str | None = None, last_screen: str | None = None) -> None:
+    def set_agent_state(self, name: str, state: str, reason: str | None = None, last_screen: str | None = None, *, generation: int | None = None) -> bool:
         if state not in AGENT_STATES:
             raise StatusError(f"unknown agent state '{state}'")
         a = self.agent(name)
+        token = int(a.get("codex_launch_generation", 0)) if generation is None else generation
         if a["state"] != state:
             a["state"] = state
             a["state_since"] = now_iso()
@@ -200,8 +299,9 @@ class RunStatus:
             a["reason"] = reason
         if last_screen is not None:
             a["last_screen"] = last_screen
-        self.mark_agent(name)
+        self.mark_agent(name, generation=token)
         self.save()
+        return int(self.agent(name).get("codex_launch_generation", 0)) == token
 
     def since_sec(self, name: str, now: datetime | None = None) -> int:
         a = self.agent(name)

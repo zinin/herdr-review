@@ -30,6 +30,11 @@ GROK_TRUST = re.compile(r"do you trust the contents of this directory", re.IGNOR
 # A narrow pane of the grid layout wraps a dialog's phrase over two lines, inside the dialog's box.
 BOX_DRAWING = re.compile("[\u2500-\u257f]")
 WHITESPACE = re.compile(r"\s+")
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+CODEX_UPDATE_MENU = re.compile(r"\bUpdate available\b.*\bUpdate now\b")
+CODEX_UPDATING = re.compile(r"\bUpdating Codex via\b")
+CODEX_UPDATED = re.compile(r"\bUpdate ran successfully!\s*Please restart Codex\.")
+CODEX_SESSION = re.compile(r"\bOpenAI Codex\s*\(v\d")
 MAX_DIALOGS = 3          # Claude Code shows the trust dialog first and the MCP dialog after it
 WAIT_MS = 30000
 SCREEN_LINES = 60
@@ -39,6 +44,9 @@ SCREEN_LINES = 60
 class DialogOutcome:
     resolved: bool
     refusal: str | None = None      # a dialog the runner recognised and must never answer
+    codex_update: bool = False
+    codex_updating: bool = False
+    codex_ready: bool = False
 
 
 def _cursor_keys(screen: str, cursor: str, yes: re.Pattern, no: re.Pattern, back: str) -> tuple[str, ...] | None:
@@ -57,7 +65,28 @@ def _cursor_keys(screen: str, cursor: str, yes: re.Pattern, no: re.Pattern, back
 def _flat(screen: str) -> str:
     """<screen> as one line for the phrase searches: box-drawing characters dropped, and every run of
     whitespace, line breaks included, one space."""
-    return WHITESPACE.sub(" ", BOX_DRAWING.sub("", screen))
+    return WHITESPACE.sub(" ", BOX_DRAWING.sub("", ANSI_ESCAPE.sub("", screen)))
+
+
+def codex_update_started(screen: str) -> bool:
+    flat = _flat(screen)
+    return bool(CODEX_UPDATE_MENU.search(flat) or CODEX_UPDATING.search(flat))
+
+
+def codex_update_complete(screen: str) -> bool:
+    return bool(CODEX_UPDATED.search(_flat(screen)))
+
+
+def codex_update_running(screen: str) -> bool:
+    flat = _flat(screen)
+    return bool(CODEX_UPDATING.search(flat) or CODEX_UPDATED.search(flat))
+
+
+def codex_session_ready(screen: str) -> bool:
+    flat = _flat(screen)
+    return bool(CODEX_SESSION.search(flat) and not (
+        CODEX_UPDATE_MENU.search(flat) or CODEX_UPDATING.search(flat) or CODEX_UPDATED.search(flat)
+    ))
 
 
 def recognize(screen: str) -> tuple[str, tuple[str, ...] | None] | None:
@@ -83,19 +112,14 @@ def _screen(herdr, name: str) -> str | None:
     return herdr.agent_read(name, source="visible", lines=SCREEN_LINES)
 
 
-def _screen_dialog(herdr, name: str) -> tuple[str, tuple[str, ...] | None] | None:
-    """The known dialog on <name>'s visible screen; None for any other screen and for a failed read."""
-    return recognize(_screen(herdr, name) or "")
-
-
 def mcp_check(herdr, name: str) -> DialogOutcome:
     """Look for Claude Code's MCP approval dialog on <name>'s screen once `agent start` succeeded: resolved
     when the screen was read without it, refused with MCP_REFUSAL when it is there. A failed read is tried
     once more; when that one fails too, nothing was checked: neither resolved nor refused.
 
     herdr 0.9.0 takes that dialog with several servers for an idle agent, so `agent start` succeeds
-    while it is up. Only this dialog is looked for: herdr judged the agent ready, and answering what
-    looks like a trust dialog's lingering text could type into a live input."""
+    while it is up. Codex's startup update screen is reported too. No dialog is answered here: herdr
+    judged the agent ready, and answering a trust dialog's lingering text could type into a live input."""
     screen = _screen(herdr, name)
     if screen is None:
         screen = _screen(herdr, name)
@@ -104,17 +128,18 @@ def mcp_check(herdr, name: str) -> DialogOutcome:
     found = recognize(screen)
     if found is not None and found[0] == "claude-mcp":
         return DialogOutcome(resolved=False, refusal=MCP_REFUSAL)
-    return DialogOutcome(resolved=True)
+    return DialogOutcome(resolved=True, codex_update=codex_update_started(screen),
+                         codex_updating=codex_update_running(screen), codex_ready=codex_session_ready(screen))
 
 
-def _settle(herdr, name: str) -> tuple[tuple[str, tuple[str, ...] | None] | None, bool]:
-    """Wait for <name> to turn idle after an answer, then look at its screen: (the dialog on it, whether
-    the agent turned idle and its screen was read). A wait that failed other than by timing out leaves
-    no settled screen to look at: (None, False), and nothing more is sent. So does a last read that
-    failed: it checked nothing, so the agent is not resolved on it."""
+def _settle(herdr, name: str) -> tuple[tuple[str, tuple[str, ...] | None] | None, bool, str | None]:
+    """Return the dialog, whether its screen was read after an idle wait, and that screen.
+
+    A wait that failed other than by timing out leaves no settled screen to look at: (None, False, None),
+    and nothing more is sent. A last read that failed checked nothing, so the agent is not resolved on it."""
     waited = herdr.agent_wait(name, until="idle", timeout_ms=WAIT_MS)
     if not waited.ok and waited.error_code != "timeout":
-        return None, False
+        return None, False, None
     screen = _screen(herdr, name)
     found = recognize(screen or "")
     if found is None and not waited.ok:
@@ -123,10 +148,10 @@ def _settle(herdr, name: str) -> tuple[tuple[str, tuple[str, ...] | None] | None
         # calls the MCP dialog idle, so the wait alone proves nothing.
         waited = herdr.agent_wait(name, until="idle", timeout_ms=WAIT_MS)
         if not waited.ok and waited.error_code != "timeout":
-            return None, False
+            return None, False, None
         screen = _screen(herdr, name)
         found = recognize(screen or "")
-    return found, waited.ok and screen is not None
+    return found, waited.ok and screen is not None, screen
 
 
 def resolve_startup_dialog(herdr, name: str) -> DialogOutcome:
@@ -137,7 +162,8 @@ def resolve_startup_dialog(herdr, name: str) -> DialogOutcome:
     it turned idle and the look after that read its screen and found no dialog."""
     answered: set[str] = set()
     idle = False
-    found = _screen_dialog(herdr, name)
+    screen = _screen(herdr, name) or ""
+    found = recognize(screen)
     while found is not None:
         dialog, keys = found
         if dialog == "claude-mcp":
@@ -147,5 +173,7 @@ def resolve_startup_dialog(herdr, name: str) -> DialogOutcome:
         if not herdr.agent_send_keys(name, *keys).ok:
             return DialogOutcome(resolved=False)
         answered.add(dialog)
-        found, idle = _settle(herdr, name)
-    return DialogOutcome(resolved=idle)
+        found, idle, screen = _settle(herdr, name)
+    screen = screen or ""
+    return DialogOutcome(resolved=idle, codex_update=codex_update_started(screen),
+                         codex_updating=codex_update_running(screen), codex_ready=codex_session_ready(screen))

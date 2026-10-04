@@ -1,6 +1,6 @@
 import unittest
 
-from herdr_review.dialogs import MCP_REFUSAL, DialogOutcome, mcp_check, recognize, resolve_startup_dialog
+from herdr_review.dialogs import MCP_REFUSAL, DialogOutcome, codex_session_ready, codex_update_complete, codex_update_running, codex_update_started, mcp_check, recognize, resolve_startup_dialog
 from tests.unit.fakeherdr import FakeHerdr
 
 CLAUDE_TRUST_ON_NO = "Quick safety check … ❯ No, exit\n  Yes, I trust this folder\nEnter to confirm · Esc to cancel\n"
@@ -57,6 +57,47 @@ CLAUDE_TRUST_NARROW_ON_YES = (                          # the wrap leaves the cu
     "│   No, exit   │\n"
     "╰──────────────╯\n"
 )
+
+
+class CodexStartupDetectionTest(unittest.TestCase):
+    SCREENS = (
+        ("update menu", "Update available · 0.159.2 → 0.160.0\n› 1. Update now (runs installer)\n", (True, False, False, False)),
+        ("installer", "Updating Codex via `installer`...\n==> Downloading Codex CLI\n", (True, False, True, False)),
+        ("success marker", "🎉 Update ran successfully! Please restart Codex.\n", (False, True, True, False)),
+        ("bare restart fragment", "Please restart Codex.\n", (False, False, False, False)),
+        ("bare success fragment", "Update ran successfully!\n", (False, False, False, False)),
+        ("normal TUI", "╭ OpenAI Codex (v0.160.0) ╮\n› Ask Codex to do anything\n", (False, False, False, True)),
+        ("unrelated text", "Updating another tool...\nAn update is available.\n", (False, False, False, False)),
+        ("empty screen", "", (False, False, False, False)),
+        ("colored wrapped menu", "\x1b[33m│ Update │\n│ available │\n│ › 1. Update │\n│ now │\x1b[0m\n", (True, False, False, False)),
+        ("colored wrapped installer", "\x1b[33m│ Updating Codex │\n│ via `installer`... │\x1b[0m\n", (True, False, True, False)),
+        ("colored wrapped success", "\x1b[32m│ Update ran │\n│ successfully! │\n│ Please restart │\n│ Codex. │\x1b[0m\n", (False, True, True, False)),
+        ("colored wrapped TUI", "\x1b[32m│ OpenAI Codex │\n│ (v0.160.0) │\x1b[0m\n› Ask Codex to do anything\n", (False, False, False, True)),
+        ("TUI with update menu", "OpenAI Codex (v0.160.0)\nUpdate available\nUpdate now\n", (True, False, False, False)),
+        ("TUI with installer", "OpenAI Codex (v0.160.0)\nUpdating Codex via `installer`...\n", (True, False, True, False)),
+        ("TUI with success marker", "OpenAI Codex (v0.160.0)\nUpdate ran successfully! Please restart Codex.\n", (False, True, True, False)),
+        ("TUI with bare restart fragment", "OpenAI Codex (v0.160.0)\nPlease restart Codex.\n", (False, False, False, True)),
+    )
+
+    def test_codex_update_started_requires_a_menu_or_installer_output(self):
+        for label, screen, expected in self.SCREENS:
+            with self.subTest(screen=label):
+                self.assertIs(codex_update_started(screen), expected[0])
+
+    def test_codex_update_complete_requires_the_full_success_marker(self):
+        for label, screen, expected in self.SCREENS:
+            with self.subTest(screen=label):
+                self.assertIs(codex_update_complete(screen), expected[1])
+
+    def test_codex_update_running_includes_the_success_marker(self):
+        for label, screen, expected in self.SCREENS:
+            with self.subTest(screen=label):
+                self.assertIs(codex_update_running(screen), expected[2])
+
+    def test_codex_session_ready_excludes_recognized_update_output(self):
+        for label, screen, expected in self.SCREENS:
+            with self.subTest(screen=label):
+                self.assertIs(codex_session_ready(screen), expected[3])
 
 
 class StartupDialogTest(unittest.TestCase):

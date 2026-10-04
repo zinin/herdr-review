@@ -1,6 +1,8 @@
 import json
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
+from threading import Event
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
@@ -106,6 +108,203 @@ class RunStatusTest(unittest.TestCase):
         self.assertNotIn("hrtest-codex", on_disk["agents"])
         self.assertTrue(on_disk["drift"])
         self.assertNotIn("hrtest-codex", s.data["agents"])
+
+    def test_a_stale_agent_save_cannot_restore_the_codex_update_budget(self):
+        owner = RunStatus.create(self.run_dir)
+        owner.add_agent("hrtest-codex", role="reviewer", kind="codex", update_restarts=0)
+        stale = RunStatus.load(self.run_dir)
+        owner.agent("hrtest-codex")["update_restarts"] = 1
+        owner.mark_agent("hrtest-codex")
+        owner.save()
+        stale.agent("hrtest-codex")["screen_hash"] = "older-observation"
+        stale.mark_agent("hrtest-codex")
+        stale.save()
+        on_disk = json.loads((self.run_dir / "status.json").read_text())
+        self.assertEqual(on_disk["agents"]["hrtest-codex"]["update_restarts"], 1)
+
+    def test_a_stale_save_cannot_reopen_a_confirmed_codex_session(self):
+        owner = RunStatus.create(self.run_dir)
+        owner.add_agent("hrtest-codex", role="reviewer", kind="codex", codex_startup_closed=False,
+                        codex_startup_pending=True, codex_update_pending=True)
+        stale = RunStatus.load(self.run_dir)
+        owner.agent("hrtest-codex").update(codex_startup_closed=True, codex_startup_pending=False,
+                                           codex_update_pending=False)
+        owner.mark_agent("hrtest-codex")
+        owner.save()
+        stale.agent("hrtest-codex")["screen_hash"] = "older-observation"
+        stale.mark_agent("hrtest-codex")
+        stale.save()
+        a = RunStatus.load(self.run_dir).agent("hrtest-codex")
+        self.assertTrue(a["codex_startup_closed"])
+        self.assertFalse(a["codex_startup_pending"])
+        self.assertFalse(a["codex_update_pending"])
+
+    def test_only_one_stale_snapshot_can_claim_a_codex_restart(self):
+        owner = RunStatus.create(self.run_dir)
+        owner.add_agent("hrtest-codex", role="reviewer", kind="codex", update_restarts=0)
+        stale = RunStatus.load(self.run_dir)
+        claim = getattr(owner, "claim_codex_update_restart", None)
+        self.assertIsNotNone(claim, "atomic restart claim is missing")
+        self.assertTrue(claim("hrtest-codex"))
+        self.assertFalse(stale.claim_codex_update_restart("hrtest-codex"))
+        self.assertEqual(RunStatus.load(self.run_dir).agent("hrtest-codex")["update_restarts"], 1)
+
+    def test_concurrent_claims_serialize_the_budget_read_and_write(self):
+        owner = RunStatus.create(self.run_dir)
+        owner.add_agent("hrtest-codex", role="reviewer", kind="codex", update_restarts=0)
+        other = RunStatus.load(self.run_dir)
+        claim = getattr(owner, "claim_codex_update_restart", None)
+        self.assertIsNotNone(claim, "atomic restart claim is missing")
+        writing, release, second_started = Event(), Event(), Event()
+        original_write = owner._write
+
+        def paused_write(document):
+            writing.set()
+            if not release.wait(5):
+                raise AssertionError("claim writer was not released")
+            original_write(document)
+
+        def second_claim():
+            second_started.set()
+            return other.claim_codex_update_restart("hrtest-codex")
+
+        owner._write = paused_write
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(claim, "hrtest-codex")
+            try:
+                self.assertTrue(writing.wait(5))
+                second = pool.submit(second_claim)
+                self.assertTrue(second_started.wait(5))
+                with self.assertRaises(TimeoutError):
+                    second.result(timeout=0.1)
+            finally:
+                release.set()
+            self.assertTrue(first.result(timeout=5))
+            self.assertFalse(second.result(timeout=5))
+        self.assertEqual(RunStatus.load(self.run_dir).agent("hrtest-codex")["update_restarts"], 1)
+        self.assertEqual(RunStatus.load(self.run_dir).agent("hrtest-codex").get("codex_launch_generation", 0), 1)
+
+    def test_a_restart_claim_advances_a_legacy_generation_atomically(self):
+        owner = RunStatus.create(self.run_dir)
+        owner.add_agent("hrtest-codex", role="reviewer", kind="codex", update_restarts=0, result_ok=True)
+        owner.agent("hrtest-codex").pop("codex_launch_generation", None)
+        owner.mark_agent("hrtest-codex")
+        owner.save()
+        self.assertTrue(owner.claim_codex_update_restart("hrtest-codex"))
+        a = RunStatus.load(self.run_dir).agent("hrtest-codex")
+        self.assertEqual((a.get("codex_launch_generation", 0), a["update_restarts"]), (1, 1))
+        self.assertEqual(a["state"], "starting")
+        self.assertFalse(a["prompted"])
+        self.assertFalse(a["result_ok"])
+        self.assertFalse(owner.claim_codex_update_restart("hrtest-codex"))
+        self.assertEqual(RunStatus.load(self.run_dir).agent("hrtest-codex")["codex_launch_generation"], 1)
+
+    def test_a_stale_generation_save_preserves_the_new_lifecycle_and_owned_retry_bookkeeping(self):
+        for owned in (False, True):
+            with self.subTest(owned=owned):
+                owner = RunStatus.create(self.run_dir)
+                owner.add_agent("hrtest-codex", role="reviewer", kind="codex", update_restarts=0,
+                                codex_launch_generation=0, codex_startup_pending=True,
+                                codex_startup_closed=False, codex_update_seen=True, codex_update_pending=True,
+                                retries=1, collect_retries=0)
+                stale = RunStatus.load(self.run_dir)
+                self.assertTrue(owner.claim_codex_update_restart("hrtest-codex"))
+                expected = {
+                    "state": "working", "state_since": "2026-10-03T20:00:00+00:00",
+                    "codex_launch_generation": 1, "update_restarts": 1,
+                    "codex_startup_pending": False, "codex_startup_closed": True,
+                    "codex_update_seen": False, "codex_update_pending": False,
+                    "prompted": True, "result_ok": True, "result_file": "new-review.md",
+                    "reason": "new generation diagnostic", "last_screen": "new session screen",
+                    "screen_hash": "new generation hash",
+                    "codex_pane_baseline": "new generation pane baseline\n",
+                    "codex_pane_baseline_generation": 1,
+                }
+                owner.agent("hrtest-codex").update(expected, retries=2, collect_retries=1)
+                owner.mark_agent("hrtest-codex")
+                owner.save()
+                old = stale.agent("hrtest-codex")
+                old.update(state="gone", state_since="2026-10-03T19:00:00+00:00",
+                           codex_startup_pending=True, codex_startup_closed=False,
+                           codex_update_seen=True, codex_update_pending=True,
+                           prompted=False, result_ok=False, result_file="old-review.md",
+                           reason="old agent exited", last_screen="old shell screen", screen_hash="old hash",
+                           codex_pane_baseline="old pane baseline\n", codex_pane_baseline_generation=0)
+                if owned:
+                    old.update(retries=3, collect_retries=1)
+                stale.mark_agent("hrtest-codex")
+                stale.save()
+                a = RunStatus.load(self.run_dir).agent("hrtest-codex")
+                self.assertEqual({key: a[key] for key in expected}, expected)
+                self.assertEqual((a["retries"], a["collect_retries"]), (4 if owned else 2, 1))
+                self.assertEqual(stale.agent("hrtest-codex"), a)
+
+    def test_a_stale_generation_cannot_remove_a_restarted_agent(self):
+        owner = RunStatus.create(self.run_dir)
+        owner.add_agent("hrtest-codex", role="reviewer", kind="codex", codex_launch_generation=0)
+        stale = RunStatus.load(self.run_dir)
+        self.assertTrue(owner.claim_codex_update_restart("hrtest-codex"))
+        owner.set_agent_state("hrtest-codex", "working")
+        stale.remove_agent("hrtest-codex")
+        stale.save()
+        disk = RunStatus.load(self.run_dir)
+        self.assertIn("hrtest-codex", disk.data["agents"])
+        self.assertEqual(disk.agent("hrtest-codex")["state"], "working")
+        self.assertEqual(disk.agent("hrtest-codex")["codex_launch_generation"], 1)
+
+    def test_same_generation_saves_keep_the_earliest_valid_update_deadline(self):
+        for replacement in ("omit", None, 1_800_001_200.0, float("nan"), float("inf"), "later", True):
+            with self.subTest(replacement=replacement):
+                owner = RunStatus.create(self.run_dir)
+                owner.add_agent("hrtest-codex", role="reviewer", kind="codex", codex_startup_pending=True,
+                                codex_update_pending=True)
+                stale = RunStatus.load(self.run_dir)
+                owner.agent("hrtest-codex")["codex_update_deadline"] = 1_800_000_600.0
+                owner.mark_agent("hrtest-codex")
+                owner.save()
+                if replacement != "omit":
+                    stale.agent("hrtest-codex")["codex_update_deadline"] = replacement
+                stale.mark_agent("hrtest-codex")
+                stale.save()
+                self.assertEqual(stale.agent("hrtest-codex")["codex_update_deadline"], 1_800_000_600.0)
+                stale.agent("hrtest-codex")["codex_update_deadline"] = 1_800_000_500.0
+                stale.mark_agent("hrtest-codex")
+                stale.save()
+                self.assertEqual(RunStatus.load(self.run_dir).agent("hrtest-codex")["codex_update_deadline"], 1_800_000_500.0)
+
+    def test_startup_closure_clears_the_deadline_and_stale_saves_keep_it_closed(self):
+        owner = RunStatus.create(self.run_dir)
+        owner.add_agent("hrtest-codex", role="reviewer", kind="codex", codex_startup_pending=True,
+                        codex_update_pending=True, codex_update_deadline=1_800_000_600.0)
+        stale = RunStatus.load(self.run_dir)
+        owner.agent("hrtest-codex")["codex_startup_closed"] = True
+        owner.mark_agent("hrtest-codex")
+        owner.save()
+        self.assertIsNone(owner.agent("hrtest-codex").get("codex_update_deadline"))
+        stale.agent("hrtest-codex")["codex_update_deadline"] = 1_800_001_200.0
+        stale.mark_agent("hrtest-codex")
+        stale.save()
+        a = RunStatus.load(self.run_dir).agent("hrtest-codex")
+        self.assertTrue(a["codex_startup_closed"])
+        self.assertFalse(a["codex_update_pending"])
+        self.assertIsNone(a.get("codex_update_deadline"))
+
+    def test_restart_resets_the_timer_and_an_old_generation_cannot_replace_the_new_timer(self):
+        owner = RunStatus.create(self.run_dir)
+        owner.add_agent("hrtest-codex", role="reviewer", kind="codex", codex_startup_pending=True,
+                        codex_update_pending=True, codex_update_deadline=1_800_000_600.0)
+        stale = RunStatus.load(self.run_dir)
+        self.assertTrue(owner.claim_codex_update_restart("hrtest-codex"))
+        self.assertIsNone(owner.agent("hrtest-codex").get("codex_update_deadline"))
+        owner.agent("hrtest-codex").update(codex_update_pending=True, codex_update_deadline=1_800_001_000.0)
+        owner.mark_agent("hrtest-codex")
+        owner.save()
+        stale.agent("hrtest-codex")["codex_update_deadline"] = None
+        stale.mark_agent("hrtest-codex")
+        stale.save()
+        a = RunStatus.load(self.run_dir).agent("hrtest-codex")
+        self.assertEqual(a["codex_launch_generation"], 1)
+        self.assertEqual(a["codex_update_deadline"], 1_800_001_000.0)
 
     def test_now_iso_format(self):
         self.assertRegex(now_iso(), r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$")
