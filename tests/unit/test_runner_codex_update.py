@@ -1146,6 +1146,87 @@ class CodexUpdateTest(RunnerBase):
         self.assertEqual(len(self.herdr.calls_named("agent_prompt")), 1)
         self.assertEqual(len(self.herdr.calls_named("agent_start")), 1)
 
+    def test_concurrent_fail_is_preserved_through_codex_restart_startup(self):
+        name = "hrtest-codex"
+        for race_at in ("restart_claim", "pane_read", "agent_start", "agent_read", "closure_save", "closed_save",
+                        "idle_write", "prompt_boundary", "agent_prompt"):
+            with self.subTest(race_at=race_at):
+                run_dir, _ = self.start_update(herdr=UpdatingCodex(still_updating=True), root=self.root / race_at)
+                self.herdr.agent_status[name] = ["gone"]
+                self.herdr.append_pane_output("w1:p2", UPDATED)
+                restarting = self.runner(run_dir)
+                original_start, original_read = self.herdr.agent_start, self.herdr.agent_read
+                original_pane, original_prompt = self.herdr.pane_read, self.herdr.agent_prompt
+                original_save, original_state = restarting.status.save, restarting.status.set_agent_state
+                original_send, original_claim = restarting._send_review_prompt, restarting.status.claim_codex_update_restart
+                raced = False
+
+                def fail_at(where):
+                    nonlocal raced
+                    generation = 0 if where == "restart_claim" else 1
+                    if raced or race_at != where or RunStatus.load(run_dir).agent(name)["codex_launch_generation"] != generation:
+                        return
+                    raced = True
+                    out = self.runner(run_dir).fail(name, "reviewer removed during restart")
+                    self.assertEqual(out["state"], "failed")
+
+                def claim(agent):
+                    fail_at("restart_claim")
+                    return original_claim(agent)
+
+                def start(*args, **kwargs):
+                    result = original_start(*args, **kwargs)
+                    fail_at("agent_start")
+                    return result
+
+                def read(*args, **kwargs):
+                    result = original_read(*args, **kwargs)
+                    fail_at("agent_read")
+                    return result
+
+                def pane(*args, **kwargs):
+                    result = original_pane(*args, **kwargs)
+                    fail_at("pane_read")
+                    return result
+
+                def prompt(*args, **kwargs):
+                    result = original_prompt(*args, **kwargs)
+                    fail_at("agent_prompt")
+                    return result
+
+                def send_review_prompt(agent):
+                    fail_at("prompt_boundary")
+                    original_send(agent)
+
+                def save():
+                    if restarting.status.agent(name).get("codex_startup_closed"):
+                        fail_at("closure_save")
+                    original_save()
+                    if restarting.status.agent(name).get("codex_startup_closed"):
+                        fail_at("closed_save")
+
+                def set_state(agent, state, *args, **kwargs):
+                    if state == "idle":
+                        fail_at("idle_write")
+                    return original_state(agent, state, *args, **kwargs)
+
+                self.herdr.agent_start, self.herdr.agent_read, self.herdr.pane_read = start, read, pane
+                self.herdr.agent_prompt = prompt
+                restarting.status.save, restarting.status.set_agent_state = save, set_state
+                restarting.status.claim_codex_update_restart = claim
+                restarting._send_review_prompt = send_review_prompt
+                out = restarting.wait()
+                self.assertTrue(raced)
+                self.assertEqual(out["agents"][name]["state"], "failed")
+                self.assertEqual(out["agents"][name]["reason"], "reviewer removed during restart")
+                self.assertTrue(out["settled"])
+                a = RunStatus.load(run_dir).agent(name)
+                self.assertEqual((a["codex_launch_generation"], a.get("update_restarts", 0)),
+                                 (0, 0) if race_at == "restart_claim" else (1, 1))
+                self.assertEqual(len(self.herdr.calls_named("agent_prompt")), 2 if race_at == "agent_prompt" else 1)
+                self.assertEqual(len(self.herdr.calls_named("agent_start")),
+                                 1 if race_at in ("restart_claim", "pane_read") else 2)
+
     def test_fail_reports_a_generation_conflict_without_stopping_the_replacement_queue(self):
         run_dir, _ = self.start_update(herdr=UpdatingCodex(still_updating=True))
         first, stale = self.runner(run_dir), self.runner(run_dir)

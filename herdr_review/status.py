@@ -12,6 +12,7 @@ from pathlib import Path
 
 PHASES = ("starting", "reviewing", "aggregating", "fixing", "disputed", "finished", "aborted")
 AGENT_STATES = ("starting", "prompt_stalled", "working", "idle", "done", "blocked", "blocked-start", "unknown", "gone", "failed", "collected")
+TERMINAL_STATES = {"failed", "gone", "collected"}
 
 
 class StatusError(Exception):
@@ -132,6 +133,10 @@ class RunStatus:
         flags = ("codex_startup_pending", "codex_startup_closed", "codex_update_seen", "codex_update_pending")
         if any(bool(current.get(key)) != bool(baseline.get(key)) for key in flags):
             return True
+        if (current.get("role") == "reviewer" and current.get("kind") == "codex"
+                and current.get("state") in TERMINAL_STATES
+                and current.get("state") != baseline.get("state")):
+            return True
         return (bool(baseline.get("codex_startup_pending")) and not baseline.get("codex_startup_closed")
                 and any(current.get(key) != baseline.get(key) for key in
                         ("state", "state_since", "prompted", "result_ok", "result_file", "reason", "last_screen")))
@@ -250,6 +255,7 @@ class RunStatus:
             current = disk["agents"][name]
             generation = int(current.get("codex_launch_generation", 0))
             if (int(current.get("update_restarts", 0)) >= 1 or current.get("codex_startup_closed")
+                    or current.get("state") in TERMINAL_STATES
                     or generation != int(self.agent(name).get("codex_launch_generation", 0))):
                 return False
             merged = self._merged()

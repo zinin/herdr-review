@@ -17,7 +17,7 @@ from .herdr import Herdr, HerdrResult
 from .kinds import startup_env
 from .layout import fixer_split, plan_grid
 from .render import render_file
-from .status import PHASES, RunStatus, StatusError, now_iso, valid_codex_update_deadline
+from .status import PHASES, TERMINAL_STATES, RunStatus, StatusError, now_iso, valid_codex_update_deadline
 
 REQUIRED_HEADINGS = ("### Critical Issues", "### Important Issues", "### Minor Issues", "### Assessment")
 HEADING_LINE = re.compile(r"^\s*#{1,6}\s")
@@ -35,7 +35,6 @@ STATE_CLASS = {
     "failed": "failed",
     "collected": "collected",
 }
-TERMINAL_STATES = {"failed", "gone", "collected"}
 # `prompt` refuses these: the state holds a result that re-prompting would destroy.
 # The other terminal states (`failed`, `gone`) are a manual rescue path and stay allowed.
 PROMPT_REFUSED_STATES = {"collected"}
@@ -426,6 +425,13 @@ class Runner:
         except StatusError as e:
             raise RunnerError(str(e)) from e
 
+    def _start_current(self, name: str, generation: int | None) -> bool:
+        """Passive startup belongs to a current, nonterminal Codex launch."""
+        if not self._generation_current(name, generation):
+            self._observe(name)
+            return False
+        return generation is None or self.status.agent(name)["state"] not in TERMINAL_STATES
+
     def _codex_pane_output(self, name: str, screen: str | None, *, generation: int | None = None) -> str | None:
         generation = self._codex_generation(name) if generation is None else generation
         a = self.status.agent(name)
@@ -567,12 +573,10 @@ class Runner:
                      codex_pane_baseline=self._pane_screen(pane), codex_pane_baseline_generation=generation)
             self.status.mark_agent(name, generation=generation)
             self.status.save()
-            if not self._generation_current(name, generation):
-                self._observe(name)
+            if not self._start_current(name, generation):
                 return False
         r = self.herdr.agent_start(name, spec["kind"], pane, spec["args"])
-        if not self._generation_current(name, generation):
-            self._observe(name)
+        if not self._start_current(name, generation):
             return False
         if r.ok:
             # herdr 0.9.0 takes Claude Code's MCP dialog with several servers for an idle agent: look
@@ -593,9 +597,10 @@ class Runner:
                     if recovery == "changed":
                         self._observe(name)
                     return recovery == "restarted"
+            if not self._start_current(name, generation):
+                return False
             return self._set_state(name, "failed", reason=f"{r.error_code}: {r.message}", last_screen=screen, generation=generation)
-        if not self._generation_current(name, generation):
-            self._observe(name)
+        if not self._start_current(name, generation):
             return False
         if codex_reviewer:
             # An idle update picker can consume the prompt's Enter; the running installer is a separate state.
@@ -614,6 +619,8 @@ class Runner:
                 if recovery == "changed":
                     self._observe(name)
                 return recovery == "restarted"
+        if not self._start_current(name, generation):
+            return False
         if outcome.refusal:
             self.log(f"{name}: startup dialog refused: {outcome.refusal}")
             return self._set_state(name, "failed", reason=outcome.refusal, last_screen=self._pane_screen(pane), generation=generation)
@@ -623,16 +630,21 @@ class Runner:
             return self._set_state(name, "idle", generation=generation)
         return self._set_state(name, "blocked-start", reason=blocked, generation=generation)
 
-    def _apply_prompt_result(self, name: str, r: HerdrResult, *, generation: int | None = None) -> None:
+    def _apply_prompt_result(self, name: str, r: HerdrResult, *, generation: int | None = None, revive_terminal: bool = False) -> None:
         generation = self._codex_generation(name) if generation is None else generation
         if not self._generation_current(name, generation):
             self._observe(name)
+            return
+        # Only an explicit prompt of a terminal reviewer can revive it.
+        if generation is not None and not revive_terminal and self.status.agent(name)["state"] in TERMINAL_STATES:
             return
         self._refresh_codex_update(name, (r.result or {}).get("agent"), generation=generation)
         if not self._generation_current(name, generation):
             self._observe(name)
             return
         a = self.status.agent(name)
+        if generation is not None and not revive_terminal and a["state"] in TERMINAL_STATES:
+            return
         if r.ok:
             a["prompted"] = True
             if a["state"] in TERMINAL_STATES and a.get("codex_startup_closed"):
@@ -658,8 +670,7 @@ class Runner:
     def _send_review_prompt(self, name: str) -> None:
         a = self.status.agent(name)
         generation = self._codex_generation(name)
-        if not self._generation_current(name, generation):
-            self._observe(name)
+        if not self._start_current(name, generation):
             return
         if a.get("codex_update_pending"):
             return
@@ -875,7 +886,8 @@ class Runner:
         if exited:
             self._agent_exited(name, generation=generation)
         else:
-            self._apply_prompt_result(name, self.herdr.agent_prompt(name, text, until="working", timeout_ms=PROMPT_TIMEOUT_MS), generation=generation)
+            self._apply_prompt_result(name, self.herdr.agent_prompt(name, text, until="working", timeout_ms=PROMPT_TIMEOUT_MS),
+                                      generation=generation, revive_terminal=state in TERMINAL_STATES)
         return {"name": name, **self._summary(name)}
 
     def fail(self, name: str, reason: str) -> dict:
