@@ -874,7 +874,8 @@ class Runner:
 
     def fail(self, name: str, reason: str) -> dict:
         self._agent(name)
-        self._set_state(name, "failed", reason=reason, last_screen=self._last_screen(name))
+        if not self._set_state(name, "failed", reason=reason, last_screen=self._last_screen(name)):
+            raise RunnerError(f"{name} restarted while failing; current state: {self.status.agent(name)['state']}; run fail again")
         out = {"name": name, "state": "failed"}
         stopped = self._stop_queue_holder(agent=name)
         if stopped:

@@ -946,6 +946,33 @@ class CodexUpdateTest(RunnerBase):
         self.assertEqual(len(self.herdr.calls_named("agent_prompt")), 2)
         self.assertNotIn(("tab_rename", "w1:t2", "rv-hrtest: codex ✗"), self.herdr.calls)
 
+    def test_fail_reports_a_generation_conflict_without_stopping_the_replacement_queue(self):
+        run_dir, _ = self.start_update(herdr=UpdatingCodex(still_updating=True))
+        first, stale = self.runner(run_dir), self.runner(run_dir)
+        original_save = stale.status.save
+        raced = False
+
+        def save():
+            nonlocal raced
+            if not raced:
+                raced = True
+                self.assertTrue(first.status.claim_codex_update_restart("hrtest-codex"))
+                first.status.set_agent_state("hrtest-codex", "working", generation=1)
+                self.herdr.agent_status["hrtest-codex"] = ["working"]
+                self.herdr.screens["hrtest-codex"] = CODEX_IDLE
+            original_save()
+
+        stale.status.save = save
+        with mock.patch.object(stale, "_stop_queue_holder", return_value="replacement command") as stop:
+            with self.assertRaisesRegex(RunnerError, "restarted.*run fail again"):
+                stale.fail("hrtest-codex", "remove old startup")
+            stop.assert_not_called()
+        self.assertTrue(raced)
+        a = RunStatus.load(run_dir).agent("hrtest-codex")
+        self.assertEqual((a["codex_launch_generation"], a["state"]), (1, "working"))
+        self.assertIsNone(a["reason"])
+        self.assertNotIn(("tab_rename", "w1:t2", "rv-hrtest: codex ✗"), self.herdr.calls)
+
     def test_a_delayed_prompt_exit_observation_reobserves_without_resending(self):
         run_dir, _ = self.start_update(herdr=UpdatingCodex(blocked_start=True))
         first, stale = self.runner(run_dir), self.runner(run_dir)
