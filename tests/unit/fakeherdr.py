@@ -6,6 +6,7 @@ from typing import Callable
 from herdr_review.herdr import HerdrResult
 
 OK = HerdrResult(True, 0, result={"type": "ok"})
+SHELL_SCREEN = "user@host:~$ \n"
 
 
 class FakeHerdr:
@@ -28,7 +29,7 @@ class FakeHerdr:
         self.screens: dict[str, str] = {}
         self.screens_after_wait: dict[str, list[str]] = {}
         self.reads: dict[str, list[str | None]] = {}        # per agent, one per agent_read (None: it fails); then screens
-        self.pane_screens: dict[str, str] = {}
+        self.pane_screens: dict[str, str | None] = {}
         self.server_running = True
 
     def mask(self, s: str) -> str:
@@ -102,7 +103,8 @@ class FakeHerdr:
 
     def pane_read(self, pane, source="recent-unwrapped", lines=40):
         self.calls.append(("pane_read", pane, source, lines))
-        return self.pane_screens.get(pane, "user@host:~$ \n")
+        text = self.pane_screens.get(pane, SHELL_SCREEN)
+        return "".join(text.splitlines(keepends=True)[-lines:]) if text is not None else None
 
     def agent_send_keys(self, name, *keys):
         self.calls.append(("agent_send_keys", name, tuple(keys)))
@@ -151,5 +153,8 @@ class FakeHerdr:
         return HerdrResult(True, 0, result={"type": "notification_show", "shown": True, "reason": "shown"})
 
     # test helpers
+    def append_pane_output(self, pane: str, text: str) -> None:
+        self.pane_screens[pane] = (self.pane_screens.get(pane, SHELL_SCREEN) or "") + text
+
     def calls_named(self, name: str) -> list[tuple]:
         return [c for c in self.calls if c[0] == name]

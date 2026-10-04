@@ -12,12 +12,12 @@ from typing import Callable, Mapping
 
 from . import PROMPTS_DIR, exclusive, gitutil
 from .config import ConfigError, is_secretish, launch_environ, load_config
-from .dialogs import MCP_UNCHECKED, SCREEN_LINES, mcp_check, resolve_startup_dialog
+from .dialogs import MCP_UNCHECKED, SCREEN_LINES, codex_session_ready, codex_update_complete, codex_update_running, codex_update_started, mcp_check, resolve_startup_dialog
 from .herdr import Herdr, HerdrResult
 from .kinds import startup_env
 from .layout import fixer_split, plan_grid
 from .render import render_file
-from .status import PHASES, RunStatus, StatusError, now_iso
+from .status import PHASES, RunStatus, StatusError, now_iso, valid_codex_update_deadline
 
 REQUIRED_HEADINGS = ("### Critical Issues", "### Important Issues", "### Minor Issues", "### Assessment")
 HEADING_LINE = re.compile(r"^\s*#{1,6}\s")
@@ -48,6 +48,8 @@ LABEL_SUFFIX = {
 FIXER_DONE_STATES = {"idle", "done"}
 PROMPT_TIMEOUT_MS = 30000
 LAST_SCREEN_LINES = 40
+CODEX_BASELINE_MIN_LINES = 3  # tail alignment needs complete, unique retained context
+CODEX_UPDATE_TIMEOUT_SEC = 600
 LIVE_STATUSES = ("idle", "working", "blocked", "done", "unknown")
 # Codes the herdr client raises when it could not reach herdr at all. They say nothing about
 # the agent, so they must never take one out of the run.
@@ -80,6 +82,29 @@ def retry_text(path: str, why: str, prompt: str | None = None) -> str:
 def not_found(r: HerdrResult) -> bool:
     """herdr answered that the tab, pane or agent does not exist; `herdr_not_found` is the binary missing."""
     return bool(r.error_code) and r.error_code.endswith("not_found") and r.error_code not in HERDR_ERROR_CODES
+
+
+def appended_pane_output(baseline: str | None, screen: str | None) -> str | None:
+    """Return only proven appended text; missing or ambiguous retained context fails closed."""
+    if not isinstance(baseline, str) or screen is None:
+        return None
+    if screen.startswith(baseline):
+        return screen[len(baseline):]
+    matches: list[tuple[int, str]] = []
+    offset = 0
+    for line in baseline.splitlines(keepends=True)[:-1]:
+        offset += len(line)
+        overlap = baseline[offset:]
+        if overlap and screen.startswith(overlap):
+            matches.append((offset, overlap))
+    if len(matches) != 1:
+        return None
+    offset, overlap = matches[0]
+    complete_lines = sum(bool(line.strip()) and line.endswith("\n") for line in overlap.splitlines(keepends=True))
+    if (complete_lines < CODEX_BASELINE_MIN_LINES or baseline.find(overlap) != offset
+            or screen.rfind(overlap) != 0):
+        return None
+    return screen[len(overlap):]
 
 
 def response_id(result: object, *keys: str) -> str | None:
@@ -152,7 +177,7 @@ def check_review_file(path: Path) -> tuple[bool, str]:
 
 
 class Runner:
-    def __init__(self, run_dir: Path, herdr: Herdr | None = None, poll_sec: float = 5.0, clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep):
+    def __init__(self, run_dir: Path, herdr: Herdr | None = None, poll_sec: float = 5.0, clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep, wall_clock: Callable[[], float] = time.time):
         self.run_dir = Path(run_dir)
         try:
             self.status = RunStatus.load(self.run_dir)
@@ -168,6 +193,7 @@ class Runner:
         self.poll_sec = poll_sec
         self.clock = clock
         self.sleep = sleep
+        self.wall_clock = wall_clock
 
     # ----- infrastructure
     def log(self, line: str) -> None:
@@ -248,7 +274,8 @@ class Runner:
 
     def _summary(self, name: str) -> dict:
         a = self.status.agent(name)
-        return {"state": a["state"], "tab": a.get("tab"), "pane": a.get("pane"), "reason": a.get("reason")}
+        return {"state": a["state"], "tab": a.get("tab"), "pane": a.get("pane"), "reason": a.get("reason"),
+                "codex_update_pending": bool(a.get("codex_update_pending")), "update_restarts": int(a.get("update_restarts", 0))}
 
     def _prompt_file(self, file: str | Path) -> Path:
         p = Path(file).expanduser()
@@ -288,15 +315,21 @@ class Runner:
         if o.get("tab"):
             self.herdr.tab_rename(o["tab"], f"rv-{self.run_id}: orch{suffix}")
 
-    def _set_state(self, name: str, state: str, reason: str | None = None, last_screen: str | None = None) -> None:
-        self.status.set_agent_state(name, state, reason=reason, last_screen=last_screen)
-        self._relabel(name, state)
+    def _set_state(self, name: str, state: str, reason: str | None = None, last_screen: str | None = None, *, generation: int | None = None) -> bool:
+        accepted = self.status.set_agent_state(name, state, reason=reason, last_screen=last_screen, generation=generation)
+        if not accepted:
+            self._observe(name)
+        self._relabel(name, self.status.agent(name)["state"])
+        return accepted
 
-    def _set_reason(self, name: str, reason: str) -> None:
+    def _set_reason(self, name: str, reason: str, *, generation: int | None = None) -> None:
         """Record why herdr could not be asked, without touching the agent's own state."""
+        generation = self._codex_generation(name) if generation is None else generation
         self.status.agent(name)["reason"] = reason
-        self.status.mark_agent(name)
+        self.status.mark_agent(name, generation=generation)
         self.status.save()
+        if not self._generation_current(name, generation):
+            self._observe(name)
 
     def _pane_screen(self, pane: str) -> str | None:
         """A pane dump for status.json — masked, because it can hold an echoed secret."""
@@ -375,8 +408,172 @@ class Runner:
             self.status.save()
 
     # ----- agent control
-    def _start_agent(self, name: str, spec: dict, pane: str) -> None:
+    @staticmethod
+    def _codex_has_session(agent: dict | None) -> bool:
+        session = agent.get("agent_session") if isinstance(agent, dict) else None
+        return (isinstance(session, dict) and session.get("agent") == "codex" and session.get("kind") in ("id", "path")
+                and isinstance(session.get("value"), str) and bool(session["value"]))
+
+    def _codex_generation(self, name: str) -> int | None:
+        a = self.status.agent(name)
+        return int(a.get("codex_launch_generation", 0)) if a.get("role") == "reviewer" and a.get("kind") == "codex" else None
+
+    def _generation_current(self, name: str, generation: int | None) -> bool:
+        if generation is None:
+            return True
+        try:
+            return self.status.codex_generation_current(name, generation)
+        except StatusError as e:
+            raise RunnerError(str(e)) from e
+
+    def _codex_pane_output(self, name: str, screen: str | None, *, generation: int | None = None) -> str | None:
+        generation = self._codex_generation(name) if generation is None else generation
+        a = self.status.agent(name)
+        if (generation is None or int(a.get("codex_launch_generation", 0)) != generation
+                or a.get("codex_pane_baseline_generation") != generation):
+            return None
+        return appended_pane_output(a.get("codex_pane_baseline"), screen)
+
+    def _close_codex_startup(self, name: str, *, generation: int | None = None) -> None:
+        a = self.status.agent(name)
+        a.update(codex_startup_closed=True, codex_startup_pending=False,
+                 codex_update_seen=False, codex_update_pending=False, codex_update_deadline=None)
+        if a["state"] not in TERMINAL_STATES:
+            a.update(reason=None, last_screen=None)
+        self.status.mark_agent(name, generation=generation)
+        self.status.save()
+
+    def _ensure_codex_update_deadline(self, name: str, *, generation: int | None = None) -> None:
+        a = self.status.agent(name)
+        if (self._codex_generation(name) is None or not a.get("codex_startup_pending")
+                or a.get("codex_startup_closed") or not a.get("codex_update_pending")):
+            return
+        if valid_codex_update_deadline(a.get("codex_update_deadline")) is None:
+            a["codex_update_deadline"] = self.wall_clock() + CODEX_UPDATE_TIMEOUT_SEC
+        # The locked merge also adopts an earlier deadline saved by a concurrent observer.
+        self.status.mark_agent(name, generation=generation)
+        self.status.save()
+
+    def _expire_codex_update(self, name: str, *, generation: int | None = None) -> bool:
+        """Called after a live observation has handled session, exit and blocked precedence."""
+        a = self.status.agent(name)
+        deadline = valid_codex_update_deadline(a.get("codex_update_deadline"))
+        if (not a.get("codex_update_pending") or a.get("codex_startup_closed")
+                or a["state"] in TERMINAL_STATES or deadline is None or self.wall_clock() < deadline):
+            return False
+        screen = self._last_screen(name)
+        if screen is None:
+            visible = self.herdr.agent_read(name, source="visible", lines=SCREEN_LINES)
+            screen = self.herdr.mask(visible) if visible is not None else None
+        a["codex_update_pending"] = False
+        reason = f"Codex startup update did not finish within {CODEX_UPDATE_TIMEOUT_SEC} seconds"
+        self._set_state(name, "failed", reason=reason, last_screen=screen, generation=generation)
+        return True
+
+    def _record_codex_update(self, name: str, screen: str, *, generation: int | None = None) -> bool:
+        """Record live agent output or the proven appended pane output of this launch."""
+        a = self.status.agent(name)
+        if not a.get("codex_startup_pending") or a.get("codex_startup_closed"):
+            return False
+        seen, pending = bool(a.get("codex_update_seen")), bool(a.get("codex_update_pending"))
+        if codex_update_started(screen):
+            a["codex_update_seen"] = True
+        if codex_update_running(screen):
+            a["codex_update_pending"] = True
+        elif codex_update_started(screen):
+            a["codex_update_pending"] = False  # the menu still needs an answer
+        if (seen, pending) != (bool(a.get("codex_update_seen")), bool(a.get("codex_update_pending"))):
+            self.status.mark_agent(name, generation=generation)
+            self.status.save()
+        self._ensure_codex_update_deadline(name, generation=generation)
+        return bool(a.get("codex_update_pending"))
+
+    def _refresh_codex_update(self, name: str, agent: dict | None = None, *, generation: int | None = None) -> bool:
+        """Discover late startup updates; close the window when a real session is confirmed."""
+        a = self.status.agent(name)
+        if not a.get("codex_startup_pending") or a.get("codex_startup_closed"):
+            return False
+        if self._codex_has_session(agent):
+            self._close_codex_startup(name, generation=generation)
+            return False
+        screen = self.herdr.agent_read(name, source="visible", lines=SCREEN_LINES)
+        if screen is None:
+            screen = self._codex_pane_output(name, self._last_screen(name), generation=generation)
+        if screen is not None and codex_session_ready(screen):
+            self._close_codex_startup(name, generation=generation)
+            return False
+        return self._record_codex_update(name, screen or "", generation=generation)
+
+    def _restart_after_codex_update(self, name: str, screen: str | None, *, gone: bool = False, generation: int | None = None) -> str | None:
+        """Return 'restarted', 'changed', or None; screen must be this launch's proven pane suffix."""
+        generation = self._codex_generation(name) if generation is None else generation
+        if not self._generation_current(name, generation):
+            return "changed"
+        a = self.status.agent(name)
+        if (a.get("role") != "reviewer" or a.get("kind") != "codex" or not a.get("codex_update_seen")
+                or not a.get("codex_startup_pending") or a.get("codex_startup_closed")
+                or not screen or not codex_update_complete(screen)):
+            return None
+        if int(a.get("update_restarts", 0)) >= 1:
+            self.log(f"{name}: successful Codex update exit; automatic restart already used")
+            return None
+        if not gone:
+            observed = self.herdr.agent_get(name)
+            if not self._generation_current(name, generation):
+                return "changed"
+            if observed.ok or observed.error_code != "agent_not_found":
+                return None
+        spec = next((s for s in self.run.get("reviewers", []) if s["name"] == name and s["kind"] == "codex"), None)
+        if not spec or not a.get("pane"):
+            return None
+        # Claim against the live file before starting; a stale wait or prompt cannot spend the budget twice.
+        # The pane retains its original cwd and environment.
+        try:
+            claimed = self.status.claim_codex_update_restart(name)
+        except StatusError as e:
+            raise RunnerError(str(e)) from e
+        if not claimed:
+            self.status.save()
+            return "changed"
+        self._relabel(name, "starting")
+        self.log(f"{name}: restarting after successful Codex update in {a['pane']}")
+        self._start_agent(name, spec, a["pane"])
+        return "restarted"
+
+    def _agent_exited(self, name: str, *, generation: int | None = None) -> None:
+        generation = self._codex_generation(name) if generation is None else generation
+        screen = self._last_screen(name)
+        update_output = self._codex_pane_output(name, screen, generation=generation)
+        self._record_codex_update(name, update_output or "", generation=generation)
+        recovery = self._restart_after_codex_update(name, update_output, gone=True, generation=generation)
+        if recovery == "restarted":
+            a = self.status.agent(name)
+            if a["state"] == "idle" and not a.get("codex_update_pending"):
+                self._send_review_prompt(name)
+        elif recovery == "changed":
+            self._observe(name)
+        elif recovery is None:
+            a = self.status.agent(name)
+            if "codex_update_pending" in a:
+                a["codex_update_pending"] = False
+            self._set_state(name, "gone", reason="agent exited", last_screen=screen, generation=generation)
+
+    def _start_agent(self, name: str, spec: dict, pane: str) -> bool:
+        a = self.status.agent(name)
+        generation = self._codex_generation(name)
+        codex_reviewer = spec["kind"] == "codex" and a.get("role") == "reviewer"
+        if codex_reviewer:
+            a.update(codex_startup_pending=True, codex_update_seen=False, codex_update_pending=False,
+                     codex_pane_baseline=self._pane_screen(pane), codex_pane_baseline_generation=generation)
+            self.status.mark_agent(name, generation=generation)
+            self.status.save()
+            if not self._generation_current(name, generation):
+                self._observe(name)
+                return False
         r = self.herdr.agent_start(name, spec["kind"], pane, spec["args"])
+        if not self._generation_current(name, generation):
+            self._observe(name)
+            return False
         if r.ok:
             # herdr 0.9.0 takes Claude Code's MCP dialog with several servers for an idle agent: look
             # before a prompt is typed into it. An agent whose screen herdr could not read is blocked-start,
@@ -387,40 +584,87 @@ class Runner:
             if outcome.resolved:
                 self.log(f"{name}: startup dialog resolved automatically")
         else:
-            self._set_state(name, "failed", reason=f"{r.error_code}: {r.message}", last_screen=self._pane_screen(pane))
-            return
-        if outcome.resolved:
-            self._set_state(name, "idle")
-        elif outcome.refusal:
+            screen = self._pane_screen(pane)
+            if codex_reviewer and r.error_code not in HERDR_ERROR_CODES:
+                update_output = self._codex_pane_output(name, screen, generation=generation)
+                self._record_codex_update(name, update_output or "", generation=generation)
+                recovery = self._restart_after_codex_update(name, update_output, generation=generation)
+                if recovery:
+                    if recovery == "changed":
+                        self._observe(name)
+                    return recovery == "restarted"
+            return self._set_state(name, "failed", reason=f"{r.error_code}: {r.message}", last_screen=screen, generation=generation)
+        if not self._generation_current(name, generation):
+            self._observe(name)
+            return False
+        if codex_reviewer:
+            # An idle update picker can consume the prompt's Enter; the running installer is a separate state.
+            if self._codex_has_session((r.result or {}).get("agent")) or outcome.codex_ready:
+                self._close_codex_startup(name, generation=generation)
+            else:
+                a["codex_update_seen"] = outcome.codex_update
+                a["codex_update_pending"] = outcome.codex_updating
+                self._ensure_codex_update_deadline(name, generation=generation)
+        if codex_reviewer and not outcome.resolved and not outcome.refusal and a.get("codex_startup_pending"):
+            screen = self._pane_screen(pane)
+            update_output = self._codex_pane_output(name, screen, generation=generation)
+            self._record_codex_update(name, update_output or "", generation=generation)
+            recovery = self._restart_after_codex_update(name, update_output, generation=generation)
+            if recovery:
+                if recovery == "changed":
+                    self._observe(name)
+                return recovery == "restarted"
+        if outcome.refusal:
             self.log(f"{name}: startup dialog refused: {outcome.refusal}")
-            self._set_state(name, "failed", reason=outcome.refusal, last_screen=self._pane_screen(pane))
-        else:
-            self._set_state(name, "blocked-start", reason=blocked)
+            return self._set_state(name, "failed", reason=outcome.refusal, last_screen=self._pane_screen(pane), generation=generation)
+        if a.get("codex_update_pending"):
+            return self._set_state(name, "prompt_stalled", reason="Codex startup update is running", generation=generation)
+        if outcome.resolved:
+            return self._set_state(name, "idle", generation=generation)
+        return self._set_state(name, "blocked-start", reason=blocked, generation=generation)
 
-    def _apply_prompt_result(self, name: str, r: HerdrResult) -> None:
+    def _apply_prompt_result(self, name: str, r: HerdrResult, *, generation: int | None = None) -> None:
+        generation = self._codex_generation(name) if generation is None else generation
+        if not self._generation_current(name, generation):
+            self._observe(name)
+            return
+        self._refresh_codex_update(name, (r.result or {}).get("agent"), generation=generation)
+        if not self._generation_current(name, generation):
+            self._observe(name)
+            return
         a = self.status.agent(name)
         if r.ok:
             a["prompted"] = True
-            self._set_state(name, "working")
+            if a["state"] in TERMINAL_STATES and a.get("codex_startup_closed"):
+                a.update(reason=None, last_screen=None)
+            if a.get("codex_startup_pending") and not a.get("codex_update_seen") and not a.get("codex_update_pending"):
+                self._close_codex_startup(name, generation=generation)
+            self._set_state(name, "working", generation=generation)
             return
         code = r.error_code
         if code in ("agent_prompt_stalled", "timeout"):
             a["prompted"] = True
-            self._set_state(name, "prompt_stalled", reason=r.message)
+            self._set_state(name, "prompt_stalled", reason=r.message, generation=generation)
         elif code == "agent_blocked":
-            self._set_state(name, "blocked", reason=r.message)
+            self._set_state(name, "blocked", reason=r.message, generation=generation)
         elif code == "agent_not_found":
-            self._set_state(name, "gone", reason="agent exited", last_screen=self._last_screen(name))
+            self._agent_exited(name, generation=generation)
         elif code in HERDR_ERROR_CODES:
             self.log(f"{name}: prompt not delivered, herdr error {code}: {r.message}")
-            self._set_reason(name, f"{code}: {r.message}")
+            self._set_reason(name, f"{code}: {r.message}", generation=generation)
         else:
-            self._set_state(name, "failed", reason=f"{code}: {r.message}", last_screen=self._last_screen(name))
+            self._set_state(name, "failed", reason=f"{code}: {r.message}", last_screen=self._last_screen(name), generation=generation)
 
     def _send_review_prompt(self, name: str) -> None:
         a = self.status.agent(name)
+        generation = self._codex_generation(name)
+        if not self._generation_current(name, generation):
+            self._observe(name)
+            return
+        if a.get("codex_update_pending"):
+            return
         text = self._terminal_text(self.run_dir / "prompts" / f"{a['profile']}.md")
-        self._apply_prompt_result(name, self.herdr.agent_prompt(name, text, until="working", timeout_ms=PROMPT_TIMEOUT_MS))
+        self._apply_prompt_result(name, self.herdr.agent_prompt(name, text, until="working", timeout_ms=PROMPT_TIMEOUT_MS), generation=generation)
 
     # ----- subcommands
     def start_reviewers(self) -> dict:
@@ -447,8 +691,8 @@ class Runner:
                 )
                 self._relabel(s["name"], "starting")
         for s in specs:
-            self._start_agent(s["name"], s, placement[s["name"]][1])
-            if self.status.agent(s["name"])["state"] == "idle":
+            started = self._start_agent(s["name"], s, placement[s["name"]][1])
+            if started and self.status.agent(s["name"])["state"] == "idle":
                 self._send_review_prompt(s["name"])
         self.status.set_phase("reviewing")
         return {"agents": {s["name"]: self._summary(s["name"]) for s in specs}}
@@ -463,6 +707,7 @@ class Runner:
     def _observe(self, name: str) -> bool:
         """Refresh one agent's state from herdr. False when herdr could not be asked at all."""
         before = self.status.agent(name)["state"]
+        generation = self._codex_generation(name)
         r = self.herdr.agent_get(name)
         attempts = 1
         while not r.ok and r.error_code != "agent_not_found" and attempts < OBSERVE_ATTEMPTS:
@@ -470,26 +715,44 @@ class Runner:
             self.sleep(self.poll_sec)
             r = self.herdr.agent_get(name)
             attempts += 1
+        if not self._generation_current(name, generation):
+            return self._observe(name)
         if not r.ok:
             if r.error_code == "agent_not_found":
-                self._set_state(name, "gone", reason="agent exited", last_screen=self._last_screen(name))
+                self._agent_exited(name, generation=generation)
                 return True
             # The agent may well be working; only herdr is unreachable. Leave the state alone.
             self.log(f"{name}: could not observe after {attempts} attempts: {r.error_code}: {r.message}")
-            self._set_reason(name, f"{r.error_code}: {r.message}")
+            self._set_reason(name, f"{r.error_code}: {r.message}", generation=generation)
+            if not self._generation_current(name, generation):
+                return self._observe(name)
             return False
-        live = ((r.result or {}).get("agent") or {}).get("agent_status")
+        info = (r.result or {}).get("agent") or {}
+        live = info.get("agent_status")
         if live not in LIVE_STATUSES:
             if before != "unknown":
-                self._set_state(name, "unknown", reason=f"unexpected herdr status {live!r}")
+                self._set_state(name, "unknown", reason=f"unexpected herdr status {live!r}", generation=generation)
+            return True
+        updating = self._refresh_codex_update(name, info, generation=generation)
+        if not self._generation_current(name, generation):
+            return self._observe(name)
+        if updating and live != "blocked":
+            if not self._expire_codex_update(name, generation=generation):
+                self._set_state(name, "prompt_stalled", reason="Codex startup update is running", generation=generation)
             return True
         new = "blocked-start" if (before == "blocked-start" and live == "blocked") else live
         if new != before:
-            self._set_state(name, new)
+            self._set_state(name, new, generation=generation)
         return True
 
     def _pending(self, names: list[str]) -> list[str]:
-        return [n for n in names if STATE_CLASS.get(self.status.agent(n)["state"], "unknown") in PENDING_CLASSES]
+        pending = []
+        for n in names:
+            a = self.status.agent(n)
+            if (STATE_CLASS.get(a["state"], "unknown") in PENDING_CLASSES
+                    or (a["state"] not in TERMINAL_STATES and a.get("codex_update_pending"))):
+                pending.append(n)
+        return pending
 
     def wait(self, agent: str | None = None) -> dict:
         if agent:
@@ -534,26 +797,38 @@ class Runner:
                 reason = "checkin"
                 break
             self.sleep(self.poll_sec)
-        agents = {}
+        generations = {n: self._codex_generation(n) for n in names}
         for n in names:
             a = self.status.agent(n)
             current = a.get("screen_hash") if a["state"] in TERMINAL_STATES else self._screen_hash(n)
+            if current is not None:
+                a["screen_hash"] = current
+                self.status.mark_agent(n, generation=generations[n])
+        self.status.save()
+        agents = {}
+        for n in names:
+            if not self._generation_current(n, generations[n]):
+                self._observe(n)
+            a = self.status.agent(n)
+            current = a.get("screen_hash")
             agents[n] = {
                 "state": a["state"],
                 "since_sec": self.status.since_sec(n),
                 "result_ok": bool(a.get("result_ok")),
                 "screen_changed": current is not None and current != baseline[n],
                 "reason": a.get("reason"),
+                "codex_update_pending": bool(a.get("codex_update_pending")),
+                "update_restarts": int(a.get("update_restarts", 0)),
             }
-            if current is not None:
-                a["screen_hash"] = current
-                self.status.mark_agent(n)
-        self.status.save()
         pending = self._pending(names)
         return {"reason": reason, "agents": agents, "pending": pending, "settled": not pending}
 
     def prompt(self, name: str, file: str | None = None, retry: bool = False) -> dict:
         a = self._agent(name)
+        generation = self._codex_generation(name)
+        if not self._generation_current(name, generation):
+            self._observe(name)
+            return {"name": name, **self._summary(name)}
         state = a["state"]
         if state in PROMPT_REFUSED_STATES:
             raise RunnerError(
@@ -562,15 +837,39 @@ class Runner:
             )
         if state in TERMINAL_STATES:
             self.log(f"{name}: prompted while {state} (manual revival)")
-        if retry:
-            a["retries"] = int(a.get("retries", 0)) + 1
         if file:
             text = self._terminal_text(self._prompt_file(file))
         elif a.get("role") == "fixer":
             raise RunnerError("the fixer takes its task from a file: run prompt <fixer> --file <task.md>")
         else:
             text = self._terminal_text(self._prompt_file(self.run_dir / "prompts" / f"{a['profile']}.md"))
-        self._apply_prompt_result(name, self.herdr.agent_prompt(name, text, until="working", timeout_ms=PROMPT_TIMEOUT_MS))
+        exited = False
+        if state in TERMINAL_STATES and a.get("kind") == "codex" and a.get("role") == "reviewer":
+            self._close_codex_startup(name, generation=generation)
+        elif a.get("codex_startup_pending"):
+            observed = self.herdr.agent_get(name)
+            if not self._generation_current(name, generation):
+                self._observe(name)
+                return {"name": name, **self._summary(name)}
+            if observed.ok:
+                self._refresh_codex_update(name, (observed.result or {}).get("agent"), generation=generation)
+            elif observed.error_code == "agent_not_found":
+                exited = True
+            if not self._generation_current(name, generation):
+                self._observe(name)
+                return {"name": name, **self._summary(name)}
+            if not exited and a.get("codex_update_pending"):
+                return {"name": name, **self._summary(name)}
+        if not self._generation_current(name, generation):
+            self._observe(name)
+            return {"name": name, **self._summary(name)}
+        if retry:
+            a["retries"] = int(a.get("retries", 0)) + 1
+            self.status.mark_agent(name, generation=generation)
+        if exited:
+            self._agent_exited(name, generation=generation)
+        else:
+            self._apply_prompt_result(name, self.herdr.agent_prompt(name, text, until="working", timeout_ms=PROMPT_TIMEOUT_MS), generation=generation)
         return {"name": name, **self._summary(name)}
 
     def fail(self, name: str, reason: str) -> dict:
@@ -691,6 +990,16 @@ class Runner:
         pending: list[str] = []
         failed: dict[str, str] = {}
         for n, a in self.status.agents_by_role("reviewer").items():
+            generation = self._codex_generation(n)
+            if not self._generation_current(n, generation):
+                self._observe(n)
+                generation = self._codex_generation(n)
+            if a.get("codex_update_pending") and a["state"] not in TERMINAL_STATES:
+                self._observe(n)
+                generation = self._codex_generation(n)
+                if a["state"] == "failed":
+                    failed[n] = a.get("reason") or "failed"
+                    continue
             st = a["state"]
             if st == "collected":
                 collected.append(n)
@@ -699,17 +1008,24 @@ class Runner:
                 ok, why = check_review_file(Path(a["result_file"])) if a.get("result_file") else (False, st)
                 if ok:
                     a["result_ok"] = True
-                    self._set_state(n, "collected")
-                    collected.append(n)
+                    if self._set_state(n, "collected", generation=generation):
+                        collected.append(n)
+                    else:
+                        pending.append(n)
                     continue
                 failed[n] = a.get("reason") or st
+                continue
+            if a.get("codex_update_pending"):
+                pending.append(n)
                 continue
             if st in ("idle", "done", "unknown"):
                 ok, why = check_review_file(Path(a["result_file"]))
                 if ok:
                     a["result_ok"] = True
-                    self._set_state(n, "collected")
-                    collected.append(n)
+                    if self._set_state(n, "collected", generation=generation):
+                        collected.append(n)
+                    else:
+                        pending.append(n)
                     continue
                 if st == "unknown":
                     pending.append(n)
@@ -721,17 +1037,20 @@ class Runner:
                 # collect's own quota: `prompt --retry` spends `retries`, not this one.
                 if int(a.get("collect_retries", 0)) == 0:
                     a["collect_retries"] = 1
+                    self.status.mark_agent(n, generation=generation)
                     prompt = str(self.run_dir / "prompts" / f"{a['profile']}.md")
                     r = self.herdr.agent_prompt(n, retry_text(a["result_file"], why, prompt), until="working", timeout_ms=PROMPT_TIMEOUT_MS)
-                    self._apply_prompt_result(n, r)
+                    self._apply_prompt_result(n, r, generation=generation)
                     if self.status.agent(n)["state"] in TERMINAL_STATES:
                         failed[n] = self.status.agent(n).get("reason") or self.status.agent(n)["state"]
                     else:
                         pending.append(n)
                     continue
                 reason = f"no valid review file: {why}"
-                self._set_state(n, "failed", reason=reason, last_screen=self._last_screen(n))
-                failed[n] = reason
+                if self._set_state(n, "failed", reason=reason, last_screen=self._last_screen(n), generation=generation):
+                    failed[n] = reason
+                else:
+                    pending.append(n)
                 continue
             pending.append(n)
         drift = self._check_drift()
