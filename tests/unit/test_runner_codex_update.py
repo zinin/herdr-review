@@ -990,6 +990,53 @@ class CodexUpdateTest(RunnerBase):
         self.assertFalse(a["prompted"])
         self.assertEqual((a["retries"], a["collect_retries"], a.get("update_restarts", 0)), (0, 0, 0))
 
+    def test_wait_reobserves_responses_predating_concurrent_startup_progress(self):
+        name = "hrtest-codex"
+        for race_at in ("agent_get", "agent_read"):
+            with self.subTest(race_at=race_at):
+                herdr = FakeHerdr()
+                herdr.screens[name] = UPDATING
+                run_dir, _ = self.start_update(herdr=herdr, root=self.root / race_at)
+                first, stale = self.runner(run_dir), self.runner(run_dir)
+                original_get, original_read = self.herdr.agent_get, self.herdr.agent_read
+                delayed = True
+
+                def finish_startup():
+                    self.herdr.screens[name] = CODEX_IDLE
+                    self.herdr.agent_status[name] = ["idle"]
+                    first._observe(name)
+                    first.prompt(name)
+                    self.herdr.agent_status[name] = ["working"]
+
+                def get(name):
+                    nonlocal delayed
+                    result = original_get(name)
+                    if delayed and race_at == "agent_get":
+                        delayed = False
+                        finish_startup()
+                    return result
+
+                def read(name, source="visible", lines=60):
+                    nonlocal delayed
+                    screen = original_read(name, source, lines)
+                    if delayed and race_at == "agent_read":
+                        delayed = False
+                        finish_startup()
+                    return screen
+
+                self.herdr.agent_get, self.herdr.agent_read = get, read
+                out = stale.wait()
+                self.assertFalse(delayed)
+                self.assertEqual(out["agents"][name]["state"], "working")
+                self.assertEqual(out["pending"], [name])
+                self.assertFalse(out["settled"])
+                a = RunStatus.load(run_dir).agent(name)
+                self.assertTrue(a["prompted"])
+                self.assertTrue(a["codex_startup_closed"])
+                self.assertEqual(stale.collect()["pending"], [name])
+                self.assertEqual(len(self.herdr.calls_named("agent_prompt")), 1)
+                self.assertEqual(len(self.herdr.calls_named("agent_start")), 1)
+
     def test_wait_keeps_a_concurrent_terminal_startup_result(self):
         name = "hrtest-codex"
         for state in ("failed", "collected"):

@@ -418,11 +418,11 @@ class Runner:
         a = self.status.agent(name)
         return int(a.get("codex_launch_generation", 0)) if a.get("role") == "reviewer" and a.get("kind") == "codex" else None
 
-    def _generation_current(self, name: str, generation: int | None) -> bool:
+    def _generation_current(self, name: str, generation: int | None, *, observation: dict | None = None) -> bool:
         if generation is None:
             return True
         try:
-            return self.status.codex_generation_current(name, generation)
+            return self.status.codex_generation_current(name, generation, observation=observation)
         except StatusError as e:
             raise RunnerError(str(e)) from e
 
@@ -708,6 +708,8 @@ class Runner:
         """Refresh one agent's state from herdr. False when herdr could not be asked at all."""
         before = self.status.agent(name)["state"]
         generation = self._codex_generation(name)
+        # Keep this response's startup context through intermediate status adoptions.
+        observation = dict(self.status.agent(name)) if generation is not None else None
         r = self.herdr.agent_get(name)
         attempts = 1
         while not r.ok and r.error_code != "agent_not_found" and attempts < OBSERVE_ATTEMPTS:
@@ -715,7 +717,7 @@ class Runner:
             self.sleep(self.poll_sec)
             r = self.herdr.agent_get(name)
             attempts += 1
-        if not self._generation_current(name, generation):
+        if not self._generation_current(name, generation, observation=observation):
             return self._observe(name)
         # A live Codex process can outlast a failed or collected reviewer.
         if generation is not None and self.status.agent(name)["state"] in TERMINAL_STATES:
@@ -737,7 +739,7 @@ class Runner:
                 self._set_state(name, "unknown", reason=f"unexpected herdr status {live!r}", generation=generation)
             return True
         updating = self._refresh_codex_update(name, info, generation=generation)
-        if not self._generation_current(name, generation):
+        if not self._generation_current(name, generation, observation=observation):
             return self._observe(name)
         if updating and live != "blocked":
             if not self._expire_codex_update(name, generation=generation):

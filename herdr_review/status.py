@@ -220,15 +220,17 @@ class RunStatus:
             self._dirty_agents.clear()
             self._dirty_generations.clear()
 
-    def codex_generation_current(self, name: str, generation: int) -> bool:
-        """Adopt concurrent startup progress or a new launch, keeping owned retry bookkeeping."""
+    def codex_generation_current(self, name: str, generation: int, *, observation: dict | None = None) -> bool:
+        """Adopt concurrent progress and optionally reject an older in-flight startup observation."""
         with self._locked():
             disk = self._on_disk()
             if disk is None or name not in disk["agents"]:
                 raise StatusError(f"cannot observe Codex generation for {name}: status.json is unavailable")
             current = disk["agents"][name]
             same_generation = int(current.get("codex_launch_generation", 0)) == generation
-            if same_generation and not self._codex_startup_changed(current, self._agent_snapshot.get(name) or {}):
+            observation_current = observation is None or not self._codex_startup_changed(current, observation)
+            if (same_generation and observation_current
+                    and not self._codex_startup_changed(current, self._agent_snapshot.get(name) or {})):
                 return True
             merged = self._merged()
             if self._dirty:
@@ -237,7 +239,7 @@ class RunStatus:
             self._dirty.clear()
             self._dirty_agents.clear()
             self._dirty_generations.clear()
-            return same_generation
+            return same_generation and observation_current
 
     def claim_codex_update_restart(self, name: str) -> bool:
         """Reserve the one restart against the live file, atomically with every other status writer."""
