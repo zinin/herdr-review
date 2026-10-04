@@ -127,6 +127,15 @@ class RunStatus:
             return None
         return disk if isinstance(disk, dict) and "agents" in disk else None
 
+    @staticmethod
+    def _codex_startup_changed(current: dict, baseline: dict) -> bool:
+        flags = ("codex_startup_pending", "codex_startup_closed", "codex_update_seen", "codex_update_pending")
+        if any(bool(current.get(key)) != bool(baseline.get(key)) for key in flags):
+            return True
+        return (bool(baseline.get("codex_startup_pending")) and not baseline.get("codex_startup_closed")
+                and any(current.get(key) != baseline.get(key) for key in
+                        ("state", "state_since", "prompted", "result_ok", "result_file", "reason", "last_screen")))
+
     def _merged(self) -> dict:
         """The document on disk with this process's own changes laid over it."""
         merged = self._on_disk()
@@ -142,27 +151,27 @@ class RunStatus:
                 previous = agents.get(name) or {}
                 token = self._dirty_generations.get(name, 0)
                 baseline = self._agent_snapshot.get(name) or {}
-                # A pre-session snapshot cannot overwrite a concurrently confirmed startup.
+                # Concurrent startup progress needs a fresh observation before lifecycle writes.
                 if (int(previous.get("codex_launch_generation", 0)) > token
-                        or (previous.get("codex_startup_closed") and not baseline.get("codex_startup_closed"))):
+                        or self._codex_startup_changed(previous, baseline)):
                     entry = copy.deepcopy(previous)
                 elif name in mine:
                     entry = copy.deepcopy(mine[name])
                     if "update_restarts" in entry or "update_restarts" in previous:
                         entry["update_restarts"] = max(int(entry.get("update_restarts", 0)), int(previous.get("update_restarts", 0)))
-                    if int(entry.get("codex_launch_generation", 0)) == int(previous.get("codex_launch_generation", 0)):
-                        deadlines = [d for value in (entry.get("codex_update_deadline"), previous.get("codex_update_deadline"))
-                                     if (d := valid_codex_update_deadline(value)) is not None]
-                        if deadlines:
-                            entry["codex_update_deadline"] = min(deadlines)
-                    if entry.get("codex_startup_closed") or previous.get("codex_startup_closed"):
-                        entry.update(codex_startup_closed=True, codex_startup_pending=False,
-                                     codex_update_seen=False, codex_update_pending=False, codex_update_deadline=None)
                 else:
                     agents.pop(name, None)      # this process rolled that agent back
                     continue
-                # Prompt retries are owned increments; collect retries consume a one-shot quota.
                 local = mine.get(name) or {}
+                if int(local.get("codex_launch_generation", 0)) == int(previous.get("codex_launch_generation", 0)) == token:
+                    deadlines = [d for value in (local.get("codex_update_deadline"), previous.get("codex_update_deadline"))
+                                 if (d := valid_codex_update_deadline(value)) is not None]
+                    if deadlines:
+                        entry["codex_update_deadline"] = min(deadlines)
+                if entry.get("codex_startup_closed") or previous.get("codex_startup_closed"):
+                    entry.update(codex_startup_closed=True, codex_startup_pending=False,
+                                 codex_update_seen=False, codex_update_pending=False, codex_update_deadline=None)
+                # Prompt retries are owned increments; collect retries consume a one-shot quota.
                 if "retries" in local:
                     delta = int(local["retries"]) - int(baseline.get("retries", 0))
                     entry["retries"] = int(previous.get("retries", 0)) + max(delta, 0)
@@ -212,12 +221,14 @@ class RunStatus:
             self._dirty_generations.clear()
 
     def codex_generation_current(self, name: str, generation: int) -> bool:
-        """Adopt a competing launch, preserving independently owned retry bookkeeping."""
+        """Adopt concurrent startup progress or a new launch, keeping owned retry bookkeeping."""
         with self._locked():
             disk = self._on_disk()
             if disk is None or name not in disk["agents"]:
                 raise StatusError(f"cannot observe Codex generation for {name}: status.json is unavailable")
-            if int(disk["agents"][name].get("codex_launch_generation", 0)) == generation:
+            current = disk["agents"][name]
+            same_generation = int(current.get("codex_launch_generation", 0)) == generation
+            if same_generation and not self._codex_startup_changed(current, self._agent_snapshot.get(name) or {}):
                 return True
             merged = self._merged()
             if self._dirty:
@@ -226,7 +237,7 @@ class RunStatus:
             self._dirty.clear()
             self._dirty_agents.clear()
             self._dirty_generations.clear()
-            return False
+            return same_generation
 
     def claim_codex_update_restart(self, name: str) -> bool:
         """Reserve the one restart against the live file, atomically with every other status writer."""

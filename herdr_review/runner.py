@@ -717,6 +717,9 @@ class Runner:
             attempts += 1
         if not self._generation_current(name, generation):
             return self._observe(name)
+        # A live Codex process can outlast a failed or collected reviewer.
+        if generation is not None and self.status.agent(name)["state"] in TERMINAL_STATES:
+            return True
         if not r.ok:
             if r.error_code == "agent_not_found":
                 self._agent_exited(name, generation=generation)
@@ -740,8 +743,9 @@ class Runner:
             if not self._expire_codex_update(name, generation=generation):
                 self._set_state(name, "prompt_stalled", reason="Codex startup update is running", generation=generation)
             return True
-        new = "blocked-start" if (before == "blocked-start" and live == "blocked") else live
-        if new != before:
+        current = self.status.agent(name)["state"]
+        new = "blocked-start" if (current == "blocked-start" and live == "blocked") else live
+        if new != current:
             self._set_state(name, new, generation=generation)
         return True
 

@@ -169,6 +169,112 @@ class RunStatusTest(unittest.TestCase):
                 self.assertEqual((a["retries"], a["collect_retries"]), (4, 1))
                 self.assertEqual(stale.agent("hrtest-codex"), a)
 
+    def test_a_stale_menu_save_preserves_a_running_installer(self):
+        owner = RunStatus.create(self.run_dir)
+        owner.add_agent("hrtest-codex", role="reviewer", kind="codex", state="idle",
+                        codex_startup_pending=True, codex_update_seen=True, codex_update_pending=False)
+        stale = RunStatus.load(self.run_dir)
+        expected = {"state": "prompt_stalled", "prompted": False, "reason": "Codex startup update is running",
+                    "codex_update_pending": True, "codex_update_seen": True, "codex_startup_pending": True,
+                    "codex_update_deadline": 1_800_000_600.0, "screen_hash": "installer hash"}
+        owner.agent("hrtest-codex").update(expected)
+        owner.mark_agent("hrtest-codex")
+        owner.save()
+        stale.agent("hrtest-codex")["screen_hash"] = "menu hash"
+        stale.mark_agent("hrtest-codex")
+        stale.save()
+        a = RunStatus.load(self.run_dir).agent("hrtest-codex")
+        self.assertEqual({key: a[key] for key in expected}, expected)
+        self.assertEqual(stale.agent("hrtest-codex"), a)
+
+    def test_overlapping_update_observations_keep_the_earliest_deadline(self):
+        owner = RunStatus.create(self.run_dir)
+        owner.add_agent("hrtest-codex", role="reviewer", kind="codex", codex_startup_pending=True,
+                        codex_update_seen=True, codex_update_pending=False)
+        earlier = RunStatus.load(self.run_dir)
+        owner.agent("hrtest-codex").update(codex_update_pending=True, codex_update_deadline=1_800_000_700.0)
+        owner.mark_agent("hrtest-codex")
+        owner.save()
+        earlier.agent("hrtest-codex").update(codex_update_pending=True, codex_update_deadline=1_800_000_600.0)
+        earlier.mark_agent("hrtest-codex")
+        earlier.save()
+        a = RunStatus.load(self.run_dir).agent("hrtest-codex")
+        self.assertTrue(a["codex_update_pending"])
+        self.assertEqual(a["codex_update_deadline"], 1_800_000_600.0)
+
+    def test_a_stale_installer_save_preserves_a_terminal_startup_result(self):
+        for state in ("failed", "gone"):
+            with self.subTest(state=state):
+                owner = RunStatus.create(self.run_dir)
+                owner.add_agent("hrtest-codex", role="reviewer", kind="codex", state="prompt_stalled",
+                                codex_startup_pending=True, codex_update_seen=True, codex_update_pending=True)
+                stale = RunStatus.load(self.run_dir)
+                owner.agent("hrtest-codex")["codex_update_pending"] = False
+                owner.set_agent_state("hrtest-codex", state, reason="installation failed", last_screen="installer error")
+                stale.agent("hrtest-codex")["screen_hash"] = "old installer hash"
+                stale.mark_agent("hrtest-codex")
+                stale.save()
+                a = RunStatus.load(self.run_dir).agent("hrtest-codex")
+                self.assertEqual(a["state"], state)
+                self.assertFalse(a["codex_update_pending"])
+                self.assertEqual(a["reason"], "installation failed")
+                self.assertEqual(a["last_screen"], "installer error")
+
+    def test_a_stale_menu_save_cannot_revive_a_failed_installer(self):
+        owner = RunStatus.create(self.run_dir)
+        owner.add_agent("hrtest-codex", role="reviewer", kind="codex", state="idle",
+                        codex_startup_pending=True, codex_update_seen=True, codex_update_pending=False)
+        stale = RunStatus.load(self.run_dir)
+        owner.agent("hrtest-codex")["codex_update_pending"] = True
+        owner.set_agent_state("hrtest-codex", "prompt_stalled")
+        owner.agent("hrtest-codex")["codex_update_pending"] = False
+        owner.set_agent_state("hrtest-codex", "failed", reason="installation failed", last_screen="installer error")
+        stale.agent("hrtest-codex")["screen_hash"] = "menu hash"
+        stale.mark_agent("hrtest-codex")
+        stale.save()
+        a = RunStatus.load(self.run_dir).agent("hrtest-codex")
+        self.assertEqual(a["state"], "failed")
+        self.assertFalse(a["codex_update_pending"])
+        self.assertEqual(a["reason"], "installation failed")
+        self.assertEqual(a["last_screen"], "installer error")
+
+    def test_a_stale_startup_save_keeps_same_phase_prompt_delivery(self):
+        owner = RunStatus.create(self.run_dir)
+        owner.add_agent("hrtest-codex", role="reviewer", kind="codex", state="prompt_stalled",
+                        codex_startup_pending=True, codex_update_seen=True, codex_update_pending=False)
+        stale = RunStatus.load(self.run_dir)
+        owner.agent("hrtest-codex")["prompted"] = True
+        owner.mark_agent("hrtest-codex")
+        owner.save()
+        stale.agent("hrtest-codex")["screen_hash"] = "menu hash"
+        stale.mark_agent("hrtest-codex")
+        stale.save()
+        a = RunStatus.load(self.run_dir).agent("hrtest-codex")
+        self.assertEqual(a["state"], "prompt_stalled")
+        self.assertTrue(a["prompted"])
+
+    def test_generation_check_adopts_same_generation_startup_progress(self):
+        for owned in (False, True):
+            with self.subTest(owned=owned):
+                owner = RunStatus.create(self.run_dir)
+                owner.add_agent("hrtest-codex", role="reviewer", kind="codex", state="idle",
+                                codex_startup_pending=True, codex_update_seen=True, codex_update_pending=False)
+                stale = RunStatus.load(self.run_dir)
+                owner.agent("hrtest-codex").update(state="prompt_stalled", codex_update_pending=True,
+                                                 codex_update_deadline=1_800_000_600.0, retries=1, collect_retries=1)
+                owner.mark_agent("hrtest-codex")
+                owner.save()
+                if owned:
+                    stale.agent("hrtest-codex")["retries"] += 1
+                    stale.mark_agent("hrtest-codex")
+                self.assertTrue(stale.codex_generation_current("hrtest-codex", 0))
+                a = stale.agent("hrtest-codex")
+                self.assertEqual(a["state"], "prompt_stalled")
+                self.assertTrue(a["codex_update_pending"])
+                self.assertEqual(a["codex_update_deadline"], 1_800_000_600.0)
+                self.assertEqual((a["retries"], a["collect_retries"]), (2 if owned else 1, 1))
+                self.assertEqual(RunStatus.load(self.run_dir).agent("hrtest-codex"), a)
+
     def test_a_state_write_reports_a_concurrent_startup_closure(self):
         owner = RunStatus.create(self.run_dir)
         owner.add_agent("hrtest-codex", role="reviewer", kind="codex", state="prompt_stalled",

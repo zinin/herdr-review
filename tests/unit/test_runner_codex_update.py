@@ -946,6 +946,120 @@ class CodexUpdateTest(RunnerBase):
         self.assertEqual(len(self.herdr.calls_named("agent_prompt")), 2)
         self.assertNotIn(("tab_rename", "w1:t2", "rv-hrtest: codex ✗"), self.herdr.calls)
 
+    def test_a_wait_screen_save_keeps_a_concurrently_started_installer(self):
+        name = "hrtest-codex"
+        run_dir, initial = self.start_update(herdr=UpdatingCodex(blocked_start=True, still_updating=True))
+        initial.status.set_agent_state(name, "idle")
+        self.herdr.agent_status[name] = ["idle"]
+        first, stale = self.runner(run_dir), self.runner(run_dir)
+        original_save = stale.status.save
+        raced = False
+
+        def save():
+            nonlocal raced
+            if not raced and stale.status.agent(name).get("screen_hash"):
+                raced = True
+                self.herdr.screens[name] = UPDATING
+                first._observe(name)
+            original_save()
+
+        stale.status.save = save
+        out = stale.wait()
+        self.assertTrue(raced)
+        self.assertFalse(out["settled"])
+        self.assertEqual(out["pending"], [name])
+        self.assertEqual(out["agents"][name]["state"], "prompt_stalled")
+        self.assertTrue(out["agents"][name]["codex_update_pending"])
+        self.assertEqual(self.herdr.calls_named("agent_prompt"), [])
+        self.assertEqual(len(self.herdr.calls_named("agent_start")), 1)
+
+    def test_a_stale_menu_collect_defers_a_concurrently_started_installer(self):
+        name = "hrtest-codex"
+        run_dir, initial = self.start_update(herdr=UpdatingCodex(blocked_start=True, still_updating=True))
+        initial.status.set_agent_state(name, "idle")
+        stale = self.runner(run_dir)
+        self.herdr.screens[name] = UPDATING
+        self.herdr.agent_status[name] = ["idle"]
+        self.runner(run_dir)._observe(name)
+        out = stale.collect()
+        self.assertEqual(out["pending"], [name])
+        self.assertEqual(out["failed"], {})
+        self.assertEqual(self.herdr.calls_named("agent_prompt"), [])
+        a = RunStatus.load(run_dir).agent(name)
+        self.assertTrue(a["codex_update_pending"])
+        self.assertFalse(a["prompted"])
+        self.assertEqual((a["retries"], a["collect_retries"], a.get("update_restarts", 0)), (0, 0, 0))
+
+    def test_wait_keeps_a_concurrent_terminal_startup_result(self):
+        name = "hrtest-codex"
+        for state in ("failed", "collected"):
+            with self.subTest(state=state):
+                herdr = FakeHerdr()
+                herdr.screens[name] = UPDATING
+                run_dir, first = self.start_update(herdr=herdr, root=self.root / state)
+                stale = self.runner(run_dir)
+                if state == "collected":
+                    first._close_codex_startup(name)
+                    first.status.agent(name).update(prompted=True, result_ok=True)
+                    (run_dir / "reviews" / "codex.md").write_text(REVIEW)
+                first.status.agent(name)["codex_update_pending"] = False
+                reason = "installation failed" if state == "failed" else None
+                first.status.set_agent_state(name, state, reason=reason)
+                self.herdr.screens[name] = CODEX_IDLE
+                self.herdr.agent_status[name] = ["idle"]
+                out = stale.wait()
+                self.assertEqual(out["agents"][name]["state"], state)
+                self.assertEqual(out["agents"][name]["reason"], reason)
+                self.assertTrue(out["settled"])
+                self.assertEqual(self.herdr.calls_named("agent_prompt"), [])
+                if state == "collected":
+                    self.assertTrue(RunStatus.load(run_dir).agent(name)["result_ok"])
+
+    def test_wait_applies_live_state_after_adopting_a_concurrent_startup_transition(self):
+        name = "hrtest-codex"
+        herdr = FakeHerdr()
+        herdr.screens[name] = UPDATING
+        run_dir, initial = self.start_update(herdr=herdr)
+        initial.status.agent(name)["codex_update_pending"] = False
+        initial.status.set_agent_state(name, "idle")
+        first, stale = self.runner(run_dir), self.runner(run_dir)
+        first._close_codex_startup(name)
+        first.status.agent(name)["prompted"] = True
+        first.status.set_agent_state(name, "working")
+        self.herdr.screens[name] = CODEX_IDLE
+        self.herdr.agent_status[name] = ["idle"]
+        out = stale.wait()
+        self.assertTrue(out["settled"])
+        self.assertEqual(out["agents"][name]["state"], "idle")
+        self.assertTrue(RunStatus.load(run_dir).agent(name)["prompted"])
+        self.assertEqual(self.herdr.calls_named("agent_prompt"), [])
+
+    def test_an_inflight_successful_prompt_survives_concurrent_startup_closure(self):
+        name = "hrtest-codex"
+        herdr = FakeHerdr()
+        herdr.screens[name] = UPDATING
+        run_dir, initial = self.start_update(herdr=herdr)
+        initial.status.agent(name)["codex_update_pending"] = False
+        initial.status.set_agent_state(name, "idle")
+        self.herdr.screens[name] = UPDATE_MENU
+        first, stale = self.runner(run_dir), self.runner(run_dir)
+        original_prompt = self.herdr.agent_prompt
+
+        def prompt(name, text, until=None, timeout_ms=None):
+            result = original_prompt(name, text, until, timeout_ms)
+            self.herdr.screens[name] = CODEX_IDLE
+            self.herdr.agent_status[name] = ["working"]
+            first._observe(name)
+            return result
+
+        self.herdr.agent_prompt = prompt
+        out = stale.prompt(name)
+        self.assertEqual(out["state"], "working")
+        a = RunStatus.load(run_dir).agent(name)
+        self.assertTrue(a["prompted"])
+        self.assertTrue(a["codex_startup_closed"])
+        self.assertEqual(len(self.herdr.calls_named("agent_prompt")), 1)
+
     def test_a_wait_screen_save_keeps_a_concurrently_prompted_session(self):
         name = "hrtest-codex"
         herdr = FakeHerdr()
