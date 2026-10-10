@@ -591,7 +591,9 @@ class Runner:
             a = self.status.agent(name)
             if "codex_update_pending" in a:
                 a["codex_update_pending"] = False
-            self._set_state(name, "gone", reason="agent exited", last_screen=screen, generation=generation)
+            if self._set_state(name, "gone", reason="agent exited", last_screen=screen, generation=generation):
+                # Nobody runs `run fail` on a gone agent: a command its CLI left would hold the queue up to its --timeout.
+                self._stop_queue_holder(agent=name)
 
     def _start_agent(self, name: str, spec: dict, pane: str) -> bool:
         a = self.status.agent(name)

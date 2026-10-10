@@ -56,6 +56,17 @@ class RunnerStopsItsQueueHolderTest(RunnerBase):
         self.assertNotIn("exclusive_stopped", r.fail("hrtest-codex", "stuck"))
         self.assertIsNone(p.poll())
 
+    def test_an_agent_whose_cli_exited_has_its_command_stopped(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        r = self.runner(run_dir)
+        r.start_reviewers()
+        p = self.holding(run_dir, "hrtest-codex")
+        self.herdr.agent_status["hrtest-codex"] = ["gone"]           # nobody runs `run fail` on a gone agent
+        self.assertEqual(r.wait(agent="hrtest-codex")["agents"]["hrtest-codex"]["state"], "gone")
+        self.assertEqual(p.wait(timeout=30), 143)
+        self.assertEqual(queue_state(self.runs), {"held": False})
+        self.assertIn("exclusive: stopped hrtest-codex: sleep 30", (run_dir / "runner.log").read_text())
+
     def test_finish_stops_a_command_of_its_run(self):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",))
         r = self.runner(run_dir)
