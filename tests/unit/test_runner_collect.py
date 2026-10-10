@@ -5,9 +5,11 @@ import unittest
 from pathlib import Path
 
 from herdr_review import gitutil
+from herdr_review.herdr import HerdrResult
 from herdr_review.runner import DRIFT_NOTHING_NEW_OR_GONE, Runner, retry_text
 from tests.unit.fakeherdr import FakeHerdr
 from tests.unit.test_runner_start import RunnerBase, git, make_run
+from tests.unit.test_runner_wait import LiveWrappers, register_wrapper
 
 GOOD_REVIEW = "### Strengths\nx\n### Critical Issues\nNone.\n### Important Issues\nNone.\n### Minor Issues\nNone.\n### Assessment\n**Ready to merge:** Yes\n"
 
@@ -116,6 +118,7 @@ class CollectTest(RunnerBase):
 
     def test_unknown_state_without_file_stays_pending(self):
         self.settle("hrtest-codex", state="unknown")
+        self.herdr.agent_status["hrtest-codex"] = ["unknown"]          # collect looks again: herdr still cannot tell
         out = self.r.collect()
         self.assertIn("hrtest-codex", out["pending"])
         self.assertEqual([c for c in self.herdr.calls_named("agent_prompt") if c[1] == "hrtest-codex"][1:], [])
@@ -531,6 +534,107 @@ class FinishTest(RunnerBase):
         finally:
             if locked.exists():
                 locked.chmod(0o755)                                       # tearDown must be able to remove the temp dir
+
+
+class CollectBackgroundTest(RunnerBase):
+    """collect looks at an idle or done reviewer without a valid review once more before it prompts or fails it."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_dir = make_run(self.root, self.repo, reviewers=("claude-opus", "codex"))
+        self.r = Runner(self.run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None)
+        self.r.start_reviewers()
+        self.live = LiveWrappers(self)
+        self.n = "hrtest-claude-opus"
+
+    def busy(self, pid: int = 4242) -> None:
+        self.live.hold(register_wrapper(self.run_dir, self.n, pid))
+
+    def prompts(self) -> int:
+        return len([c for c in self.herdr.calls_named("agent_prompt") if c[1] == self.n])
+
+    def test_a_busy_reviewer_without_a_review_is_pending_and_not_prompted(self):
+        self.r.status.set_agent_state(self.n, "done")                  # what the last wait stored
+        self.busy()
+        before = self.prompts()
+        out = self.r.collect()
+        self.assertIn(self.n, out["pending"])
+        self.assertEqual(self.prompts(), before)
+        a = self.r.status.agent(self.n)
+        self.assertEqual((a["state"], a["collect_retries"]), ("working", 0))
+        self.assertEqual(a["background"], "running its command: go test ./...")
+
+    def test_a_second_miss_while_busy_does_not_fail_the_reviewer(self):
+        self.r.status.set_agent_state(self.n, "idle")
+        self.r.collect()                                               # the first miss: collect's re-prompt
+        self.assertEqual(self.r.status.agent(self.n)["collect_retries"], 1)
+        self.r.status.set_agent_state(self.n, "done")
+        self.busy()
+        out = self.r.collect()
+        self.assertIn(self.n, out["pending"])
+        self.assertEqual(out["failed"], {})
+        self.assertEqual(self.r.status.agent(self.n)["state"], "working")
+
+    def test_a_reviewer_working_again_is_not_prompted(self):
+        self.r.status.set_agent_state(self.n, "done")
+        self.herdr.agent_status[self.n] = ["working"]
+        before = self.prompts()
+        out = self.r.collect()
+        self.assertIn(self.n, out["pending"])
+        self.assertEqual(self.prompts(), before)
+        self.assertEqual(self.r.status.agent(self.n)["collect_retries"], 0)
+
+    def test_a_reviewer_herdr_cannot_report_stays_pending(self):
+        self.r.status.set_agent_state(self.n, "idle")
+        self.r.status.agent(self.n)["collect_retries"] = 1             # a second miss would fail it
+        self.r.status.mark_agent(self.n)
+        self.r.status.save()
+        self.herdr.agent_get = lambda name: HerdrResult(False, 1, error_code="timeout", message="herdr timed out")
+        out = self.r.collect()
+        self.assertIn(self.n, out["pending"])
+        self.assertEqual(out["failed"], {})
+        self.assertEqual(self.r.status.agent(self.n)["state"], "idle")
+
+    def test_a_reviewer_that_exited_meanwhile_is_reported_failed_at_once(self):
+        self.r.status.set_agent_state(self.n, "idle")                  # what the last wait stored
+        self.herdr.agent_status[self.n] = ["gone"]                     # it exited since, without a review
+        out = self.r.collect()
+        self.assertEqual(out["failed"], {self.n: "agent exited"})
+        self.assertNotIn(self.n, out["pending"])
+        self.assertEqual(self.r.status.agent(self.n)["state"], "gone")
+
+    def test_a_busy_reviewer_with_a_valid_review_is_not_collected_yet(self):
+        (self.run_dir / "reviews" / "claude-opus.md").write_text(GOOD_REVIEW)   # a draft, written before its tests
+        self.r.status.set_agent_state(self.n, "done")                  # what the last wait stored
+        self.busy()
+        out = self.r.collect()
+        self.assertIn(self.n, out["pending"])
+        self.assertNotIn(self.n, out["collected"])
+        self.assertEqual(self.r.status.agent(self.n)["state"], "working")
+
+    def test_an_unknown_reviewer_with_a_valid_draft_and_a_live_wrapper_is_not_collected_yet(self):
+        (self.run_dir / "reviews" / "claude-opus.md").write_text(GOOD_REVIEW)
+        self.r.status.set_agent_state(self.n, "unknown")               # what the last wait stored
+        self.herdr.agent_status[self.n] = ["unknown"]
+        self.busy()
+        out = self.r.collect()
+        self.assertIn(self.n, out["pending"])
+        self.assertNotIn(self.n, out["collected"])
+        self.assertEqual(self.r.status.agent(self.n)["state"], "working")
+
+    def test_an_unknown_reviewer_with_a_valid_review_and_nothing_running_is_collected(self):
+        (self.run_dir / "reviews" / "claude-opus.md").write_text(GOOD_REVIEW)
+        self.r.status.set_agent_state(self.n, "unknown")
+        self.herdr.agent_status[self.n] = ["unknown"]
+        self.assertIn(self.n, self.r.collect()["collected"])
+
+    def test_a_reviewer_that_exited_meanwhile_with_a_valid_review_is_collected(self):
+        (self.run_dir / "reviews" / "claude-opus.md").write_text(GOOD_REVIEW)
+        self.r.status.set_agent_state(self.n, "idle")
+        self.herdr.agent_status[self.n] = ["gone"]
+        out = self.r.collect()
+        self.assertIn(self.n, out["collected"])
+        self.assertEqual(out["failed"], {})
 
 
 if __name__ == "__main__":

@@ -80,6 +80,19 @@ class CloseTest(RunnerBase):
         self.assertEqual(json.loads((run_dir / "status.json").read_text())["phase"], "aborted")
         self.assertFalse((run_dir / "scratch").exists())
 
+    def test_a_forced_close_that_leaves_a_tab_open_retires_the_agents_whose_tabs_closed(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex", "gemini"))
+        r = self.runner(run_dir)
+        r.start_reviewers()
+        self.herdr.close_errors["w1:t3"] = ("server_error", "boom")
+        r.close(force=True)
+        agents = json.loads((run_dir / "status.json").read_text())["agents"]
+        # Its CLI went with its tab: a wrapper it left runs nothing more, though the run stays in progress.
+        self.assertEqual((agents["hrtest-codex"]["state"], agents["hrtest-codex"]["reason"]),
+                         ("gone", "its tab was closed by close --force"))
+        self.assertEqual(agents["hrtest-gemini"]["state"], "working")         # its tab is still open
+        self.assertIn("close --force: hrtest-codex is gone with its tab", (run_dir / "runner.log").read_text())
+
     def test_a_forced_close_from_the_orchestrators_tab_saves_before_that_tab_closes(self):
         run_dir = make_run(self.root, self.repo, reviewers=("codex", "gemini"))
         (run_dir / "scratch" / "codex").mkdir(parents=True)

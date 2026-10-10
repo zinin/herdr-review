@@ -14,8 +14,8 @@ from pathlib import Path
 
 from herdr_review import PACKAGE_ROOT
 from herdr_review.exclusive import (
-    ExclusiveError, Where, _finish_off, command_text, format_duration, holder_text, locate, queue_state,
-    read_holder, remove_holder, runs_dir_of, write_holder,
+    ExclusiveError, Where, _finish_off, command_text, format_duration, holder_text, live_wrappers, locate, queue_state,
+    read_holder, remove_holder, runs_dir_of, wrapper_files, write_holder,
 )
 
 BIN = PACKAGE_ROOT / "bin" / "herdr-review"
@@ -397,13 +397,13 @@ class TurnTest(ExclusiveBase):
         self.assertIn(f' exclusive: hrtest-codex running "{command}" after 0s of waiting\n', log)
         self.assertEqual(len(log.splitlines()), 2, log)                # running and done, one line each
 
-    def mark(self, state: str) -> None:
-        """This run's status.json, as the runner keeps it, with the wrapper's agent in <state>."""
+    def mark(self, state: str, phase: str = "reviewing") -> None:
+        """This run's status.json, as the runner keeps it, with the wrapper's agent in <state> and the run in <phase>."""
         agents = {
             "hrtest-codex": {"state": state, "reason": None, "role": "reviewer", "profile": "codex", "kind": "codex"},
             "hrtest-gemini": {"state": "working", "reason": None, "role": "reviewer", "profile": "gemini", "kind": "gemini"},
         }
-        (self.run_dir / "status.json").write_text(json.dumps({"phase": "reviewing", "run_id": "hrtest", "agents": agents}))
+        (self.run_dir / "status.json").write_text(json.dumps({"phase": phase, "run_id": "hrtest", "agents": agents}))
 
     def test_an_agent_its_run_took_off_runs_nothing(self):
         marker = self.root / "ran"
@@ -439,6 +439,45 @@ class TurnTest(ExclusiveBase):
         self.assertIn("nothing was run", err)
         self.assertEqual(queue_state(self.runs), {"held": False})
 
+    def test_an_agent_that_left_the_run_runs_nothing(self):
+        marker = self.root / "ran"
+        self.mark("gone")                            # its CLI exited; a background command of it may still call
+        p = self.exclusive("--", "touch", str(marker))
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertFalse(marker.exists())
+        self.assertIn("herdr-review exclusive: hrtest-codex has left this review: its CLI exited; nothing was run", p.stderr)
+        self.assertIn(" exclusive: hrtest-codex refused: left the review\n", (self.run_dir / "runner.log").read_text())
+
+    def test_a_wrapper_of_a_review_that_ended_while_it_waited_runs_nothing(self):
+        marker = self.root / "ran"
+        self.mark("working")
+        held = self.hold(pid=42, agent="other-codex", run_id="hrother", command="mvn test", started_at=iso_ago(5))
+        p = subprocess.Popen(exclusive_cmd("--wait", "30", "--", "touch", str(marker)), env=self.env,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(stop_quietly, p)
+        first = p.stderr.readline()                  # the waiting notice: another run holds the queue
+        self.assertIn("waiting —", first)
+        self.mark("working", phase="finished")       # run finish, while the wrapper waits: scratch/ is gone now
+        held.release()
+        _, err = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 1, first + err)
+        self.assertFalse(marker.exists())
+        self.assertIn("hrtest-codex belongs to a review that is over (finished); nothing was run", err)
+        self.assertIn(" exclusive: hrtest-codex refused: the review is over (finished)\n", (self.run_dir / "runner.log").read_text())
+
+    def test_a_review_that_ends_as_the_wrapper_takes_its_turn_runs_nothing(self):
+        # run finish saves the phase, then stops a command of the run by the holder file: landing after the wrapper's
+        # look at the run but before that file, it would find no holder of its run to stop.
+        marker = self.root / "ran"
+        self.mark("working")
+        p = subprocess.run([sys.executable, "-c", FINISH_AT_HOLDER, "touch", str(marker)], cwd=PACKAGE_ROOT,
+                           env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertFalse(marker.exists())
+        self.assertIn("hrtest-codex belongs to a review that is over (finished); nothing was run", p.stderr)
+        self.assertEqual(queue_state(self.runs), {"held": False})
+        self.assertIsNone(read_holder(self.runs))
+
     def test_an_agent_still_in_its_run_or_an_unreadable_status_runs_the_command(self):
         writes = {
             "working": lambda: self.mark("working"),
@@ -471,6 +510,18 @@ GRACEFUL_HARNESS = (     # only a stop signal ends the command, which has 5 s to
     "import os, sys\n"
     "from herdr_review import exclusive\n"
     "sys.exit(exclusive.run(sys.argv[1:], timeout_sec=60, grace_sec=5, poll_sec=0.05, environ=os.environ))\n"
+)
+FINISH_AT_HOLDER = (     # run finish saves the phase just as the wrapper writes its holder file
+    "import json, os, sys\n"
+    "from pathlib import Path\n"
+    "from herdr_review import exclusive\n"
+    "write_holder = exclusive.write_holder\n"
+    "def finish_then_write(runs_dir, holder):\n"
+    "    status = Path(os.environ['HERDR_REVIEW_RUN']) / 'status.json'\n"
+    "    status.write_text(json.dumps({**json.loads(status.read_text()), 'phase': 'finished'}))\n"
+    "    write_holder(runs_dir, holder)\n"
+    "exclusive.write_holder = finish_then_write\n"
+    "sys.exit(exclusive.run(sys.argv[1:], environ=os.environ))\n"
 )
 OUTSIDER = (             # leaves the process group, then records a SIGINT and exits: argv count, ready, pidfile
     "import os, signal, sys, time\n"
@@ -697,3 +748,168 @@ class StopTest(ExclusiveBase):
                 p = subprocess.run(exclusive_cmd("--timeout", value, "--", "true"), env=self.env, capture_output=True,
                                    text=True, timeout=30)
                 self.assertEqual(p.returncode, 2)
+
+
+class WrapperRegistryTest(ExclusiveBase):
+    """Inside a review every wrapper registers itself in <run_dir>/wrappers/ while it waits for its turn and while it
+    runs its command: the runner keeps its agent working meanwhile, whatever herdr reports. Its entry <stem>.json counts
+    while the wrapper holds the flock of its lock file <stem>.lock."""
+
+    def files(self) -> list[str]:
+        """The names of every file in the registry: the wrappers' entries and their lock files."""
+        registry = self.run_dir / "wrappers"
+        return sorted(p.name for p in registry.iterdir()) if registry.is_dir() else []
+
+    def registered(self, pid: int) -> tuple[Path, Path]:
+        """The entry and the lock file of wrapper <pid>, once it has registered."""
+        found: list[Path] = []
+
+        def look() -> bool:
+            found[:] = sorted((self.run_dir / "wrappers").glob(f"{pid}-*.json"))
+            return bool(found)
+
+        self.assertTrue(wait_until(look))
+        self.assertEqual(len(found), 1)
+        return wrapper_files(self.run_dir, found[0].stem)
+
+    def start(self, *args: str) -> subprocess.Popen:
+        p = subprocess.Popen(exclusive_cmd(*args), env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                             text=True)
+        self.addCleanup(stop_quietly, p)
+        return p
+
+    def write(self, stem: str, data, *, lock: bool = True) -> tuple[Path, Path]:
+        """An entry <stem>.json holding <data> and, unless <lock> is False, its lock file, which nobody holds yet."""
+        entry, lock_file = wrapper_files(self.run_dir, stem)
+        entry.parent.mkdir(exist_ok=True)
+        entry.write_text(data if isinstance(data, str) else json.dumps(data))
+        if lock:
+            lock_file.touch()
+        return entry, lock_file
+
+    def hold_lock(self, lock: Path) -> None:
+        """Hold the flock of <lock> through an open file of this test, as its wrapper does while it lives."""
+        fd = os.open(lock, os.O_RDWR)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+    def test_the_command_finds_its_own_entry_as_running_beside_its_lock(self):
+        seen = self.root / "seen.json"
+        listed = self.root / "listed.txt"
+        script = 'cp "$1"/wrappers/"$PPID"-*.json "$2" && ls "$1/wrappers" > "$3"'
+        args = ["sh", "-c", script, "sh", str(self.run_dir), str(seen), str(listed)]
+        p = subprocess.run(exclusive_cmd("--", *args), env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        entry = json.loads(seen.read_text())
+        self.assertEqual((entry["agent"], entry["run_id"], entry["phase"]), ("hrtest-codex", "hrtest", "running"))
+        self.assertEqual(entry["command"], shlex.join(args))
+        self.assertIsInstance(entry["pid"], int)
+        self.assertIsNotNone(entry["started_at"])
+        self.assertIsNotNone(entry["running_since"])
+        self.assertNotIn("pid_started", entry)
+        name, lock = listed.read_text().split()                          # while it runs: its entry and its lock
+        self.assertRegex(name, rf"^{entry['pid']}-[0-9a-f]{{16}}\.json$")
+        self.assertEqual(lock, name.removesuffix(".json") + ".lock")
+        self.assertEqual(self.files(), [])                               # both gone once the command is done
+
+    def test_a_wrapper_waiting_for_its_turn_is_registered_as_waiting(self):
+        self.hold(pid=42, agent="hrtest-gemini", run_id="hrtest", command="mvn test", started_at=iso_ago(5))
+        p = self.start("--wait", "30", "--", "true")
+        self.assertIn("waiting —", p.stderr.readline())          # the entry is written before the wait
+        entry, lock = self.registered(p.pid)
+        data = json.loads(entry.read_text())
+        self.assertEqual((data["phase"], data["running_since"], data["agent"]), ("waiting", None, "hrtest-codex"))
+        self.assertTrue(lock.exists())
+        self.assertEqual([e["pid"] for e in live_wrappers(self.run_dir)], [p.pid])     # its lock is held
+
+    def test_a_running_wrapper_is_live(self):
+        p = self.start("--", "sleep", "30")
+        entry, lock = self.registered(p.pid)
+        self.assertTrue(wait_until(lambda: json.loads(entry.read_text())["phase"] == "running"))
+        self.assertTrue(lock.exists())
+        self.assertEqual([e["pid"] for e in live_wrappers(self.run_dir)], [p.pid])
+
+    def test_the_entry_its_lock_and_their_directory_are_readable_by_their_owner_only(self):
+        p = self.start("--", "sleep", "30")
+        entry, lock = self.registered(p.pid)
+        self.assertEqual(stat.S_IMODE(entry.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(lock.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(entry.parent.stat().st_mode), 0o700)
+
+    def test_the_entry_and_its_lock_are_gone_after_every_way_out(self):
+        def code(*args: str) -> int:
+            return subprocess.run(exclusive_cmd(*args), env=self.env, capture_output=True, timeout=60).returncode
+
+        self.assertEqual(code("--", "true"), 0)
+        self.assertEqual(self.files(), [])
+        self.assertEqual(code("--", "no-such-program-for-herdr-review"), 127)
+        self.assertEqual(self.files(), [])
+        self.hold(pid=42, agent="hrtest-gemini", run_id="hrtest", command="mvn test", started_at=iso_ago(5))
+        self.assertEqual(code("--wait", "0.3", "--", "true"), 75)
+        self.assertEqual(self.files(), [])
+        p = self.start("--wait", "30", "--", "true")
+        self.assertIn("waiting —", p.stderr.readline())
+        self.assertEqual(len(self.files()), 2)                           # its entry and its lock while it waits
+        p.send_signal(signal.SIGTERM)
+        p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 143)
+        self.assertEqual(self.files(), [])
+
+    def test_no_entry_for_a_nested_call_or_outside_a_review(self):
+        p = subprocess.run(exclusive_cmd("--", "true"), env={**self.env, "HERDR_REVIEW_EXCLUSIVE": "1"},
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        cfg = self.root / "config.yaml"
+        cfg.write_text(f"profiles:\n  codex: {{kind: codex}}\nsettings: {{runs_dir: {self.runs}}}\n")
+        cfg.chmod(0o600)
+        p = subprocess.run(exclusive_cmd("--", "true"), env=clean_env(HERDR_REVIEW_CONFIG=str(cfg)),
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(list(self.root.rglob("wrappers")), [])
+
+    def test_a_registry_it_cannot_write_does_not_stop_the_command(self):   # Review Focus 1
+        (self.run_dir / "wrappers").write_text("a file where the registry's directory belongs")
+        p = subprocess.run(exclusive_cmd("--", "sh", "-c", "exit 3"), env=self.env, capture_output=True, text=True,
+                           timeout=60)
+        self.assertEqual(p.returncode, 3, p.stderr)
+        self.assertIn(f"exclusive: hrtest-codex could not register in {self.run_dir / 'wrappers'}: ",
+                      (self.run_dir / "runner.log").read_text())
+
+    def test_live_wrappers_keeps_the_live_ones_in_start_order(self):
+        for stem, pid, phase, started in (("11-aa", 11, "running", "2026-10-10T10:00:01+00:00"),
+                                          ("12-bb", 12, "running", "2026-10-10T10:00:02+00:00"),
+                                          ("15-cc", 15, "waiting", "2026-10-10T10:00:00+00:00")):
+            self.hold_lock(self.write(stem, {"pid": pid, "agent": "a", "phase": phase, "started_at": started})[1])
+        self.assertEqual([e["pid"] for e in live_wrappers(self.run_dir)], [15, 11, 12])
+
+    def test_live_wrappers_keeps_an_entry_whose_lock_is_held_whatever_its_pid_names_here(self):
+        # Codex runs every command in a PID namespace of its own, where its shell is pid 2: here that pid names no
+        # wrapper, but the lock tells the wrapper lives.
+        entry, lock = self.write("2-aa", {"pid": 2, "agent": "hrtest-codex", "started_at": "1"})
+        self.hold_lock(lock)
+        self.assertEqual([e["agent"] for e in live_wrappers(self.run_dir)], ["hrtest-codex"])
+        self.assertEqual(self.files(), ["2-aa.json", "2-aa.lock"])
+
+    def test_two_entries_with_one_pid_are_two_live_wrappers(self):
+        # Two commands of Codex, each in a PID namespace of its own, where both wrappers have the same pid.
+        self.hold_lock(self.write("2-aa", {"pid": 2, "agent": "hrtest-codex", "started_at": "1"})[1])
+        self.hold_lock(self.write("2-bb", {"pid": 2, "agent": "hrtest-fixer", "started_at": "2"})[1])
+        self.assertEqual([e["agent"] for e in live_wrappers(self.run_dir)], ["hrtest-codex", "hrtest-fixer"])
+
+    def test_live_wrappers_removes_the_entry_of_a_wrapper_that_is_gone(self):
+        self.write("11-aa", {"pid": 11, "agent": "a", "started_at": "1"})               # nobody holds its lock
+        self.write("12-bb", {"pid": 12, "agent": "b", "started_at": "2"}, lock=False)   # it has no lock file
+        self.assertEqual(live_wrappers(self.run_dir), [])
+        self.assertEqual(self.files(), [])                               # the first one's lock file goes too
+
+    def test_live_wrappers_skips_a_malformed_file_and_leaves_it(self):
+        self.write("13-aa", "{not json")
+        self.write("14-bb", {"pid": "14"})
+        self.write("15-cc", {"pid": True})
+        self.write("16-dd", ["pid", 16])
+        self.assertEqual(live_wrappers(self.run_dir), [])
+        self.assertEqual(self.files(), ["13-aa.json", "13-aa.lock", "14-bb.json", "14-bb.lock", "15-cc.json",
+                                        "15-cc.lock", "16-dd.json", "16-dd.lock"])
+
+    def test_a_run_without_a_registry_has_no_live_wrappers(self):
+        self.assertEqual(live_wrappers(self.run_dir), [])

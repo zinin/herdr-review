@@ -307,7 +307,8 @@ def cmd_status(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     print(queue_line(queue))
     print(f"{'agent':<28} {'role':<9} {'state':<15} {'since':>6}  file  reason")
     for n, a in data["agents"].items():
-        reason = (a.get("reason") or "")[:60]
+        busy = a.get("background") and a["state"] == "working"
+        reason = (f"фон: {a['background']}" if busy else a.get("reason") or "")[:60]
         file_ok = "yes" if a.get("result_ok") else "-"
         print(f"{n:<28} {a.get('role', ''):<9} {a['state']:<15} {st.since_sec(n):>5}s  {file_ok:<4}  {reason}")
     if data.get("commits"):
@@ -328,6 +329,8 @@ def cmd_close(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
             print(f"оставлены открытыми (ID теперь у чужой вкладки): {', '.join(result['left_open'])}")
         if result.get("exclusive_stopped"):
             print(queue_stop_line(result["exclusive_stopped"]))
+        if result.get("exclusive_stopped_while_closing"):
+            print(queue_stop_line(result["exclusive_stopped_while_closing"]))
         for ident, why in result["failed"].items():
             print(f"не удалось закрыть {ident}: {why}", file=sys.stderr)
     return 1 if result["failed"] else 0

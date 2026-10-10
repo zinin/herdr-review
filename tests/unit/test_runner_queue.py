@@ -56,6 +56,17 @@ class RunnerStopsItsQueueHolderTest(RunnerBase):
         self.assertNotIn("exclusive_stopped", r.fail("hrtest-codex", "stuck"))
         self.assertIsNone(p.poll())
 
+    def test_an_agent_whose_cli_exited_has_its_command_stopped(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        r = self.runner(run_dir)
+        r.start_reviewers()
+        p = self.holding(run_dir, "hrtest-codex")
+        self.herdr.agent_status["hrtest-codex"] = ["gone"]           # nobody runs `run fail` on a gone agent
+        self.assertEqual(r.wait(agent="hrtest-codex")["agents"]["hrtest-codex"]["state"], "gone")
+        self.assertEqual(p.wait(timeout=30), 143)
+        self.assertEqual(queue_state(self.runs), {"held": False})
+        self.assertIn("exclusive: stopped hrtest-codex: sleep 30", (run_dir / "runner.log").read_text())
+
     def test_finish_stops_a_command_of_its_run(self):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",))
         r = self.runner(run_dir)
@@ -69,10 +80,60 @@ class RunnerStopsItsQueueHolderTest(RunnerBase):
         r = self.runner(run_dir)
         r.start_reviewers()
         r.start_fixer()
-        r.finish([])
-        p = self.holding(run_dir, "hrtest-fixer")
+        p = self.holding(run_dir, "hrtest-fixer")                       # once the run is over, a wrapper runs nothing
+        self.assertEqual(self.runner(run_dir).close(force=True)["exclusive_stopped"], "hrtest-fixer: sleep 30")
+        self.assertEqual(p.wait(timeout=30), 143)
+
+    def test_close_of_a_finished_run_stops_a_command_that_outlived_finish(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        r = self.runner(run_dir)
+        r.start_reviewers()
+        r.start_fixer()
+        p = self.holding(run_dir, "hrtest-fixer")                       # taken while the run was in progress
+        r.status.set_phase("finished")                                  # as when it outlived run finish's stop
         self.assertEqual(self.runner(run_dir).close()["exclusive_stopped"], "hrtest-fixer: sleep 30")
         self.assertEqual(p.wait(timeout=30), 143)
+
+    def test_close_force_stops_a_wrapper_that_took_the_queue_while_the_tabs_closed(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        self.runner(run_dir).start_reviewers()
+        took: list[subprocess.Popen] = []
+        # While the reviewer's tab closes the run is not over yet: a wrapper of it that waited for its turn takes the
+        # queue the first stop freed.
+        self.herdr.on_close["w1:t2"] = lambda: took.append(self.holding(run_dir, "hrtest-codex"))
+        out = self.runner(run_dir).close(force=True)
+        self.assertEqual(len(took), 1)
+        self.assertEqual(queue_state(self.runs), {"held": False})          # stopped before scratch/ went
+        self.assertEqual(took[0].wait(timeout=30), 143)
+        self.assertEqual(out["exclusive_stopped_while_closing"], "hrtest-codex: sleep 30")
+
+    def test_close_force_reports_the_stop_before_the_tabs_closed_and_the_one_after(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        r = self.runner(run_dir)
+        r.start_reviewers()
+        r.start_fixer()
+        first = self.holding(run_dir, "hrtest-fixer")                   # holds the queue before the tabs close
+        took: list[subprocess.Popen] = []
+        # While the reviewer's tab closes another wrapper of the run takes the queue the first stop freed.
+        self.herdr.on_close["w1:t2"] = lambda: took.append(self.holding(run_dir, "hrtest-codex"))
+        out = self.runner(run_dir).close(force=True)
+        self.assertEqual(len(took), 1)
+        self.assertEqual(out["exclusive_stopped"], "hrtest-fixer: sleep 30")
+        self.assertEqual(out["exclusive_stopped_while_closing"], "hrtest-codex: sleep 30")
+        self.assertEqual(first.wait(timeout=30), 143)
+        self.assertEqual(took[0].wait(timeout=30), 143)
+        self.assertEqual(queue_state(self.runs), {"held": False})
+
+    def test_close_force_that_leaves_a_tab_open_stops_a_wrapper_of_an_agent_whose_tab_closed(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex", "gemini"))
+        self.runner(run_dir).start_reviewers()
+        took: list[subprocess.Popen] = []
+        self.herdr.on_close["w1:t2"] = lambda: took.append(self.holding(run_dir, "hrtest-codex"))
+        self.herdr.close_errors["w1:t3"] = ("server_error", "boom")       # the run stays in phase reviewing
+        out = self.runner(run_dir).close(force=True)
+        self.assertEqual(out["exclusive_stopped_while_closing"], "hrtest-codex: sleep 30")
+        self.assertEqual(took[0].wait(timeout=30), 143)
+        self.assertEqual(queue_state(self.runs), {"held": False})
 
     def test_a_command_of_another_run_is_left_alone(self):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",))

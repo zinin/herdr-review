@@ -2,6 +2,34 @@
 
 All notable changes to herdr-review will be documented here.
 
+## [Unreleased]
+
+### Fixed
+- A reviewer or the fixer that herdr reports idle, done or unknown while it waits for its own background work stays
+  `working`: its command in the build queue, for every agent kind, and for grok any background task or subagent that
+  grok's status line shows above its input (trusted alone for 30 minutes at most). `collect` looks at such a reviewer
+  again before it takes its review, re-prompts it or fails it, so a reviewer waiting for its own tests is neither
+  collected on a draft, nor re-prompted, nor failed.
+- The wrapper runs nothing for an agent whose CLI exited (`gone`), nor once its review is over (`finished`,
+  `aborted`), like for an agent `run fail` took off, also when that happens just as it takes its turn: a background
+  wrapper still waiting for its turn no longer starts a build after the review, in a `scratch/` already removed.
+- An agent whose CLI exited (`gone`) no longer leaves its command holding the build queue up to its `--timeout`:
+  the runner stops it, as `run fail` does. A `close --force` that leaves a tab open, and with it the run in
+  progress, makes the agents whose tabs did close `gone` too.
+
+### Added
+- `herdr-review exclusive` registers each wrapper of a review in `<run_dir>/wrappers/<pid>-<token>.json` while it
+  waits for its turn and while it runs its command, and keeps that entry live by holding a lock on
+  `<pid>-<token>.lock`, so it works for an agent whose CLI runs its commands in a PID namespace of their own, such as
+  Codex.
+- `background`: what an agent that herdr shows idle still waits for, in `run wait`, `run prompt`, `start-reviewers`,
+  `start-fixer`, `status.json` and `herdr-review status` («фон:»).
+
+### Changed
+- The heavy-command rules ask agents to wait for every command they started before they reply DONE. The
+  orchestrator leaves an agent with `background` alone and never presses Enter in a grok tab that shows a running
+  background task or a queued prompt.
+
 ## [0.5.0] - 2026-10-04
 
 ### Added
