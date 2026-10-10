@@ -129,6 +129,21 @@ class PromptTemplatesTest(unittest.TestCase):
                 self.assertIn("is not applied, and is reported `skipped: <path> holds the user's uncommitted work; left to the user`", text)
                 self.assertNotIn("Apply each fix in full", text)                # it read as covering the fixes to skip too
 
+    def test_the_orchestrator_leaves_an_agent_busy_with_background_work_alone(self):
+        values = {k: "v" for k in EXPECTED["orchestrator.md"]}
+        text = render_file(PROMPTS_DIR / "orchestrator.md", values)
+        self.assertIn("`screen_changed` (did the screen change since the previous `wait`?), `reason`, `background`.", text)
+        self.assertIn("`working` with `background` set → it waits for its own work. Keep waiting, and send it no keys and"
+                      " no prompt, however long its screen stays the same.", text)
+        self.assertIn("`working` without `background`, with `screen_changed: false` on two consecutive waits →", text)
+        self.assertIn("`N queued, Enter to send now` there means a prompt waits in grok's queue. grok delivers that prompt"
+                      " when the agent's turn ends; Enter would send it at once and cut the turn short. Never press Enter"
+                      " or any other key in such a tab.", text)
+        self.assertIn("A grok agent may only hold the prompt in its queue while it waits for its own background work",
+                      text)
+        self.assertIn("Stop when the fixer is `idle` or `done`; while its `background` is set, the runner keeps it"
+                      " `working`.", text)
+
     def test_orchestrator_prompt_renders_and_names_every_subcommand(self):
         values = {k: "v" for k in EXPECTED["orchestrator.md"]}
         values["RUNNER"] = "/opt/hr/bin/herdr-review"
@@ -433,6 +448,10 @@ class PromptTemplatesTest(unittest.TestCase):
                 self.assertIn("No server, container or watcher may outlive the call.", text)
                 self.assertIn("Never run the command without it.", text)
                 self.assertIn("give the call a timeout that covers the command and up to 60 s of waiting for the turn", text)
+                self.assertIn("You may start the wrapper in the background and go on working while it runs. Before you"
+                              " write your result and reply DONE, wait for every command you started, the wrapper's"
+                              " included, and read its output. Never end your turn while one of your commands still"
+                              " runs.", text)
                 self.assertNotIn("{", text)
         self.assertIn("## Heavy Commands", reviewer)
         self.assertIn("running the project's own tests — through the wrapper that Heavy Commands below describes — are fine", reviewer)
