@@ -603,6 +603,23 @@ class CollectBackgroundTest(RunnerBase):
         self.assertNotIn(self.n, out["pending"])
         self.assertEqual(self.r.status.agent(self.n)["state"], "gone")
 
+    def test_a_busy_reviewer_with_a_valid_review_is_not_collected_yet(self):
+        (self.run_dir / "reviews" / "claude-opus.md").write_text(GOOD_REVIEW)   # a draft, written before its tests
+        self.r.status.set_agent_state(self.n, "done")                  # what the last wait stored
+        self.busy()
+        out = self.r.collect()
+        self.assertIn(self.n, out["pending"])
+        self.assertNotIn(self.n, out["collected"])
+        self.assertEqual(self.r.status.agent(self.n)["state"], "working")
+
+    def test_a_reviewer_that_exited_meanwhile_with_a_valid_review_is_collected(self):
+        (self.run_dir / "reviews" / "claude-opus.md").write_text(GOOD_REVIEW)
+        self.r.status.set_agent_state(self.n, "idle")
+        self.herdr.agent_status[self.n] = ["gone"]
+        out = self.r.collect()
+        self.assertIn(self.n, out["collected"])
+        self.assertEqual(out["failed"], {})
+
 
 if __name__ == "__main__":
     unittest.main()

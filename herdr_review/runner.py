@@ -1134,6 +1134,15 @@ class Runner:
                 if a["state"] == "failed":
                     failed[n] = a.get("reason") or "failed"
                     continue
+            if a["state"] in ("idle", "done") and not a.get("codex_update_pending"):
+                # A fresh look before anything is decided: herdr may report an agent idle or done while it waits for
+                # its own background work, when even a valid file may be a draft, and the state the last `wait`
+                # stored may be old. An agent that left the run meanwhile goes the way of `failed` and `gone` below.
+                if not self._observe(n):
+                    pending.append(n)
+                    continue
+                a = self.status.agent(n)
+                generation = self._codex_generation(n)
             st = a["state"]
             if st == "collected":
                 collected.append(n)
@@ -1162,19 +1171,6 @@ class Runner:
                         pending.append(n)
                     continue
                 if st == "unknown":
-                    pending.append(n)
-                    continue
-                # A fresh look before any prompt or failure: herdr may report an agent idle or done while it waits
-                # for its own background work, and the state the last `wait` stored may be old.
-                if not self._observe(n):
-                    pending.append(n)
-                    continue
-                a = self.status.agent(n)
-                generation = self._codex_generation(n)
-                if a["state"] in TERMINAL_STATES:            # it left the run meanwhile, without a valid review
-                    failed[n] = a.get("reason") or a["state"]
-                    continue
-                if a["state"] not in ("idle", "done"):
                     pending.append(n)
                     continue
                 if not a.get("prompted"):
