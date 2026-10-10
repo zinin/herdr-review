@@ -69,9 +69,8 @@ class RunnerStopsItsQueueHolderTest(RunnerBase):
         r = self.runner(run_dir)
         r.start_reviewers()
         r.start_fixer()
-        r.finish([])
-        p = self.holding(run_dir, "hrtest-fixer")
-        self.assertEqual(self.runner(run_dir).close()["exclusive_stopped"], "hrtest-fixer: sleep 30")
+        p = self.holding(run_dir, "hrtest-fixer")                       # once the run is over, a wrapper runs nothing
+        self.assertEqual(self.runner(run_dir).close(force=True)["exclusive_stopped"], "hrtest-fixer: sleep 30")
         self.assertEqual(p.wait(timeout=30), 143)
 
     def test_a_command_of_another_run_is_left_alone(self):

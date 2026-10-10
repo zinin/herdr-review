@@ -10,6 +10,9 @@ All notable changes to herdr-review will be documented here.
   status line shows above its input (trusted alone for 30 minutes at most). `collect` looks at an idle or done
   reviewer again before it re-prompts or fails it, so a reviewer waiting for its own tests is neither re-prompted nor
   failed.
+- The wrapper runs nothing for an agent whose CLI exited (`gone`), nor once its review is over (`finished`,
+  `aborted`), like for an agent `run fail` took off: a background wrapper still waiting for its turn no longer starts
+  a build after the review, in a `scratch/` already removed.
 
 ### Added
 - `herdr-review exclusive` registers each wrapper of a review in `<run_dir>/wrappers/<pid>.json` while it waits for

@@ -308,22 +308,36 @@ def _unregister(path: Path | None) -> None:
         pass
 
 
-def _taken_off(where: Where, agent: str | None) -> bool:
-    """Whether the run took <agent> off (`run fail` leaves it `failed`). Its CLI may still run and call the wrapper
-    again, which would hold the queue for as long as its --timeout. A status file that cannot be read takes nobody
+def _taken_off(where: Where, agent: str | None) -> tuple[str, str] | None:
+    """Why the wrapper runs nothing for <agent>, as (what it says, what the run's log records); None when it may run.
+    The run took <agent> off (`run fail` leaves it `failed`), its CLI exited (`gone`), or the review is over
+    (`finished`, `aborted`), and scratch/ with it. The CLI, or a background command it left, may still call the
+    wrapper, which would hold the queue for as long as its --timeout. A status file that cannot be read takes nobody
     off."""
     if where.run_dir is None or not agent:
-        return False
+        return None
     try:
-        state = RunStatus.load(where.run_dir).agent(agent).get("state")
+        status = RunStatus.load(where.run_dir)
+    except StatusError:
+        return None
+    phase = status.data.get("phase")
+    if phase in ("finished", "aborted"):
+        return f"belongs to a review that is over ({phase})", f"the review is over ({phase})"
+    try:
+        state = status.agent(agent).get("state")
     except (StatusError, AttributeError):
-        return False
-    return state == "failed"
+        return None
+    if state == "failed":
+        return "was taken off this review (run fail)", "taken off the review"
+    if state == "gone":
+        return "has left this review: its CLI exited", "left the review"
+    return None
 
 
-def _refuse(where: Where, who: str) -> int:
-    _say(f"{who} was taken off this review (run fail); nothing was run")
-    _log(where, f"{who} refused: taken off the review")
+def _refuse(where: Where, who: str, why: tuple[str, str]) -> int:
+    said, logged = why
+    _say(f"{who} {said}; nothing was run")
+    _log(where, f"{who} refused: {logged}")
     return 1
 
 
@@ -618,8 +632,9 @@ def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, timeout_sec: 
     where = locate(environ, Path.cwd() if cwd is None else Path(cwd))
     agent = environ.get(AGENT_ENV) or None
     who = agent or f"pid {os.getpid()}"
-    if _taken_off(where, agent):
-        return _refuse(where, who)
+    why = _taken_off(where, agent)
+    if why:
+        return _refuse(where, who, why)
     shown = command_text(command)
     received = _catch_stop_signals()
     fd = _open_queue(where.runs_dir)
@@ -638,8 +653,9 @@ def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, timeout_sec: 
             _say(f"busy — {text}; nothing was run. Do other work and run the same command again later.")
             _log(where, f"{who} busy after {format_duration(turn.waited or 0)}: {text}")
             return EXIT_BUSY
-        if _taken_off(where, agent):                 # taken off while it waited for its turn
-            return _refuse(where, who)
+        why = _taken_off(where, agent)               # taken off, gone or over while it waited for its turn
+        if why:
+            return _refuse(where, who, why)
         if entry_path is not None:
             _write_entry(where, entry_path, {**entry, "phase": "running", "running_since": now_iso()}, who)
         pid = os.getpid()

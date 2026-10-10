@@ -398,13 +398,13 @@ class TurnTest(ExclusiveBase):
         self.assertIn(f' exclusive: hrtest-codex running "{command}" after 0s of waiting\n', log)
         self.assertEqual(len(log.splitlines()), 2, log)                # running and done, one line each
 
-    def mark(self, state: str) -> None:
-        """This run's status.json, as the runner keeps it, with the wrapper's agent in <state>."""
+    def mark(self, state: str, phase: str = "reviewing") -> None:
+        """This run's status.json, as the runner keeps it, with the wrapper's agent in <state> and the run in <phase>."""
         agents = {
             "hrtest-codex": {"state": state, "reason": None, "role": "reviewer", "profile": "codex", "kind": "codex"},
             "hrtest-gemini": {"state": "working", "reason": None, "role": "reviewer", "profile": "gemini", "kind": "gemini"},
         }
-        (self.run_dir / "status.json").write_text(json.dumps({"phase": "reviewing", "run_id": "hrtest", "agents": agents}))
+        (self.run_dir / "status.json").write_text(json.dumps({"phase": phase, "run_id": "hrtest", "agents": agents}))
 
     def test_an_agent_its_run_took_off_runs_nothing(self):
         marker = self.root / "ran"
@@ -439,6 +439,32 @@ class TurnTest(ExclusiveBase):
         self.assertFalse(marker.exists())
         self.assertIn("nothing was run", err)
         self.assertEqual(queue_state(self.runs), {"held": False})
+
+    def test_an_agent_that_left_the_run_runs_nothing(self):
+        marker = self.root / "ran"
+        self.mark("gone")                            # its CLI exited; a background command of it may still call
+        p = self.exclusive("--", "touch", str(marker))
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertFalse(marker.exists())
+        self.assertIn("herdr-review exclusive: hrtest-codex has left this review: its CLI exited; nothing was run", p.stderr)
+        self.assertIn(" exclusive: hrtest-codex refused: left the review\n", (self.run_dir / "runner.log").read_text())
+
+    def test_a_wrapper_of_a_review_that_ended_while_it_waited_runs_nothing(self):
+        marker = self.root / "ran"
+        self.mark("working")
+        held = self.hold(pid=42, agent="other-codex", run_id="hrother", command="mvn test", started_at=iso_ago(5))
+        p = subprocess.Popen(exclusive_cmd("--wait", "30", "--", "touch", str(marker)), env=self.env,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(stop_quietly, p)
+        first = p.stderr.readline()                  # the waiting notice: another run holds the queue
+        self.assertIn("waiting —", first)
+        self.mark("working", phase="finished")       # run finish, while the wrapper waits: scratch/ is gone now
+        held.release()
+        _, err = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 1, first + err)
+        self.assertFalse(marker.exists())
+        self.assertIn("hrtest-codex belongs to a review that is over (finished); nothing was run", err)
+        self.assertIn(" exclusive: hrtest-codex refused: the review is over (finished)\n", (self.run_dir / "runner.log").read_text())
 
     def test_an_agent_still_in_its_run_or_an_unreadable_status_runs_the_command(self):
         writes = {
