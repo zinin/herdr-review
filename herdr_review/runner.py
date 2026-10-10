@@ -796,6 +796,10 @@ class Runner:
         new = "blocked-start" if (current == "blocked-start" and live == "blocked") else live
         before = {k: a.get(k) for k in BUSY_FIELDS}
         background = self._background_work(name) if live in ("idle", "done") else None
+        if live not in ("idle", "done") and a.get("screen_busy_since") is not None:
+            # herdr sees the agent at work again: a stretch of grok's status line alone, which SCREEN_BUSY_LIMIT_SEC
+            # bounds, is over; the line's next sighting starts a new one.
+            a.update(screen_busy_since=None, screen_busy_logged=False)
         if background is not None:
             new = "working"
             background = self.herdr.mask(background)

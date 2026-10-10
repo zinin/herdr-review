@@ -299,6 +299,19 @@ class BackgroundWorkTest(RunnerBase):
         self.assertEqual(self.clock.t, SCREEN_BUSY_LIMIT_SEC + BUSY_GRACE_SEC)
         self.assertEqual(self.log().count('hrtest-grok: grok has shown "1 command still running" for 30 minutes'), 1)
 
+    def test_the_screen_clock_starts_again_after_herdr_sees_the_agent_work(self):
+        self.herdr.screens["hrtest-grok"] = GROK_WAIT_SCREEN
+        self.herdr.agent_status["hrtest-grok"] = ["done"]
+        self.r.wait(agent="hrtest-grok")                               # the line is seen: its 30-minute clock starts
+        self.herdr.agent_status["hrtest-grok"] = ["working"]
+        for _ in range(7):                                             # 35 minutes of work
+            self.r.wait(agent="hrtest-grok")
+        self.herdr.agent_status["hrtest-grok"] = ["done"]              # it waits for another background task
+        out = self.r.wait(agent="hrtest-grok")
+        self.assertEqual(out["agents"]["hrtest-grok"]["state"], "working")
+        self.assertEqual(out["agents"]["hrtest-grok"]["background"], "grok: 1 command still running")
+        self.assertNotIn("for 30 minutes", self.log())
+
     def test_blocked_wins_over_background_work(self):
         self.busy("hrtest-claude-opus")
         self.herdr.agent_status["hrtest-claude-opus"] = ["blocked"]
