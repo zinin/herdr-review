@@ -2,7 +2,7 @@
 
 All notable changes to herdr-review will be documented here.
 
-## [Unreleased]
+## [0.6.0] - 2026-10-10
 
 ### Fixed
 - A reviewer or the fixer that herdr reports idle, done or unknown while it waits for its own background work stays
@@ -16,6 +16,8 @@ All notable changes to herdr-review will be documented here.
 - An agent whose CLI exited (`gone`) no longer leaves its command holding the build queue up to its `--timeout`:
   the runner stops it, as `run fail` does. A `close --force` that leaves a tab open, and with it the run in
   progress, makes the agents whose tabs did close `gone` too.
+- `close --force` stops once more, after it has set the run `aborted`, a wrapper of the run that took the build
+  queue while the tabs closed, and reports that stop apart from the first one (`exclusive_stopped_while_closing`).
 
 ### Added
 - `herdr-review exclusive` registers each wrapper of a review in `<run_dir>/wrappers/<pid>-<token>.json` while it
@@ -26,9 +28,10 @@ All notable changes to herdr-review will be documented here.
   `start-fixer`, `status.json` and `herdr-review status` («фон:»).
 
 ### Changed
-- The heavy-command rules ask agents to wait for every command they started before they reply DONE. The
-  orchestrator leaves an agent with `background` alone and never presses Enter in a grok tab that shows a running
-  background task or a queued prompt.
+- The heavy-command rules let an agent start the wrapper through its shell tool's own background mode, never with a
+  shell `&`, and ask it to wait for every command it started before it replies DONE. The orchestrator leaves an
+  agent with `background` alone and never presses a key in a grok tab that shows a running background task or a
+  queued prompt, except to answer a `blocked` dialog.
 
 ## [0.5.0] - 2026-10-04
 
