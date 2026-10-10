@@ -1152,6 +1152,16 @@ class Runner:
                 if st == "unknown":
                     pending.append(n)
                     continue
+                # A fresh look before any prompt or failure: herdr may report an agent idle or done while it waits
+                # for its own background work, and the state the last `wait` stored may be old.
+                if not self._observe(n):
+                    pending.append(n)
+                    continue
+                a = self.status.agent(n)
+                generation = self._codex_generation(n)
+                if a["state"] not in ("idle", "done"):
+                    pending.append(n)
+                    continue
                 if not a.get("prompted"):
                     self._send_review_prompt(n, generation=generation)
                     pending.append(n)

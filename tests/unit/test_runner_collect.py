@@ -5,9 +5,11 @@ import unittest
 from pathlib import Path
 
 from herdr_review import gitutil
+from herdr_review.herdr import HerdrResult
 from herdr_review.runner import DRIFT_NOTHING_NEW_OR_GONE, Runner, retry_text
 from tests.unit.fakeherdr import FakeHerdr
 from tests.unit.test_runner_start import RunnerBase, git, make_run
+from tests.unit.test_runner_wait import LiveWrappers, register_wrapper
 
 GOOD_REVIEW = "### Strengths\nx\n### Critical Issues\nNone.\n### Important Issues\nNone.\n### Minor Issues\nNone.\n### Assessment\n**Ready to merge:** Yes\n"
 
@@ -531,6 +533,67 @@ class FinishTest(RunnerBase):
         finally:
             if locked.exists():
                 locked.chmod(0o755)                                       # tearDown must be able to remove the temp dir
+
+
+class CollectBackgroundTest(RunnerBase):
+    """collect looks at an idle or done reviewer without a valid review once more before it prompts or fails it."""
+
+    def setUp(self):
+        super().setUp()
+        self.run_dir = make_run(self.root, self.repo, reviewers=("claude-opus", "codex"))
+        self.r = Runner(self.run_dir, herdr=self.herdr, poll_sec=0, sleep=lambda s: None)
+        self.r.start_reviewers()
+        self.live = LiveWrappers(self)
+        self.n = "hrtest-claude-opus"
+
+    def busy(self, pid: int = 4242) -> None:
+        register_wrapper(self.run_dir, self.n, pid)
+        self.live.pids.add(pid)
+
+    def prompts(self) -> int:
+        return len([c for c in self.herdr.calls_named("agent_prompt") if c[1] == self.n])
+
+    def test_a_busy_reviewer_without_a_review_is_pending_and_not_prompted(self):
+        self.r.status.set_agent_state(self.n, "done")                  # what the last wait stored
+        self.busy()
+        before = self.prompts()
+        out = self.r.collect()
+        self.assertIn(self.n, out["pending"])
+        self.assertEqual(self.prompts(), before)
+        a = self.r.status.agent(self.n)
+        self.assertEqual((a["state"], a["collect_retries"]), ("working", 0))
+        self.assertEqual(a["background"], "running its command: go test ./...")
+
+    def test_a_second_miss_while_busy_does_not_fail_the_reviewer(self):
+        self.r.status.set_agent_state(self.n, "idle")
+        self.r.collect()                                               # the first miss: collect's re-prompt
+        self.assertEqual(self.r.status.agent(self.n)["collect_retries"], 1)
+        self.r.status.set_agent_state(self.n, "done")
+        self.busy()
+        out = self.r.collect()
+        self.assertIn(self.n, out["pending"])
+        self.assertEqual(out["failed"], {})
+        self.assertEqual(self.r.status.agent(self.n)["state"], "working")
+
+    def test_a_reviewer_working_again_is_not_prompted(self):
+        self.r.status.set_agent_state(self.n, "done")
+        self.herdr.agent_status[self.n] = ["working"]
+        before = self.prompts()
+        out = self.r.collect()
+        self.assertIn(self.n, out["pending"])
+        self.assertEqual(self.prompts(), before)
+        self.assertEqual(self.r.status.agent(self.n)["collect_retries"], 0)
+
+    def test_a_reviewer_herdr_cannot_report_stays_pending(self):
+        self.r.status.set_agent_state(self.n, "idle")
+        self.r.status.agent(self.n)["collect_retries"] = 1             # a second miss would fail it
+        self.r.status.mark_agent(self.n)
+        self.r.status.save()
+        self.herdr.agent_get = lambda name: HerdrResult(False, 1, error_code="timeout", message="herdr timed out")
+        out = self.r.collect()
+        self.assertIn(self.n, out["pending"])
+        self.assertEqual(out["failed"], {})
+        self.assertEqual(self.r.status.agent(self.n)["state"], "idle")
 
 
 if __name__ == "__main__":
