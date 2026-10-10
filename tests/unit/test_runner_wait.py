@@ -289,6 +289,18 @@ class BackgroundWorkTest(RunnerBase):
         self.assertIn("hrtest-claude-opus: herdr reports done, kept working: its background work ended moments ago", self.log())
         self.assertIn("hrtest-claude-opus: its background work is over", self.log())
 
+    def test_the_grace_holds_in_the_next_runner_process(self):
+        self.busy("hrtest-claude-opus")
+        self.herdr.agent_status["hrtest-claude-opus"] = ["done"]
+        self.r.wait(agent="hrtest-claude-opus")                        # this `run wait` sees the wrapper
+        self.live.pids.clear()                                         # the command ends
+        later = Runner(self.run_dir, herdr=self.herdr, poll_sec=5, clock=self.clock, sleep=self.clock.sleep,
+                       wall_clock=lambda: 1000.0 + self.clock.t)       # the next `run wait`, another process
+        start = self.clock.t
+        out = later.wait(agent="hrtest-claude-opus")
+        self.assertEqual((out["reason"], out["agents"]["hrtest-claude-opus"]["state"]), ("state_change", "done"))
+        self.assertEqual(self.clock.t - start, BUSY_GRACE_SEC)         # status.json carried when it was last busy
+
     def test_the_grok_line_alone_counts_for_30_minutes(self):
         self.herdr.agent_status["hrtest-grok"] = ["done"]
         self.herdr.screens["hrtest-grok"] = GROK_WAIT_SCREEN
