@@ -306,8 +306,10 @@ class CloseQueueStopTest(unittest.TestCase):
             return exclusive.stop_holder(Path("/nowhere"), "hrtest", clock=lambda: now[0],
                                          sleep=lambda s: now.__setitem__(0, now[0] + s))
 
-    def close(self, stopped: str | None, *flags: str) -> str:
+    def close(self, stopped: str | None, *flags: str, late: str | None = None) -> str:
         result = {"closed": [], "already_closed": [], "left_open": [], "failed": {}, "exclusive_stopped": stopped}
+        if late is not None:
+            result["exclusive_stopped_while_closing"] = late
         out = io.StringIO()
         with mock.patch("herdr_review.cli.Runner") as runner, redirect_stdout(out):
             runner.return_value.close.return_value = result
@@ -326,6 +328,15 @@ class CloseQueueStopTest(unittest.TestCase):
     def test_the_json_keeps_its_value(self):
         self.assertEqual(json.loads(self.close(self.stop(60), "--json"))["exclusive_stopped"],
                          "hrtest-codex: mvn test (still running after 15s)")
+
+    def test_a_stop_while_the_tabs_closed_follows_the_first_one(self):
+        text = self.close(self.stop(1), late=exclusive.Stopped("hrtest-fixer: go test ./...", 15))
+        first = "остановлена команда из очереди сборок: hrtest-codex: mvn test\n"
+        second = ("команда из очереди сборок не остановилась за 15 с после SIGTERM: hrtest-fixer: go test ./...; "
+                  "её остановит --timeout\n")
+        self.assertIn(first, text)
+        self.assertIn(second, text)
+        self.assertLess(text.index(first), text.index(second))
 
 
 if __name__ == "__main__":

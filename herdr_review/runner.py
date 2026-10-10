@@ -1389,6 +1389,7 @@ class Runner:
         if phase not in ("finished", "aborted") and not force:
             raise RunnerError(f"run {self.run_id} is still in phase {phase}; closing its tabs stops its agents — pass --force")
         stopped = self._stop_queue_holder()          # a CLI's background command can outlive its tab
+        late: str | None = None                      # what close --force stops once the tabs are closed
         closed: list[str] = []
         gone: list[str] = []
         left_open: list[str] = []
@@ -1445,8 +1446,9 @@ class Runner:
                 self.status.set("waiting_for_user", False)
                 self.status.set_phase("aborted")
                 # While the tabs closed the run was not over yet: a wrapper of it that waited for its turn may have
-                # taken the queue the first stop freed. The phase now turns away every later one.
-                stopped = self._stop_queue_holder() or stopped
+                # taken the queue the first stop freed. The phase now turns away every later one. This stop is
+                # reported as exclusive_stopped_while_closing, beside the first one.
+                late = self._stop_queue_holder()
                 self._remove_scratch()
         self.status.set("closed_at", now_iso())
         self.status.save()
@@ -1454,4 +1456,6 @@ class Runner:
         result = {"closed": closed, "already_closed": gone, "left_open": left_open, "failed": failed}
         if stopped:
             result["exclusive_stopped"] = stopped
+        if late:
+            result["exclusive_stopped_while_closing"] = late
         return result

@@ -329,6 +329,8 @@ def cmd_close(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
             print(f"оставлены открытыми (ID теперь у чужой вкладки): {', '.join(result['left_open'])}")
         if result.get("exclusive_stopped"):
             print(queue_stop_line(result["exclusive_stopped"]))
+        if result.get("exclusive_stopped_while_closing"):
+            print(queue_stop_line(result["exclusive_stopped_while_closing"]))
         for ident, why in result["failed"].items():
             print(f"не удалось закрыть {ident}: {why}", file=sys.stderr)
     return 1 if result["failed"] else 0
