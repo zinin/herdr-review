@@ -796,3 +796,24 @@ class WrapperRegistryTest(ExclusiveBase):
 
     def test_a_run_without_a_registry_has_no_live_wrappers(self):
         self.assertEqual(live_wrappers(self.run_dir), [])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "/proc/<pid>/stat is Linux-only")
+    def test_the_entry_names_when_its_wrapper_started(self):
+        self.hold(pid=42, agent="hrtest-gemini", run_id="hrtest", command="mvn test", started_at=iso_ago(5))
+        p = self.start("--wait", "30", "--", "true")
+        self.assertIn("waiting —", p.stderr.readline())
+        entry = json.loads(wrapper_entry(self.run_dir, p.pid).read_text())
+        started = int(Path(f"/proc/{p.pid}/stat").read_text().rsplit(")", 1)[1].split()[19])   # field 22: starttime
+        self.assertEqual(entry["pid_started"], started)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "/proc/<pid>/stat is Linux-only")
+    def test_live_wrappers_drops_an_entry_whose_pid_now_names_another_process(self):
+        registry = self.run_dir / "wrappers"
+        registry.mkdir()
+        me = os.getpid()
+        started = int(Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()[19])
+        (registry / "same.json").write_text(json.dumps({"pid": me, "pid_started": started, "agent": "a", "started_at": "2"}))
+        (registry / "reused.json").write_text(json.dumps({"pid": me, "pid_started": started - 1, "agent": "b", "started_at": "1"}))
+        found = live_wrappers(self.run_dir, alive=lambda pid: True)    # the pid runs a wrapper: is_wrapper, substituted
+        self.assertEqual([e["agent"] for e in found], ["a"])
+        self.assertFalse((registry / "reused.json").exists())          # its wrapper died; the pid was reused

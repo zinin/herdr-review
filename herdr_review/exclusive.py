@@ -161,11 +161,21 @@ def wrapper_entry(run_dir: Path, pid: int) -> Path:
     return Path(run_dir) / WRAPPERS_DIR / f"{pid}.json"
 
 
+def pid_started(pid: int) -> int | None:
+    """When <pid> started, in clock ticks since boot (field 22 of /proc/<pid>/stat): with the pid it names one process,
+    since the kernel reuses pids. None where there is no /proc, and when <pid> runs no more."""
+    try:
+        return int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
 def live_wrappers(run_dir: Path, alive: Callable[[int], bool] | None = None) -> list[dict]:
     """The registered wrappers of the run in <run_dir> that still run, in the order they started: each one waits for
     its turn or runs its command. <alive> tells whether a pid runs `herdr-review exclusive`; is_wrapper, looked up at
-    call time, by default. The entry of a pid that does not is removed: its wrapper died without removing it, of
-    SIGKILL say. A file that cannot be read or parsed is skipped and left alone."""
+    call time, by default. The entry of a pid that does not, or that started at another time than the entry records
+    (`pid_started`: the pid was reused), is removed: its wrapper died without removing it, of SIGKILL say. A file that
+    cannot be read or parsed is skipped and left alone."""
     alive = alive or is_wrapper
     found = []
     for path in sorted((Path(run_dir) / WRAPPERS_DIR).glob("*.json")):
@@ -176,7 +186,8 @@ def live_wrappers(run_dir: Path, alive: Callable[[int], bool] | None = None) -> 
         pid = entry.get("pid") if isinstance(entry, dict) else None
         if not isinstance(pid, int) or isinstance(pid, bool):
             continue
-        if not alive(pid):
+        born = entry.get("pid_started")
+        if not alive(pid) or (born is not None and pid_started(pid) != born):
             try:
                 path.unlink(missing_ok=True)
             except OSError:
@@ -605,8 +616,8 @@ def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, timeout_sec: 
     shown = command_text(command)
     received = _catch_stop_signals()
     fd = _open_queue(where.runs_dir)
-    entry = {"pid": os.getpid(), "agent": agent, "run_id": where.run_id, "command": shown, "phase": "waiting",
-             "started_at": now_iso(), "running_since": None}
+    entry = {"pid": os.getpid(), "pid_started": pid_started(os.getpid()), "agent": agent, "run_id": where.run_id,
+             "command": shown, "phase": "waiting", "started_at": now_iso(), "running_since": None}
     entry_path = _register(where, entry, who)
     try:
         turn = _take_turn(fd, where.runs_dir, wait_sec, poll_sec, notice_sec, received)
