@@ -14,8 +14,8 @@ from pathlib import Path
 
 from herdr_review import PACKAGE_ROOT
 from herdr_review.exclusive import (
-    ExclusiveError, Where, _finish_off, command_text, format_duration, holder_text, locate, queue_state,
-    read_holder, remove_holder, runs_dir_of, write_holder,
+    ExclusiveError, Where, _finish_off, command_text, format_duration, holder_text, live_wrappers, locate, queue_state,
+    read_holder, remove_holder, runs_dir_of, wrapper_entry, write_holder,
 )
 
 BIN = PACKAGE_ROOT / "bin" / "herdr-review"
@@ -697,3 +697,102 @@ class StopTest(ExclusiveBase):
                 p = subprocess.run(exclusive_cmd("--timeout", value, "--", "true"), env=self.env, capture_output=True,
                                    text=True, timeout=30)
                 self.assertEqual(p.returncode, 2)
+
+
+class WrapperRegistryTest(ExclusiveBase):
+    """Inside a review every wrapper registers itself in <run_dir>/wrappers/ while it waits for its turn and while it
+    runs its command: the runner keeps its agent working meanwhile, whatever herdr reports."""
+
+    def entries(self) -> list[Path]:
+        return sorted((self.run_dir / "wrappers").glob("*.json"))
+
+    def start(self, *args: str) -> subprocess.Popen:
+        p = subprocess.Popen(exclusive_cmd(*args), env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                             text=True)
+        self.addCleanup(stop_quietly, p)
+        return p
+
+    def test_the_command_sees_its_own_entry_as_running(self):
+        seen = self.root / "seen.json"
+        args = ["sh", "-c", 'cp "$1/wrappers/$PPID.json" "$2"', "sh", str(self.run_dir), str(seen)]
+        p = subprocess.run(exclusive_cmd("--", *args), env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        entry = json.loads(seen.read_text())
+        self.assertEqual((entry["agent"], entry["run_id"], entry["phase"]), ("hrtest-codex", "hrtest", "running"))
+        self.assertEqual(entry["command"], shlex.join(args))
+        self.assertIsInstance(entry["pid"], int)
+        self.assertIsNotNone(entry["started_at"])
+        self.assertIsNotNone(entry["running_since"])
+        self.assertEqual(self.entries(), [])                     # gone once the command is done
+
+    def test_a_wrapper_waiting_for_its_turn_is_registered_as_waiting(self):
+        self.hold(pid=42, agent="hrtest-gemini", run_id="hrtest", command="mvn test", started_at=iso_ago(5))
+        p = self.start("--wait", "30", "--", "true")
+        self.assertIn("waiting —", p.stderr.readline())          # the entry is written before the wait
+        entry = json.loads(wrapper_entry(self.run_dir, p.pid).read_text())
+        self.assertEqual((entry["phase"], entry["running_since"], entry["agent"]), ("waiting", None, "hrtest-codex"))
+        self.assertEqual([e["pid"] for e in live_wrappers(self.run_dir)], [p.pid])
+
+    def test_the_entry_and_its_directory_are_readable_by_their_owner_only(self):
+        p = self.start("--", "sleep", "30")
+        path = wrapper_entry(self.run_dir, p.pid)
+        self.assertTrue(wait_until(path.exists))
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+
+    def test_the_entry_is_gone_after_every_way_out(self):
+        def code(*args: str) -> int:
+            return subprocess.run(exclusive_cmd(*args), env=self.env, capture_output=True, timeout=60).returncode
+
+        self.assertEqual(code("--", "true"), 0)
+        self.assertEqual(self.entries(), [])
+        self.assertEqual(code("--", "no-such-program-for-herdr-review"), 127)
+        self.assertEqual(self.entries(), [])
+        self.hold(pid=42, agent="hrtest-gemini", run_id="hrtest", command="mvn test", started_at=iso_ago(5))
+        self.assertEqual(code("--wait", "0.3", "--", "true"), 75)
+        self.assertEqual(self.entries(), [])
+        p = self.start("--wait", "30", "--", "true")
+        self.assertIn("waiting —", p.stderr.readline())
+        p.send_signal(signal.SIGTERM)
+        p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 143)
+        self.assertEqual(self.entries(), [])
+
+    def test_no_entry_for_a_nested_call_or_outside_a_review(self):
+        p = subprocess.run(exclusive_cmd("--", "true"), env={**self.env, "HERDR_REVIEW_EXCLUSIVE": "1"},
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        cfg = self.root / "config.yaml"
+        cfg.write_text(f"profiles:\n  codex: {{kind: codex}}\nsettings: {{runs_dir: {self.runs}}}\n")
+        cfg.chmod(0o600)
+        p = subprocess.run(exclusive_cmd("--", "true"), env=clean_env(HERDR_REVIEW_CONFIG=str(cfg)),
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(list(self.root.rglob("wrappers")), [])
+
+    def test_a_registry_it_cannot_write_does_not_stop_the_command(self):   # Review Focus 1
+        (self.run_dir / "wrappers").write_text("a file where the registry's directory belongs")
+        p = subprocess.run(exclusive_cmd("--", "sh", "-c", "exit 3"), env=self.env, capture_output=True, text=True,
+                           timeout=60)
+        self.assertEqual(p.returncode, 3, p.stderr)
+        self.assertIn(f"exclusive: hrtest-codex could not register in {self.run_dir / 'wrappers'}: ",
+                      (self.run_dir / "runner.log").read_text())
+
+    def test_live_wrappers_keeps_the_live_ones_in_start_order_and_drops_a_dead_one(self):
+        registry = self.run_dir / "wrappers"
+        registry.mkdir()
+        def write(name: str, data) -> None:
+            (registry / name).write_text(data if isinstance(data, str) else json.dumps(data))
+        write("11.json", {"pid": 11, "agent": "a", "phase": "running", "started_at": "2026-10-10T10:00:01+00:00"})
+        write("12.json", {"pid": 12, "agent": "b", "phase": "running", "started_at": "2026-10-10T10:00:02+00:00"})
+        write("15.json", {"pid": 15, "agent": "c", "phase": "waiting", "started_at": "2026-10-10T10:00:00+00:00"})
+        write("13.json", "{not json")
+        write("14.json", {"pid": "14"})
+        found = live_wrappers(self.run_dir, alive=lambda pid: pid != 11)
+        self.assertEqual([e["pid"] for e in found], [15, 12])
+        self.assertFalse((registry / "11.json").exists())          # a dead wrapper's entry is removed
+        self.assertTrue((registry / "13.json").exists())           # an unreadable one is left alone
+        self.assertTrue((registry / "14.json").exists())
+
+    def test_a_run_without_a_registry_has_no_live_wrappers(self):
+        self.assertEqual(live_wrappers(self.run_dir), [])

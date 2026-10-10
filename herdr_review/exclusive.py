@@ -27,6 +27,7 @@ from .status import RunStatus, StatusError, now_iso
 
 LOCK_NAME = "exclusive.lock"
 HOLDER_NAME = "exclusive.json"
+WRAPPERS_DIR = "wrappers"
 RUN_ENV = "HERDR_REVIEW_RUN"
 AGENT_ENV = "HERDR_REVIEW_AGENT"
 NESTED_ENV = "HERDR_REVIEW_EXCLUSIVE"
@@ -131,18 +132,21 @@ def read_holder(runs_dir: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def write_holder(runs_dir: Path, holder: dict) -> None:
-    """Atomically: a reader sees the old holder or the new one, never half of it. Readable by its owner only, as the
+def _write_json(path: Path, data: dict) -> None:
+    """Atomically: a reader sees the old content or the new, never half of it. Readable by its owner only, as the
     queue file is: it holds a command line and directories."""
-    path = Path(runs_dir) / HOLDER_NAME
-    tmp = path.with_name(f"{HOLDER_NAME}.{os.getpid()}.tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_CLOEXEC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(json.dumps(holder, ensure_ascii=False))
+            f.write(json.dumps(data, ensure_ascii=False))
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def write_holder(runs_dir: Path, holder: dict) -> None:
+    _write_json(Path(runs_dir) / HOLDER_NAME, holder)
 
 
 def remove_holder(runs_dir: Path, pid: int) -> None:
@@ -150,6 +154,36 @@ def remove_holder(runs_dir: Path, pid: int) -> None:
     holder = read_holder(runs_dir)
     if holder is not None and holder.get("pid") == pid:
         (Path(runs_dir) / HOLDER_NAME).unlink(missing_ok=True)
+
+
+def wrapper_entry(run_dir: Path, pid: int) -> Path:
+    """The entry of wrapper <pid> in the registry of the run in <run_dir> (live_wrappers)."""
+    return Path(run_dir) / WRAPPERS_DIR / f"{pid}.json"
+
+
+def live_wrappers(run_dir: Path, alive: Callable[[int], bool] | None = None) -> list[dict]:
+    """The registered wrappers of the run in <run_dir> that still run, in the order they started: each one waits for
+    its turn or runs its command. <alive> tells whether a pid runs `herdr-review exclusive`; is_wrapper, looked up at
+    call time, by default. The entry of a pid that does not is removed: its wrapper died without removing it, of
+    SIGKILL say. A file that cannot be read or parsed is skipped and left alone."""
+    alive = alive or is_wrapper
+    found = []
+    for path in sorted((Path(run_dir) / WRAPPERS_DIR).glob("*.json")):
+        try:
+            entry = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        pid = entry.get("pid") if isinstance(entry, dict) else None
+        if not isinstance(pid, int) or isinstance(pid, bool):
+            continue
+        if not alive(pid):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            continue
+        found.append(entry)
+    return sorted(found, key=lambda e: str(e.get("started_at") or ""))
 
 
 def holder_state(holder: dict | None) -> dict:
@@ -222,6 +256,36 @@ def _log(where: Where, line: str) -> None:
     try:
         with open(where.run_dir / "runner.log", "a", encoding="utf-8") as f:
             f.write(f"{now_iso()} exclusive: {line}\n")
+    except OSError:
+        pass
+
+
+def _write_entry(where: Where, path: Path, entry: dict, who: str) -> bool:
+    """Write a wrapper's entry; False, with a line in the run's log, when it cannot. The command runs either way."""
+    try:
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        _write_json(path, entry)
+    except OSError as e:
+        _log(where, f"{who} could not register in {path.parent}: {e}")
+        return False
+    return True
+
+
+def _register(where: Where, entry: dict, who: str) -> Path | None:
+    """Register this wrapper in its run (live_wrappers): the runner keeps an agent `working` while a wrapper of it
+    waits for its turn or runs its command, whatever herdr reports. None outside a review, where no runner looks, and
+    when the entry cannot be written."""
+    if where.run_dir is None:
+        return None
+    path = wrapper_entry(where.run_dir, entry["pid"])
+    return path if _write_entry(where, path, entry, who) else None
+
+
+def _unregister(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -541,6 +605,9 @@ def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, timeout_sec: 
     shown = command_text(command)
     received = _catch_stop_signals()
     fd = _open_queue(where.runs_dir)
+    entry = {"pid": os.getpid(), "agent": agent, "run_id": where.run_id, "command": shown, "phase": "waiting",
+             "started_at": now_iso(), "running_since": None}
+    entry_path = _register(where, entry, who)
     try:
         turn = _take_turn(fd, where.runs_dir, wait_sec, poll_sec, notice_sec, received)
         if turn.outcome == "signal":
@@ -555,6 +622,8 @@ def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, timeout_sec: 
             return EXIT_BUSY
         if _taken_off(where, agent):                 # taken off while it waited for its turn
             return _refuse(where, who)
+        if entry_path is not None:
+            _write_entry(where, entry_path, {**entry, "phase": "running", "running_since": now_iso()}, who)
         pid = os.getpid()
         try:
             write_holder(where.runs_dir, {
@@ -576,6 +645,7 @@ def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, timeout_sec: 
             remove_holder(where.runs_dir, pid)
     finally:
         os.close(fd)
+        _unregister(entry_path)
 
 
 def is_wrapper(pid: int) -> bool:
