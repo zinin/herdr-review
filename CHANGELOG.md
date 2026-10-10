@@ -17,8 +17,10 @@ All notable changes to herdr-review will be documented here.
   the runner stops it, as `run fail` does.
 
 ### Added
-- `herdr-review exclusive` registers each wrapper of a review in `<run_dir>/wrappers/<pid>.json` while it waits for
-  its turn and while it runs its command.
+- `herdr-review exclusive` registers each wrapper of a review in `<run_dir>/wrappers/<pid>-<token>.json` while it
+  waits for its turn and while it runs its command, and keeps that entry live by holding a lock on
+  `<pid>-<token>.lock`, so it works for an agent whose CLI runs its commands in a PID namespace of their own, such as
+  Codex.
 - `background`: what an agent that herdr shows idle still waits for, in `run wait`, `run prompt`, `start-reviewers`,
   `start-fixer`, `status.json` and `herdr-review status` («фон:»).
 

@@ -11,12 +11,11 @@ import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest import mock
 
 from herdr_review import PACKAGE_ROOT
 from herdr_review.exclusive import (
-    ExclusiveError, Where, _finish_off, command_text, format_duration, holder_text, live_wrappers, locate, pid_started,
-    queue_state, read_holder, remove_holder, runs_dir_of, wrapper_entry, write_holder,
+    ExclusiveError, Where, _finish_off, command_text, format_duration, holder_text, live_wrappers, locate, queue_state,
+    read_holder, remove_holder, runs_dir_of, wrapper_files, write_holder,
 )
 
 BIN = PACKAGE_ROOT / "bin" / "herdr-review"
@@ -753,10 +752,25 @@ class StopTest(ExclusiveBase):
 
 class WrapperRegistryTest(ExclusiveBase):
     """Inside a review every wrapper registers itself in <run_dir>/wrappers/ while it waits for its turn and while it
-    runs its command: the runner keeps its agent working meanwhile, whatever herdr reports."""
+    runs its command: the runner keeps its agent working meanwhile, whatever herdr reports. Its entry <stem>.json counts
+    while the wrapper holds the flock of its lock file <stem>.lock."""
 
-    def entries(self) -> list[Path]:
-        return sorted((self.run_dir / "wrappers").glob("*.json"))
+    def files(self) -> list[str]:
+        """The names of every file in the registry: the wrappers' entries and their lock files."""
+        registry = self.run_dir / "wrappers"
+        return sorted(p.name for p in registry.iterdir()) if registry.is_dir() else []
+
+    def registered(self, pid: int) -> tuple[Path, Path]:
+        """The entry and the lock file of wrapper <pid>, once it has registered."""
+        found: list[Path] = []
+
+        def look() -> bool:
+            found[:] = sorted((self.run_dir / "wrappers").glob(f"{pid}-*.json"))
+            return bool(found)
+
+        self.assertTrue(wait_until(look))
+        self.assertEqual(len(found), 1)
+        return wrapper_files(self.run_dir, found[0].stem)
 
     def start(self, *args: str) -> subprocess.Popen:
         p = subprocess.Popen(exclusive_cmd(*args), env=self.env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
@@ -764,9 +778,26 @@ class WrapperRegistryTest(ExclusiveBase):
         self.addCleanup(stop_quietly, p)
         return p
 
-    def test_the_command_sees_its_own_entry_as_running(self):
+    def write(self, stem: str, data, *, lock: bool = True) -> tuple[Path, Path]:
+        """An entry <stem>.json holding <data> and, unless <lock> is False, its lock file, which nobody holds yet."""
+        entry, lock_file = wrapper_files(self.run_dir, stem)
+        entry.parent.mkdir(exist_ok=True)
+        entry.write_text(data if isinstance(data, str) else json.dumps(data))
+        if lock:
+            lock_file.touch()
+        return entry, lock_file
+
+    def hold_lock(self, lock: Path) -> None:
+        """Hold the flock of <lock> through an open file of this test, as its wrapper does while it lives."""
+        fd = os.open(lock, os.O_RDWR)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+    def test_the_command_finds_its_own_entry_as_running_beside_its_lock(self):
         seen = self.root / "seen.json"
-        args = ["sh", "-c", 'cp "$1/wrappers/$PPID.json" "$2"', "sh", str(self.run_dir), str(seen)]
+        listed = self.root / "listed.txt"
+        script = 'cp "$1"/wrappers/"$PPID"-*.json "$2" && ls "$1/wrappers" > "$3"'
+        args = ["sh", "-c", script, "sh", str(self.run_dir), str(seen), str(listed)]
         p = subprocess.run(exclusive_cmd("--", *args), env=self.env, capture_output=True, text=True, timeout=60)
         self.assertEqual(p.returncode, 0, p.stderr)
         entry = json.loads(seen.read_text())
@@ -775,40 +806,54 @@ class WrapperRegistryTest(ExclusiveBase):
         self.assertIsInstance(entry["pid"], int)
         self.assertIsNotNone(entry["started_at"])
         self.assertIsNotNone(entry["running_since"])
-        self.assertEqual(self.entries(), [])                     # gone once the command is done
+        self.assertNotIn("pid_started", entry)
+        name, lock = listed.read_text().split()                          # while it runs: its entry and its lock
+        self.assertRegex(name, rf"^{entry['pid']}-[0-9a-f]{{16}}\.json$")
+        self.assertEqual(lock, name.removesuffix(".json") + ".lock")
+        self.assertEqual(self.files(), [])                               # both gone once the command is done
 
     def test_a_wrapper_waiting_for_its_turn_is_registered_as_waiting(self):
         self.hold(pid=42, agent="hrtest-gemini", run_id="hrtest", command="mvn test", started_at=iso_ago(5))
         p = self.start("--wait", "30", "--", "true")
         self.assertIn("waiting —", p.stderr.readline())          # the entry is written before the wait
-        entry = json.loads(wrapper_entry(self.run_dir, p.pid).read_text())
-        self.assertEqual((entry["phase"], entry["running_since"], entry["agent"]), ("waiting", None, "hrtest-codex"))
+        entry, lock = self.registered(p.pid)
+        data = json.loads(entry.read_text())
+        self.assertEqual((data["phase"], data["running_since"], data["agent"]), ("waiting", None, "hrtest-codex"))
+        self.assertTrue(lock.exists())
+        self.assertEqual([e["pid"] for e in live_wrappers(self.run_dir)], [p.pid])     # its lock is held
+
+    def test_a_running_wrapper_is_live(self):
+        p = self.start("--", "sleep", "30")
+        entry, lock = self.registered(p.pid)
+        self.assertTrue(wait_until(lambda: json.loads(entry.read_text())["phase"] == "running"))
+        self.assertTrue(lock.exists())
         self.assertEqual([e["pid"] for e in live_wrappers(self.run_dir)], [p.pid])
 
-    def test_the_entry_and_its_directory_are_readable_by_their_owner_only(self):
+    def test_the_entry_its_lock_and_their_directory_are_readable_by_their_owner_only(self):
         p = self.start("--", "sleep", "30")
-        path = wrapper_entry(self.run_dir, p.pid)
-        self.assertTrue(wait_until(path.exists))
-        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-        self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+        entry, lock = self.registered(p.pid)
+        self.assertEqual(stat.S_IMODE(entry.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(lock.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(entry.parent.stat().st_mode), 0o700)
 
-    def test_the_entry_is_gone_after_every_way_out(self):
+    def test_the_entry_and_its_lock_are_gone_after_every_way_out(self):
         def code(*args: str) -> int:
             return subprocess.run(exclusive_cmd(*args), env=self.env, capture_output=True, timeout=60).returncode
 
         self.assertEqual(code("--", "true"), 0)
-        self.assertEqual(self.entries(), [])
+        self.assertEqual(self.files(), [])
         self.assertEqual(code("--", "no-such-program-for-herdr-review"), 127)
-        self.assertEqual(self.entries(), [])
+        self.assertEqual(self.files(), [])
         self.hold(pid=42, agent="hrtest-gemini", run_id="hrtest", command="mvn test", started_at=iso_ago(5))
         self.assertEqual(code("--wait", "0.3", "--", "true"), 75)
-        self.assertEqual(self.entries(), [])
+        self.assertEqual(self.files(), [])
         p = self.start("--wait", "30", "--", "true")
         self.assertIn("waiting —", p.stderr.readline())
+        self.assertEqual(len(self.files()), 2)                           # its entry and its lock while it waits
         p.send_signal(signal.SIGTERM)
         p.communicate(timeout=30)
         self.assertEqual(p.returncode, 143)
-        self.assertEqual(self.entries(), [])
+        self.assertEqual(self.files(), [])
 
     def test_no_entry_for_a_nested_call_or_outside_a_review(self):
         p = subprocess.run(exclusive_cmd("--", "true"), env={**self.env, "HERDR_REVIEW_EXCLUSIVE": "1"},
@@ -830,88 +875,41 @@ class WrapperRegistryTest(ExclusiveBase):
         self.assertIn(f"exclusive: hrtest-codex could not register in {self.run_dir / 'wrappers'}: ",
                       (self.run_dir / "runner.log").read_text())
 
-    def test_live_wrappers_keeps_the_live_ones_in_start_order_and_drops_a_dead_one(self):
-        registry = self.run_dir / "wrappers"
-        registry.mkdir()
-        def write(name: str, data) -> None:
-            (registry / name).write_text(data if isinstance(data, str) else json.dumps(data))
-        write("11.json", {"pid": 11, "agent": "a", "phase": "running", "started_at": "2026-10-10T10:00:01+00:00"})
-        write("12.json", {"pid": 12, "agent": "b", "phase": "running", "started_at": "2026-10-10T10:00:02+00:00"})
-        write("15.json", {"pid": 15, "agent": "c", "phase": "waiting", "started_at": "2026-10-10T10:00:00+00:00"})
-        write("13.json", "{not json")
-        write("14.json", {"pid": "14"})
-        found = live_wrappers(self.run_dir, alive=lambda pid: pid != 11)
-        self.assertEqual([e["pid"] for e in found], [15, 12])
-        self.assertFalse((registry / "11.json").exists())          # a dead wrapper's entry is removed
-        self.assertTrue((registry / "13.json").exists())           # an unreadable one is left alone
-        self.assertTrue((registry / "14.json").exists())
+    def test_live_wrappers_keeps_the_live_ones_in_start_order(self):
+        for stem, pid, phase, started in (("11-aa", 11, "running", "2026-10-10T10:00:01+00:00"),
+                                          ("12-bb", 12, "running", "2026-10-10T10:00:02+00:00"),
+                                          ("15-cc", 15, "waiting", "2026-10-10T10:00:00+00:00")):
+            self.hold_lock(self.write(stem, {"pid": pid, "agent": "a", "phase": phase, "started_at": started})[1])
+        self.assertEqual([e["pid"] for e in live_wrappers(self.run_dir)], [15, 11, 12])
+
+    def test_live_wrappers_keeps_an_entry_whose_lock_is_held_whatever_its_pid_names_here(self):
+        # Codex runs every command in a PID namespace of its own, where its shell is pid 2: here that pid names no
+        # wrapper, but the lock tells the wrapper lives.
+        entry, lock = self.write("2-aa", {"pid": 2, "agent": "hrtest-codex", "started_at": "1"})
+        self.hold_lock(lock)
+        self.assertEqual([e["agent"] for e in live_wrappers(self.run_dir)], ["hrtest-codex"])
+        self.assertEqual(self.files(), ["2-aa.json", "2-aa.lock"])
+
+    def test_two_entries_with_one_pid_are_two_live_wrappers(self):
+        # Two commands of Codex, each in a PID namespace of its own, where both wrappers have the same pid.
+        self.hold_lock(self.write("2-aa", {"pid": 2, "agent": "hrtest-codex", "started_at": "1"})[1])
+        self.hold_lock(self.write("2-bb", {"pid": 2, "agent": "hrtest-fixer", "started_at": "2"})[1])
+        self.assertEqual([e["agent"] for e in live_wrappers(self.run_dir)], ["hrtest-codex", "hrtest-fixer"])
+
+    def test_live_wrappers_removes_the_entry_of_a_wrapper_that_is_gone(self):
+        self.write("11-aa", {"pid": 11, "agent": "a", "started_at": "1"})               # nobody holds its lock
+        self.write("12-bb", {"pid": 12, "agent": "b", "started_at": "2"}, lock=False)   # it has no lock file
+        self.assertEqual(live_wrappers(self.run_dir), [])
+        self.assertEqual(self.files(), [])                               # the first one's lock file goes too
+
+    def test_live_wrappers_skips_a_malformed_file_and_leaves_it(self):
+        self.write("13-aa", "{not json")
+        self.write("14-bb", {"pid": "14"})
+        self.write("15-cc", {"pid": True})
+        self.write("16-dd", ["pid", 16])
+        self.assertEqual(live_wrappers(self.run_dir), [])
+        self.assertEqual(self.files(), ["13-aa.json", "13-aa.lock", "14-bb.json", "14-bb.lock", "15-cc.json",
+                                        "15-cc.lock", "16-dd.json", "16-dd.lock"])
 
     def test_a_run_without_a_registry_has_no_live_wrappers(self):
         self.assertEqual(live_wrappers(self.run_dir), [])
-
-    @unittest.skipUnless(sys.platform.startswith("linux"), "/proc/<pid>/stat is Linux-only")
-    def test_the_entry_names_when_its_wrapper_started(self):
-        self.hold(pid=42, agent="hrtest-gemini", run_id="hrtest", command="mvn test", started_at=iso_ago(5))
-        p = self.start("--wait", "30", "--", "true")
-        self.assertIn("waiting —", p.stderr.readline())
-        entry = json.loads(wrapper_entry(self.run_dir, p.pid).read_text())
-        started = int(Path(f"/proc/{p.pid}/stat").read_text().rsplit(")", 1)[1].split()[19])   # field 22: starttime
-        self.assertEqual(entry["pid_started"], started)
-
-    @unittest.skipUnless(sys.platform.startswith("linux"), "/proc/<pid>/stat is Linux-only")
-    def test_live_wrappers_drops_an_entry_whose_pid_now_names_another_process(self):
-        registry = self.run_dir / "wrappers"
-        registry.mkdir()
-        me = os.getpid()
-        started = int(Path("/proc/self/stat").read_text().rsplit(")", 1)[1].split()[19])
-        (registry / "same.json").write_text(json.dumps({"pid": me, "pid_started": started, "agent": "a", "started_at": "2"}))
-        (registry / "reused.json").write_text(json.dumps({"pid": me, "pid_started": started - 1, "agent": "b", "started_at": "1"}))
-        found = live_wrappers(self.run_dir, alive=lambda pid: True)    # the pid runs a wrapper: is_wrapper, substituted
-        self.assertEqual([e["agent"] for e in found], ["a"])
-        self.assertFalse((registry / "reused.json").exists())          # its wrapper died; the pid was reused
-
-    def no_proc(self):
-        """A system without /proc, such as macOS, as pid_started sees it."""
-        exists = Path.exists
-        return mock.patch.object(Path, "exists", lambda path: False if str(path) == "/proc/self/stat" else exists(path))
-
-    @staticmethod
-    def ps_started(pid: int) -> str:
-        return subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=10,
-                              env={**os.environ, "LC_ALL": "C", "TZ": "UTC0"}).stdout.strip()
-
-    def test_without_proc_a_wrapper_is_known_by_the_start_time_ps_prints(self):
-        gone = subprocess.Popen(["true"])
-        gone.wait()
-        with self.no_proc():
-            mine, theirs = pid_started(os.getpid()), pid_started(gone.pid)
-        self.assertEqual(mine, self.ps_started(os.getpid()))           # e.g. "Sat Oct 10 13:24:34 2026"
-        self.assertTrue(mine)
-        self.assertIsNone(theirs)
-
-    def test_without_proc_live_wrappers_drops_an_entry_whose_pid_now_names_another_process(self):
-        registry = self.run_dir / "wrappers"
-        registry.mkdir()
-        me = os.getpid()
-        (registry / "same.json").write_text(json.dumps({"pid": me, "pid_started": self.ps_started(me), "agent": "a", "started_at": "2"}))
-        (registry / "reused.json").write_text(json.dumps({"pid": me, "pid_started": "Thu Jan  1 00:00:00 1970", "agent": "b", "started_at": "1"}))
-        with self.no_proc():
-            found = live_wrappers(self.run_dir, alive=lambda pid: True)
-        self.assertEqual([e["agent"] for e in found], ["a"])
-        self.assertFalse((registry / "reused.json").exists())
-
-    def test_without_proc_the_start_time_does_not_depend_on_the_time_zone(self):
-        registry = self.run_dir / "wrappers"
-        registry.mkdir()
-        me = os.getpid()
-        with self.no_proc():
-            with mock.patch.dict(os.environ, {"TZ": "Asia/Tokyo"}):        # the wrapper, in its agent's environment
-                tokyo = pid_started(me)
-            (registry / "tokyo.json").write_text(json.dumps({"pid": me, "pid_started": tokyo, "agent": "a", "started_at": "1"}))
-            with mock.patch.dict(os.environ, {"TZ": "UTC"}):               # the runner, in its own
-                utc = pid_started(me)
-                found = live_wrappers(self.run_dir, alive=lambda pid: True)
-        self.assertTrue(tokyo)
-        self.assertEqual(tokyo, utc)
-        self.assertEqual([e["agent"] for e in found], ["a"])
-        self.assertTrue((registry / "tokyo.json").exists())

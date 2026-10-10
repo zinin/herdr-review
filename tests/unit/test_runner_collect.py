@@ -548,8 +548,7 @@ class CollectBackgroundTest(RunnerBase):
         self.n = "hrtest-claude-opus"
 
     def busy(self, pid: int = 4242) -> None:
-        register_wrapper(self.run_dir, self.n, pid)
-        self.live.pids.add(pid)
+        self.live.hold(register_wrapper(self.run_dir, self.n, pid))
 
     def prompts(self) -> int:
         return len([c for c in self.herdr.calls_named("agent_prompt") if c[1] == self.n])

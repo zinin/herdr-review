@@ -11,6 +11,7 @@ import ctypes
 import fcntl
 import json
 import os
+import secrets
 import shlex
 import signal
 import subprocess
@@ -156,36 +157,29 @@ def remove_holder(runs_dir: Path, pid: int) -> None:
         (Path(runs_dir) / HOLDER_NAME).unlink(missing_ok=True)
 
 
-def wrapper_entry(run_dir: Path, pid: int) -> Path:
-    """The entry of wrapper <pid> in the registry of the run in <run_dir> (live_wrappers)."""
-    return Path(run_dir) / WRAPPERS_DIR / f"{pid}.json"
+def wrapper_files(run_dir: Path, stem: str) -> tuple[Path, Path]:
+    """The entry and the lock file of the wrapper registered as <stem> in the registry of the run in <run_dir>
+    (live_wrappers): <stem>.json and <stem>.lock."""
+    registry = Path(run_dir) / WRAPPERS_DIR
+    return registry / f"{stem}.json", registry / f"{stem}.lock"
 
 
-def pid_started(pid: int) -> int | str | None:
-    """When <pid> started: with the pid it names one process, since the kernel reuses pids. Clock ticks since boot
-    from /proc/<pid>/stat (field 22) on Linux, the start time `ps -o lstart=` prints elsewhere, in the C locale and
-    UTC: the wrapper records it in its agent's environment and the runner compares it in its own, whose TZ and
-    locale may differ. None when <pid> runs no more, or nothing answers."""
-    if Path("/proc/self/stat").exists():
-        try:
-            return int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19])
-        except (OSError, IndexError, ValueError):
-            return None
+def _unlink(path: Path) -> None:
+    """Remove <path> if it is there; a file that cannot be removed stays."""
     try:
-        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=10,
-                             env={**os.environ, "LC_ALL": "C", "TZ": "UTC0"}).stdout
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return out.strip() or None
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
-def live_wrappers(run_dir: Path, alive: Callable[[int], bool] | None = None) -> list[dict]:
+def live_wrappers(run_dir: Path) -> list[dict]:
     """The registered wrappers of the run in <run_dir> that still run, in the order they started: each one waits for
-    its turn or runs its command. <alive> tells whether a pid runs `herdr-review exclusive`; is_wrapper, looked up at
-    call time, by default. The entry of a pid that does not, or that started at another time than the entry records
-    (`pid_started`: the pid was reused), is removed: its wrapper died without removing it, of SIGKILL say. A file that
-    cannot be read or parsed is skipped and left alone."""
-    alive = alive or is_wrapper
+    its turn or runs its command. A wrapper holds an exclusive flock on its lock file while it waits and while it runs,
+    and the kernel releases it when the wrapper dies: the lock tells a live wrapper from a dead one in any PID
+    namespace, such as the one Codex gives each command, where a wrapper's pid names another process here. The pid
+    of an entry is shown only. The entry of a wrapper that is gone — its lock file is missing, or its lock is free —
+    is removed, with its lock file: its wrapper died without removing them, of SIGKILL say. A file that cannot be read
+    or parsed is skipped and left alone, and so is an entry whose lock cannot be probed."""
     found = []
     for path in sorted((Path(run_dir) / WRAPPERS_DIR).glob("*.json")):
         try:
@@ -195,14 +189,26 @@ def live_wrappers(run_dir: Path, alive: Callable[[int], bool] | None = None) -> 
         pid = entry.get("pid") if isinstance(entry, dict) else None
         if not isinstance(pid, int) or isinstance(pid, bool):
             continue
-        born = entry.get("pid_started")
-        if not alive(pid) or (born is not None and pid_started(pid) != born):
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
+        lock = wrapper_files(run_dir, path.stem)[1]
+        try:
+            fd = os.open(lock, os.O_RDWR | os.O_CLOEXEC)
+        except FileNotFoundError:                   # its wrapper is gone
+            _unlink(path)
             continue
-        found.append(entry)
+        except OSError:
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:                     # its wrapper holds the lock: it lives
+            found.append(entry)
+        except OSError:
+            pass
+        else:
+            # The lock was free: its wrapper is gone. Both files go while this call holds the lock.
+            _unlink(path)
+            _unlink(lock)
+        finally:
+            os.close(fd)
     return sorted(found, key=lambda e: str(e.get("started_at") or ""))
 
 
@@ -291,23 +297,44 @@ def _write_entry(where: Where, path: Path, entry: dict, who: str) -> bool:
     return True
 
 
-def _register(where: Where, entry: dict, who: str) -> Path | None:
+class Registration(NamedTuple):
+    entry: Path                 # <stem>.json: what the wrapper waits for or runs
+    lock: Path                  # <stem>.lock: locked by the wrapper for as long as it lives
+    fd: int                     # the descriptor that holds the lock
+
+
+def _register(where: Where, entry: dict, who: str) -> Registration | None:
     """Register this wrapper in its run (live_wrappers): the runner keeps an agent `working` while a wrapper of it
-    waits for its turn or runs its command, whatever herdr reports. None outside a review, where no runner looks, and
-    when the entry cannot be written."""
+    waits for its turn or runs its command, whatever herdr reports. Under a stem of its own, `<pid>-<token>`: a pid
+    names one process only in its own PID namespace. The wrapper creates its lock file and takes the lock before it
+    writes its entry, so a runner that finds the entry finds the lock held for as long as the wrapper lives. None
+    outside a review, where no runner looks, and when it cannot register: a line in the run's log, and what it
+    created is removed. The command runs either way."""
     if where.run_dir is None:
         return None
-    path = wrapper_entry(where.run_dir, entry["pid"])
-    return path if _write_entry(where, path, entry, who) else None
-
-
-def _unregister(path: Path | None) -> None:
-    if path is None:
-        return
+    path, lock = wrapper_files(where.run_dir, f"{os.getpid()}-{secrets.token_hex(8)}")
+    fd: int | None = None
     try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        pass
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        _write_json(path, entry)
+    except OSError as e:
+        _log(where, f"{who} could not register in {path.parent}: {e}")
+        if fd is not None:
+            _unregister(Registration(path, lock, fd))
+        return None
+    return Registration(path, lock, fd)
+
+
+def _unregister(registration: Registration | None) -> None:
+    """Remove the entry, then the lock file, and only then release the lock: a runner that still finds the entry
+    finds its lock held, or no lock file."""
+    if registration is None:
+        return
+    _unlink(registration.entry)
+    _unlink(registration.lock)
+    os.close(registration.fd)
 
 
 def _taken_off(where: Where, agent: str | None) -> tuple[str, str] | None:
@@ -640,9 +667,9 @@ def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, timeout_sec: 
     shown = command_text(command)
     received = _catch_stop_signals()
     fd = _open_queue(where.runs_dir)
-    entry = {"pid": os.getpid(), "pid_started": pid_started(os.getpid()), "agent": agent, "run_id": where.run_id,
-             "command": shown, "phase": "waiting", "started_at": now_iso(), "running_since": None}
-    entry_path = _register(where, entry, who)
+    entry = {"pid": os.getpid(), "agent": agent, "run_id": where.run_id, "command": shown, "phase": "waiting",
+             "started_at": now_iso(), "running_since": None}
+    registration = _register(where, entry, who)
     try:
         turn = _take_turn(fd, where.runs_dir, wait_sec, poll_sec, notice_sec, received)
         if turn.outcome == "signal":
@@ -671,8 +698,8 @@ def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, timeout_sec: 
             why = _taken_off(where, agent)
             if why:
                 return _refuse(where, who, why)
-            if entry_path is not None:
-                _write_entry(where, entry_path, {**entry, "phase": "running", "running_since": now_iso()}, who)
+            if registration is not None:
+                _write_entry(where, registration.entry, {**entry, "phase": "running", "running_since": now_iso()}, who)
             if turn.waited is not None:
                 _say(f"your turn after {format_duration(turn.waited)}")
             _log(where, f'{who} running "{shown}" after {format_duration(turn.waited or 0)} of waiting')
@@ -684,7 +711,7 @@ def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, timeout_sec: 
             remove_holder(where.runs_dir, pid)
     finally:
         os.close(fd)
-        _unregister(entry_path)
+        _unregister(registration)
 
 
 def is_wrapper(pid: int) -> bool:

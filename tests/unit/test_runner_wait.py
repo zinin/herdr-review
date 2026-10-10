@@ -1,7 +1,9 @@
+import fcntl
 import json
+import os
+import secrets
 import unittest
 from pathlib import Path
-from unittest import mock
 
 from herdr_review import exclusive
 from herdr_review.runner import BUSY_GRACE_SEC, SCREEN_BUSY_LIMIT_SEC, Runner, RunnerError
@@ -10,22 +12,34 @@ from tests.unit.test_dialogs import GROK_WAIT_SCREEN
 from tests.unit.test_runner_start import RunnerBase, make_run
 
 
-def register_wrapper(run_dir: Path, agent: str, pid: int, phase: str = "running", command: str = "go test ./...") -> None:
-    """An entry of the run's wrapper registry, as `herdr-review exclusive` writes it."""
-    path = exclusive.wrapper_entry(run_dir, pid)
-    path.parent.mkdir(exist_ok=True)
-    path.write_text(json.dumps({"pid": pid, "agent": agent, "run_id": "hrtest", "command": command, "phase": phase,
-                                "started_at": "2026-10-10T10:00:00+00:00", "running_since": None}))
+def register_wrapper(run_dir: Path, agent: str, pid: int, phase: str = "running", command: str = "go test ./...") -> Path:
+    """An entry of the run's wrapper registry and its lock file, under a stem of their own, as `herdr-review exclusive`
+    writes them. The lock file, which nobody holds yet: LiveWrappers.hold makes its wrapper live."""
+    entry, lock = exclusive.wrapper_files(run_dir, f"{pid}-{secrets.token_hex(8)}")
+    entry.parent.mkdir(exist_ok=True)
+    lock.touch()
+    entry.write_text(json.dumps({"pid": pid, "agent": agent, "run_id": "hrtest", "command": command, "phase": phase,
+                                 "started_at": "2026-10-10T10:00:00+00:00", "running_since": None}))
+    return lock
 
 
 class LiveWrappers:
-    """The pids that count as live wrappers in a test: is_wrapper, substituted."""
+    """The wrappers that live in a test. Each holds the flock of its lock file through an fd the test keeps open, as a
+    wrapper holds it while it lives; closing that fd ends it, as the kernel releases the lock of a wrapper that exits."""
 
     def __init__(self, test: unittest.TestCase):
-        self.pids: set[int] = set()
-        patcher = mock.patch("herdr_review.exclusive.is_wrapper", side_effect=lambda pid: pid in self.pids)
-        patcher.start()
-        test.addCleanup(patcher.stop)
+        self.fds: list[int] = []
+        test.addCleanup(self.end)
+
+    def hold(self, lock: Path) -> None:
+        fd = os.open(lock, os.O_RDWR | os.O_CLOEXEC)
+        self.fds.append(fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+    def end(self) -> None:
+        """Every live wrapper ends."""
+        while self.fds:
+            os.close(self.fds.pop())
 
 
 class FakeClock:
@@ -225,8 +239,7 @@ class BackgroundWorkTest(RunnerBase):
         self.live = LiveWrappers(self)
 
     def busy(self, agent: str, pid: int = 4242, **entry) -> None:
-        register_wrapper(self.run_dir, agent, pid, **entry)
-        self.live.pids.add(pid)
+        self.live.hold(register_wrapper(self.run_dir, agent, pid, **entry))
 
     def log(self) -> str:
         return (self.run_dir / "runner.log").read_text()
@@ -257,7 +270,7 @@ class BackgroundWorkTest(RunnerBase):
 
     def test_another_agents_wrapper_or_a_dead_one_does_not_count(self):
         self.busy("hrtest-grok", pid=4242)
-        register_wrapper(self.run_dir, "hrtest-claude-opus", 4343)       # its wrapper died: no live pid
+        register_wrapper(self.run_dir, "hrtest-claude-opus", 4343)       # its wrapper died: nobody holds its lock
         self.herdr.agent_status["hrtest-claude-opus"] = ["done"]
         out = self.r.wait(agent="hrtest-claude-opus")
         self.assertEqual((out["reason"], out["agents"]["hrtest-claude-opus"]["state"]), ("state_change", "done"))
@@ -281,7 +294,7 @@ class BackgroundWorkTest(RunnerBase):
         self.busy("hrtest-claude-opus")
         self.herdr.agent_status["hrtest-claude-opus"] = ["done"]
         self.assertEqual(self.r.wait(agent="hrtest-claude-opus")["reason"], "checkin")
-        self.live.pids.clear()                                         # the command ended
+        self.live.end()                                                # the command ended
         start = self.clock.t
         out = self.r.wait(agent="hrtest-claude-opus")
         self.assertEqual((out["reason"], out["agents"]["hrtest-claude-opus"]["state"]), ("state_change", "done"))
@@ -293,7 +306,7 @@ class BackgroundWorkTest(RunnerBase):
         self.busy("hrtest-claude-opus")
         self.herdr.agent_status["hrtest-claude-opus"] = ["done"]
         self.r.wait(agent="hrtest-claude-opus")                        # this `run wait` sees the wrapper
-        self.live.pids.clear()                                         # the command ends
+        self.live.end()                                                # the command ends
         later = Runner(self.run_dir, herdr=self.herdr, poll_sec=5, clock=self.clock, sleep=self.clock.sleep,
                        wall_clock=lambda: 1000.0 + self.clock.t)       # the next `run wait`, another process
         start = self.clock.t
