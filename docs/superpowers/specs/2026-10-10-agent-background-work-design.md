@@ -108,12 +108,11 @@ Inside a review, every wrapper registers itself in `<run_dir>/wrappers/<pid>.jso
 - **Writing.** Atomic, as `write_holder` writes `exclusive.json`: a per-process temporary file, mode 0600, then
   `os.replace`. The directory is created with mode 0700 on first use. A shared helper writes both files.
 - **Lifecycle in `run()`.**
-  - After the first `_taken_off` check and `_catch_stop_signals()`, before `_open_queue` and `_take_turn`: write the
-    entry with `phase: "waiting"`.
+  - After `_open_queue`, before `_take_turn`: write the entry with `phase: "waiting"`.
   - Once the turn is taken and the second `_taken_off` check passed, before the holder file: rewrite it with
     `phase: "running"` and `running_since`.
-  - An outer `finally` removes the entry on every way out: the command's end, `busy` (exit 75), a stop signal while
-    waiting, a refusal after the wait, an error opening the queue or starting the command.
+  - The `finally` that closes the queue file removes the entry on every way out: the command's end, `busy` (exit 75),
+    a stop signal while waiting, a refusal after the wait, an error starting the command.
 - **No entry** outside a review (`Where.run_dir is None`) and for a nested call (`HERDR_REVIEW_EXCLUSIVE`), which
   `exec`s into its command under the outer wrapper's entry.
 - **Failure to write** never stops the command. The wrapper goes on and appends one line to the run's `runner.log`
@@ -208,7 +207,7 @@ view shows `фон: <background>` in the reason column when it is set.
     in such a tab.
   - `prompt_stalled` (the list of states): for a grok agent it usually means grok queued the prompt while the agent
     finished its background work.
-  - Phase 5, the fixer loop: the runner keeps the fixer `working` while `background` is set.
+  - Phase 4, the fixer loop, which Phase 5 reuses: the runner keeps the fixer `working` while `background` is set.
 
 ### 5. Documentation
 
@@ -253,7 +252,8 @@ view shows `фон: <background>` in the reason column when it is set.
   - `_observe` failing in that look → pending;
   - without background work, the first miss re-prompts and the second fails, as today.
 - **`tests/unit/test_prompts.py`** pins the new text of `exclusive.md` and `orchestrator.md`.
-- **`tests/bats/status.bats`**: the text view shows `фон: …` for an agent with `background`.
+- **`tests/unit/test_cli.py`**, beside the other tests of the status view: the text view shows `фон: …` for an agent
+  with `background`, in place of its reason.
 
 ## Limitations
 
