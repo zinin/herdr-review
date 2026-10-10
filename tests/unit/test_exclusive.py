@@ -11,11 +11,12 @@ import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 from herdr_review import PACKAGE_ROOT
 from herdr_review.exclusive import (
-    ExclusiveError, Where, _finish_off, command_text, format_duration, holder_text, live_wrappers, locate, queue_state,
-    read_holder, remove_holder, runs_dir_of, wrapper_entry, write_holder,
+    ExclusiveError, Where, _finish_off, command_text, format_duration, holder_text, live_wrappers, locate, pid_started,
+    queue_state, read_holder, remove_holder, runs_dir_of, wrapper_entry, write_holder,
 )
 
 BIN = PACKAGE_ROOT / "bin" / "herdr-review"
@@ -817,3 +818,32 @@ class WrapperRegistryTest(ExclusiveBase):
         found = live_wrappers(self.run_dir, alive=lambda pid: True)    # the pid runs a wrapper: is_wrapper, substituted
         self.assertEqual([e["agent"] for e in found], ["a"])
         self.assertFalse((registry / "reused.json").exists())          # its wrapper died; the pid was reused
+
+    def no_proc(self):
+        """A system without /proc, such as macOS, as pid_started sees it."""
+        exists = Path.exists
+        return mock.patch.object(Path, "exists", lambda path: False if str(path) == "/proc/self/stat" else exists(path))
+
+    @staticmethod
+    def ps_started(pid: int) -> str:
+        return subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=10).stdout.strip()
+
+    def test_without_proc_a_wrapper_is_known_by_the_start_time_ps_prints(self):
+        gone = subprocess.Popen(["true"])
+        gone.wait()
+        with self.no_proc():
+            mine, theirs = pid_started(os.getpid()), pid_started(gone.pid)
+        self.assertEqual(mine, self.ps_started(os.getpid()))           # e.g. "Sat Oct 10 13:24:34 2026"
+        self.assertTrue(mine)
+        self.assertIsNone(theirs)
+
+    def test_without_proc_live_wrappers_drops_an_entry_whose_pid_now_names_another_process(self):
+        registry = self.run_dir / "wrappers"
+        registry.mkdir()
+        me = os.getpid()
+        (registry / "same.json").write_text(json.dumps({"pid": me, "pid_started": self.ps_started(me), "agent": "a", "started_at": "2"}))
+        (registry / "reused.json").write_text(json.dumps({"pid": me, "pid_started": "Thu Jan  1 00:00:00 1970", "agent": "b", "started_at": "1"}))
+        with self.no_proc():
+            found = live_wrappers(self.run_dir, alive=lambda pid: True)
+        self.assertEqual([e["agent"] for e in found], ["a"])
+        self.assertFalse((registry / "reused.json").exists())

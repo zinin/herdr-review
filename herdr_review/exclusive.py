@@ -161,13 +161,20 @@ def wrapper_entry(run_dir: Path, pid: int) -> Path:
     return Path(run_dir) / WRAPPERS_DIR / f"{pid}.json"
 
 
-def pid_started(pid: int) -> int | None:
-    """When <pid> started, in clock ticks since boot (field 22 of /proc/<pid>/stat): with the pid it names one process,
-    since the kernel reuses pids. None where there is no /proc, and when <pid> runs no more."""
+def pid_started(pid: int) -> int | str | None:
+    """When <pid> started: with the pid it names one process, since the kernel reuses pids. Clock ticks since boot
+    from /proc/<pid>/stat (field 22) on Linux, the start time `ps -o lstart=` prints elsewhere. None when <pid> runs
+    no more, or nothing answers."""
+    if Path("/proc/self/stat").exists():
+        try:
+            return int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19])
+        except (OSError, IndexError, ValueError):
+            return None
     try:
-        return int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19])
-    except (OSError, IndexError, ValueError):
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
         return None
+    return out.strip() or None
 
 
 def live_wrappers(run_dir: Path, alive: Callable[[int], bool] | None = None) -> list[dict]:
