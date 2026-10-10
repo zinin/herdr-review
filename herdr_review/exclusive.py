@@ -342,7 +342,8 @@ def _taken_off(where: Where, agent: str | None) -> tuple[str, str] | None:
     The run took <agent> off (`run fail` leaves it `failed`), its CLI exited (`gone`), or the review is over
     (`finished`, `aborted`), and scratch/ with it. The CLI, or a background command it left, may still call the
     wrapper, which would hold the queue for as long as its --timeout. A status file that cannot be read takes nobody
-    off."""
+    off. A wrapper without HERDR_REVIEW_AGENT is never taken off: every tab the runner opens sets it, so such a call
+    comes from the user's own shell, and the user's commands run whatever the run's phase."""
     if where.run_dir is None or not agent:
         return None
     try:
