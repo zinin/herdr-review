@@ -66,6 +66,19 @@ class CliParsingTest(unittest.TestCase):
             self.assertIn("autodecide: on", out.getvalue())
             self.assertIn("2026-09-10T16:33:00+00:00", out.getvalue())
 
+    def test_status_names_an_agents_background_work_in_place_of_its_reason(self):
+        with tempfile.TemporaryDirectory() as d:
+            st = RunStatus.create(Path(d), run_id="hrtest", repo=d, layout="tabs")
+            st.add_agent("hrtest-grok", role="reviewer", profile="grok", kind="grok", state="working",
+                         reason="an older reason", background="grok: 1 command still running")
+            st.add_agent("hrtest-codex", role="reviewer", profile="codex", kind="codex", state="working", reason="its reason")
+            out = io.StringIO()
+            with redirect_stdout(out):
+                main(["status", "--run", d])
+            lines = out.getvalue().splitlines()
+            self.assertTrue(next(l for l in lines if l.startswith("hrtest-grok")).endswith("фон: grok: 1 command still running"))
+            self.assertTrue(next(l for l in lines if l.startswith("hrtest-codex")).endswith("its reason"))
+
     def test_status_says_the_working_tree_changed_not_who_changed_it(self):
         with tempfile.TemporaryDirectory() as d:
             st = RunStatus.create(Path(d), run_id="hrtest", repo=d, layout="tabs")

@@ -21,6 +21,7 @@ RAW = {
         "claude-opus": {"kind": "claude", "args": ["--model", "opus"], "env": {"TOKEN": "s3cret"}},
         "codex": {"kind": "codex", "args": ["-m", "gpt-5.5"]},
         "gemini": {"kind": "gemini", "args": ["--yolo"]},
+        "grok": {"kind": "grok", "args": ["-m", "grok-4.6"]},
         "mimo": {"kind": "opencode", "env": {"OPENCODE_CONFIG_CONTENT": MIMO_CONFIG}},
     },
     "presets": {"default": {"reviewers": ["claude-opus", "codex", "gemini"], "orchestrator": "claude-opus", "fixer": "codex"}},

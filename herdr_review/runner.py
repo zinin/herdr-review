@@ -13,7 +13,7 @@ from typing import Callable, Mapping
 
 from . import PROMPTS_DIR, exclusive, gitutil
 from .config import ConfigError, is_secretish, launch_environ, load_config
-from .dialogs import MCP_UNCHECKED, SCREEN_LINES, codex_session_ready, codex_update_complete, codex_update_running, codex_update_started, mcp_check, resolve_startup_dialog
+from .dialogs import MCP_UNCHECKED, SCREEN_LINES, codex_session_ready, codex_update_complete, codex_update_running, codex_update_started, grok_background, mcp_check, resolve_startup_dialog
 from .herdr import Herdr, HerdrResult
 from .kinds import startup_env
 from .layout import fixer_split, plan_grid
@@ -56,6 +56,12 @@ LIVE_STATUSES = ("idle", "working", "blocked", "done", "unknown")
 # the agent, so they must never take one out of the run.
 HERDR_ERROR_CODES = ("herdr_not_found", "herdr_failed", "timeout")
 OBSERVE_ATTEMPTS = 3
+# An agent herdr reports idle or done stays `working` while it waits for its own background work (_background_work):
+# for this long after the last sign of that work, which covers the seconds before the agent's next step; and on
+# grok's status line alone, without a wrapper of the build queue, for at most this long in a row.
+BUSY_GRACE_SEC = 30
+SCREEN_BUSY_LIMIT_SEC = 1800
+BUSY_FIELDS = ("background", "busy_seen_at", "screen_busy_since", "screen_busy_logged")
 # close --force reads status.json again after every round of closes, for the tabs a live orchestrator opened
 # meanwhile; past this many rounds, a tab that still appears is left open for another close --force.
 CLOSE_ROUNDS = 3
@@ -276,6 +282,7 @@ class Runner:
     def _summary(self, name: str) -> dict:
         a = self.status.agent(name)
         out = {"state": a["state"], "tab": a.get("tab"), "pane": a.get("pane"), "reason": a.get("reason"),
+               "background": a.get("background"),
                "codex_update_pending": bool(a.get("codex_update_pending")), "update_restarts": int(a.get("update_restarts", 0))}
         if a["state"] not in TERMINAL_STATES and self._restart_busy(name):
             out["codex_restart_pending"] = True
@@ -784,11 +791,60 @@ class Runner:
             if not self._expire_codex_update(name, generation=generation):
                 self._set_state(name, "prompt_stalled", reason="Codex startup update is running", generation=generation)
             return True
-        current = self.status.agent(name)["state"]
+        a = self.status.agent(name)
+        current = a["state"]
         new = "blocked-start" if (current == "blocked-start" and live == "blocked") else live
+        before = {k: a.get(k) for k in BUSY_FIELDS}
+        background = self._background_work(name) if live in ("idle", "done") else None
+        if background is not None:
+            new = "working"
+            background = self.herdr.mask(background)
+        a["background"] = background
+        if background != before["background"]:
+            self.log(f"{name}: herdr reports {live}, kept working: {background}" if background is not None
+                     else f"{name}: its background work is over")
+        if any(a.get(k) != v for k, v in before.items()):
+            self.status.mark_agent(name, generation=generation)
+            if new == current:
+                self.status.save()
         if new != current:
             self._set_state(name, new, generation=generation)
         return True
+
+    def _background_work(self, name: str) -> str | None:
+        """What <name> still waits for while herdr reports it idle or done, or None: its command in the build queue
+        (the run's wrapper registry); for grok, its background task or subagent (the status line above its input);
+        or work that ended less than BUSY_GRACE_SEC ago. Records in the agent's entry when it last saw such work."""
+        a = self.status.agent(name)
+        now = self.wall_clock()
+        wrappers = [w for w in exclusive.live_wrappers(self.run_dir) if w.get("agent") == name]
+        if wrappers:
+            w = next((w for w in wrappers if w.get("phase") == "running"), wrappers[0])
+            a.update(busy_seen_at=now, screen_busy_since=None, screen_busy_logged=False)
+            if w.get("phase") == "running":
+                return f"running its command: {w.get('command')}"
+            return f"waiting for its turn in the build queue: {w.get('command')}"
+        line = None
+        if a.get("kind") == "grok":
+            screen = self.herdr.agent_read(name, source="visible", lines=SCREEN_LINES)
+            line = grok_background(screen) if screen is not None else None
+        if line is None:
+            a.update(screen_busy_since=None, screen_busy_logged=False)
+        else:
+            since = a.get("screen_busy_since")
+            if since is None:
+                a["screen_busy_since"] = since = now
+            if now - since <= SCREEN_BUSY_LIMIT_SEC:
+                a["busy_seen_at"] = now
+                return f"grok: {line}"
+            if not a.get("screen_busy_logged"):
+                a["screen_busy_logged"] = True
+                self.log(f'{name}: grok has shown "{line}" for {SCREEN_BUSY_LIMIT_SEC // 60} minutes without a'
+                         " build-queue command; going by herdr's status")
+        seen = a.get("busy_seen_at")
+        if seen is not None and now - seen < BUSY_GRACE_SEC:
+            return "its background work ended moments ago"
+        return None
 
     def _pending(self, names: list[str]) -> list[str]:
         pending = []
@@ -863,6 +919,7 @@ class Runner:
                 "result_ok": bool(a.get("result_ok")),
                 "screen_changed": current is not None and current != baseline[n],
                 "reason": a.get("reason"),
+                "background": a.get("background"),
                 "codex_update_pending": bool(a.get("codex_update_pending")),
                 "update_restarts": int(a.get("update_restarts", 0)),
             }

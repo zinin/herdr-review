@@ -307,7 +307,7 @@ def cmd_status(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     print(queue_line(queue))
     print(f"{'agent':<28} {'role':<9} {'state':<15} {'since':>6}  file  reason")
     for n, a in data["agents"].items():
-        reason = (a.get("reason") or "")[:60]
+        reason = (f"фон: {a['background']}" if a.get("background") else a.get("reason") or "")[:60]
         file_ok = "yes" if a.get("result_ok") else "-"
         print(f"{n:<28} {a.get('role', ''):<9} {a['state']:<15} {st.since_sec(n):>5}s  {file_ok:<4}  {reason}")
     if data.get("commits"):
