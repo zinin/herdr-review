@@ -850,6 +850,9 @@ class Runner:
                 a["screen_busy_logged"] = True
                 self.log(f'{name}: grok has shown "{line}" for {SCREEN_BUSY_LIMIT_SEC // 60} minutes without a'
                          " build-queue command; going by herdr's status")
+            # The runner stops trusting the line, but nothing ended: no grace comes from this stretch.
+            a["busy_seen_at"] = None
+            return None
         seen = a.get("busy_seen_at")
         if seen is not None and now - seen < BUSY_GRACE_SEC:
             return "its background work ended moments ago"

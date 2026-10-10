@@ -296,8 +296,9 @@ class BackgroundWorkTest(RunnerBase):
         while out["reason"] == "checkin":
             out = self.r.wait(agent="hrtest-grok")
         self.assertEqual(out["agents"]["hrtest-grok"]["state"], "done")
-        self.assertEqual(self.clock.t, SCREEN_BUSY_LIMIT_SEC + BUSY_GRACE_SEC)
+        self.assertEqual(self.clock.t, SCREEN_BUSY_LIMIT_SEC + 5)                # the first poll past the limit
         self.assertEqual(self.log().count('hrtest-grok: grok has shown "1 command still running" for 30 minutes'), 1)
+        self.assertNotIn("ended moments ago", self.log())              # nothing ended: no grace after the cutoff
 
     def test_the_screen_clock_starts_again_after_herdr_sees_the_agent_work(self):
         self.herdr.screens["hrtest-grok"] = GROK_WAIT_SCREEN
