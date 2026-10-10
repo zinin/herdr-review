@@ -2,6 +2,26 @@
 
 All notable changes to herdr-review will be documented here.
 
+## [Unreleased]
+
+### Fixed
+- A reviewer or the fixer that herdr reports idle or done while it waits for its own background work stays `working`:
+  its command in the build queue, for every agent kind, and for grok any background task or subagent that grok's
+  status line shows above its input (trusted alone for 30 minutes at most). `collect` looks at an idle or done
+  reviewer again before it re-prompts or fails it, so a reviewer waiting for its own tests is neither re-prompted nor
+  failed.
+
+### Added
+- `herdr-review exclusive` registers each wrapper of a review in `<run_dir>/wrappers/<pid>.json` while it waits for
+  its turn and while it runs its command.
+- `background`: what an agent that herdr shows idle still waits for, in `run wait`, `run prompt`, `start-reviewers`,
+  `start-fixer`, `status.json` and `herdr-review status` («фон:»).
+
+### Changed
+- The heavy-command rules ask agents to wait for every command they started before they reply DONE. The
+  orchestrator leaves an agent with `background` alone and never presses Enter in a grok tab that shows a running
+  background task or a queued prompt.
+
 ## [0.5.0] - 2026-10-04
 
 ### Added
