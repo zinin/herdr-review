@@ -1,4 +1,5 @@
-"""Agent startup dialogs: the ones the runner answers without an LLM, and the one it never answers."""
+"""Agent screens the runner reads without an LLM: the startup dialogs it answers, the one it never answers,
+Codex's startup update and grok's background work."""
 from __future__ import annotations
 
 import re
@@ -35,6 +36,14 @@ CODEX_UPDATE_MENU = re.compile(r"\bUpdate available\b.*\bUpdate now\b")
 CODEX_UPDATING = re.compile(r"\bUpdating Codex via\b")
 CODEX_UPDATED = re.compile(r"\bUpdate ran successfully!\s*Please restart Codex\.")
 CODEX_SESSION = re.compile(r"\bOpenAI Codex\s*\(v\d")
+# Grok: the status line above its input while background work runs and the agent looks idle — between turns, or
+# while a turn waits in get_command_or_subagent_output: "◉ 1 command still running · send a message to interrupt",
+# "○ 1 command still running · 1 queued, Enter to send now", "◎ 1 command · 2 monitors · 1 loop · 1 subagent still
+# running", "◎ waiting · send a message to interrupt". The glyph in front changes. Only the bottom of the screen is
+# searched, where grok draws the line: the transcript above it may quote "… still running in the background".
+GROK_STATUS_LINES = 20
+GROK_BACKGROUND = re.compile(r"\b\d+ (?:command|monitor|loop|subagent)s?(?:\s*·\s*\d+ (?:command|monitor|loop|subagent)s?)*\s+still running\b")
+GROK_WAITING = re.compile(r"\bwaiting\s*·\s*send a message to interrupt\b")
 MAX_DIALOGS = 3          # Claude Code shows the trust dialog first and the MCP dialog after it
 WAIT_MS = 30000
 SCREEN_LINES = 60
@@ -87,6 +96,14 @@ def codex_session_ready(screen: str) -> bool:
     return bool(CODEX_SESSION.search(flat) and not (
         CODEX_UPDATE_MENU.search(flat) or CODEX_UPDATING.search(flat) or CODEX_UPDATED.search(flat)
     ))
+
+
+def grok_background(screen: str) -> str | None:
+    """The background work grok's status line names at the bottom of <screen>, in the line's own words (`1 command
+    still running`, `waiting · send a message to interrupt`); None when the line is not there."""
+    bottom = _flat("\n".join(screen.splitlines()[-GROK_STATUS_LINES:]))
+    found = GROK_BACKGROUND.search(bottom) or GROK_WAITING.search(bottom)
+    return found.group(0) if found else None
 
 
 def recognize(screen: str) -> tuple[str, tuple[str, ...] | None] | None:

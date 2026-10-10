@@ -1,6 +1,6 @@
 import unittest
 
-from herdr_review.dialogs import MCP_REFUSAL, DialogOutcome, codex_session_ready, codex_update_complete, codex_update_running, codex_update_started, mcp_check, recognize, resolve_startup_dialog
+from herdr_review.dialogs import MCP_REFUSAL, DialogOutcome, codex_session_ready, codex_update_complete, codex_update_running, codex_update_started, grok_background, mcp_check, recognize, resolve_startup_dialog
 from tests.unit.fakeherdr import FakeHerdr
 
 CLAUDE_TRUST_ON_NO = "Quick safety check … ❯ No, exit\n  Yes, I trust this folder\nEnter to confirm · Esc to cancel\n"
@@ -18,6 +18,38 @@ CODEX_TRUST_ON_TRUST = "Trust this folder? Codex can read, edit, and run files h
 CODEX_TRUST_ON_QUIT = "Trust this folder? Codex can read, edit, and run files here.\n  1. Trust and continue\n› 2. Quit\n"
 GROK_TRUST = "Do you trust the contents of this directory?\n  Yes, proceed   y\n  No, quit   n\n"
 CLAUDE_IDLE = "❯ \n  ⏵⏵ auto mode on (shift+tab to cycle)\n"
+# Grok 1.0.50 in run hrlwi8: the bottom of the screen, below the transcript.
+GROK_INPUT = (
+    "  [Click here to Upgrade] or use Ctrl+O\n"
+    "\n"
+    "  ╭──────────────────────────────────────────────────────╮\n"
+    "  │ ❯                                                    │\n"
+    "  ╰──────────── DeepSeek-V4.1-Flash (LANIT) (max) · auto-review ─╯\n"
+    "\n"
+    "  Shift+Tab:mode  │  Ctrl+.:shortcuts\n"
+)
+GROK_WAIT_SCREEN = (            # the turn waits for its background task in get_command_or_subagent_output
+    "     ◆ Ran read the wave's error recording\n"
+    "     ◆ Thought for 2.4s\n"
+    "\n"
+    "    ◉ 1 command still running · send a message to interrupt\n"
+    "\n" + GROK_INPUT
+)
+GROK_QUEUED_SCREEN = (          # a prompt sent meanwhile waits in grok's queue
+    "     ◆ Thought for 2.4s\n"
+    "\n"
+    "    #1 You have not written a valid review to /run/reviews/deepseek.md (file missing). Read /run/prompts/…\n"
+    "\n"
+    "    ○ 1 command still running · 1 queued, Enter to send now\n"
+    "\n" + GROK_INPUT
+)
+GROK_WORKING_SCREEN = (
+    "  ┃  ◆ Thinking…\n"
+    "\n"
+    "    ⠦ Thinking… 12s                                                       12s ⇣150k [stop]\n"
+    "\n" + GROK_INPUT
+)
+GROK_IDLE_SCREEN = "     ◆ Wrote the review\n\n" + GROK_INPUT
 # A narrow pane of the grid layout wraps a dialog's phrase over two lines, inside the dialog's box.
 MCP_ONE_NARROW = (
     "╭──────────────────────────────╮\n"
@@ -310,6 +342,39 @@ class RecognizeTest(unittest.TestCase):
     def test_an_idle_agent_is_not_a_dialog(self):
         self.assertIsNone(recognize("❯ \n  ⏵⏵ auto mode on (shift+tab to cycle)\n"))
         self.assertIsNone(recognize("› Ask Codex to do anything\n"))
+
+
+class GrokBackgroundTest(unittest.TestCase):
+    def test_the_line_of_a_wait_and_of_a_queued_prompt(self):
+        self.assertEqual(grok_background(GROK_WAIT_SCREEN), "1 command still running")
+        self.assertEqual(grok_background(GROK_QUEUED_SCREEN), "1 command still running")
+
+    def test_the_documented_forms(self):
+        self.assertEqual(grok_background("◎ 1 command · 2 monitors · 1 loop · 1 subagent still running\n" + GROK_INPUT),
+                         "1 command · 2 monitors · 1 loop · 1 subagent still running")
+        self.assertEqual(grok_background("◎ 2 commands still running\n" + GROK_INPUT), "2 commands still running")
+        self.assertEqual(grok_background("◎ waiting · send a message to interrupt\n" + GROK_INPUT),
+                         "waiting · send a message to interrupt")
+
+    def test_a_line_a_narrow_pane_wrapped(self):
+        screen = "  ◉ 1 command still\n  running · send a\n  message to interrupt\n" + GROK_INPUT
+        self.assertEqual(grok_background(screen), "1 command still running")
+
+    def test_escapes_and_another_glyph_around_the_line(self):   # Review Focus 4
+        screen = "    \x1b[2m●\x1b[0m \x1b[33m1 command\x1b[0m still running · send a message to interrupt\n" + GROK_INPUT
+        self.assertEqual(grok_background(screen), "1 command still running")
+
+    def test_no_background_work(self):
+        for screen in (GROK_IDLE_SCREEN, GROK_WORKING_SCREEN, CLAUDE_IDLE, ""):
+            with self.subTest(screen=screen):
+                self.assertIsNone(grok_background(screen))
+        transcript = ("     ◆ Task completed in 2m13s: Run gofmt, vet and race tests\n"
+                      "     The command is still running in the background. You can continue with other tasks.\n")
+        self.assertIsNone(grok_background(transcript + GROK_INPUT))
+
+    def test_only_the_bottom_of_the_screen_counts(self):
+        screen = "    ◉ 1 command still running\n" + "     ◆ Ran a command\n" * 25 + GROK_INPUT
+        self.assertIsNone(grok_background(screen))
 
 
 if __name__ == "__main__":
