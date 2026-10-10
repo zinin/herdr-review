@@ -385,6 +385,18 @@ class GrokBackgroundTest(unittest.TestCase):
             with self.subTest(said=said):
                 self.assertIsNone(grok_background("     ◆ Thought for 2.4s\n" + said + "\n" + GROK_INPUT))
 
+    def test_a_glyph_alone_on_its_line_is_not_the_status_line(self):
+        # The status line's words begin on the glyph's own line: the agent's words below a bare glyph do not count.
+        self.assertIsNone(grok_background("    ◉\n     1 command still running\n\n" + GROK_INPUT))
+
+    def test_the_bottom_most_status_line_wins_over_a_transcript_line_above_it(self):
+        screen = ("    ● 2 commands still running\n"
+                  "     ◆ Thought for 2.4s\n"
+                  "\n"
+                  "    ○ 1 command still running · 1 queued, Enter to send now\n"
+                  "\n" + GROK_INPUT)
+        self.assertEqual(grok_background(screen), "1 command still running")
+
 
 if __name__ == "__main__":
     unittest.main()
