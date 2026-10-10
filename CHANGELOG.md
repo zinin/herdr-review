@@ -14,7 +14,8 @@ All notable changes to herdr-review will be documented here.
   `aborted`), like for an agent `run fail` took off, also when that happens just as it takes its turn: a background
   wrapper still waiting for its turn no longer starts a build after the review, in a `scratch/` already removed.
 - An agent whose CLI exited (`gone`) no longer leaves its command holding the build queue up to its `--timeout`:
-  the runner stops it, as `run fail` does.
+  the runner stops it, as `run fail` does. A `close --force` that leaves a tab open, and with it the run in
+  progress, makes the agents whose tabs did close `gone` too.
 
 ### Added
 - `herdr-review exclusive` registers each wrapper of a review in `<run_dir>/wrappers/<pid>-<token>.json` while it

@@ -1380,6 +1380,24 @@ class Runner:
         if not same:
             raise RunnerError(f"run {self.run_id} was started in herdr session '{session or socket}'; run close from a pane of that session")
 
+    def _retire_closed_agents(self, shut: set[str]) -> str | None:
+        """After a close --force that left a tab open the run stays in progress, but an agent whose own tab is in
+        <shut>, closed by it or before it, went with that tab. It becomes `gone`, its tab left alone since it is no
+        longer there, so a wrapper it left runs nothing more (exclusive._taken_off); then such a wrapper that took the
+        queue while the tabs closed is stopped. What was stopped, or None."""
+        names = [name for name, a in self.status.data["agents"].items()
+                 if self.layout == "tabs" and a.get("tab") in shut and a.get("state") not in TERMINAL_STATES]
+        for name in names:
+            a = self.status.agent(name)
+            for key in BUSY_FIELDS:
+                a.pop(key, None)
+            self.status.set_agent_state(name, "gone", reason="its tab was closed by close --force")
+            self.log(f"close --force: {name} is gone with its tab")
+        stopped = None
+        for name in names:         # every one is gone first: a wrapper that takes the queue a stop frees runs nothing
+            stopped = self._stop_queue_holder(agent=name) or stopped
+        return stopped
+
     def close(self, force: bool = False, environ: Mapping[str, str] | None = None) -> dict:
         """Close every tab and pane the run opened. A run in progress is refused unless forced.
         <environ> is the caller's environment: its herdr session must be the run's."""
@@ -1439,6 +1457,7 @@ class Runner:
                 # An agent whose tab did not close may still be working: the run keeps its phase and its
                 # scratch/, so a later launch still warns about it and another close --force can finish the job.
                 self.log(f"close --force: {len(failed)} of {len(closed) + len(gone) + len(left_open) + len(failed)} did not close; the run stays in phase {phase}")
+                late = self._retire_closed_agents(set(closed) | set(gone))
             else:
                 # Its agents are gone: the run ends here, and no later launch may count it as unfinished.
                 # The caller's own tab does not count: the user is at a shell there, not an agent.
