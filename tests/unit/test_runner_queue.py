@@ -73,6 +73,18 @@ class RunnerStopsItsQueueHolderTest(RunnerBase):
         self.assertEqual(self.runner(run_dir).close(force=True)["exclusive_stopped"], "hrtest-fixer: sleep 30")
         self.assertEqual(p.wait(timeout=30), 143)
 
+    def test_close_force_stops_a_wrapper_that_took_the_queue_while_the_tabs_closed(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        self.runner(run_dir).start_reviewers()
+        took: list[subprocess.Popen] = []
+        # While the reviewer's tab closes the run is not over yet: a wrapper of it that waited for its turn takes the
+        # queue the first stop freed.
+        self.herdr.on_close["w1:t2"] = lambda: took.append(self.holding(run_dir, "hrtest-codex"))
+        self.runner(run_dir).close(force=True)
+        self.assertEqual(len(took), 1)
+        self.assertEqual(queue_state(self.runs), {"held": False})          # stopped before scratch/ went
+        self.assertEqual(took[0].wait(timeout=30), 143)
+
     def test_a_command_of_another_run_is_left_alone(self):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",))
         other = self.runs / "other" / "20260908-110000-hrother"

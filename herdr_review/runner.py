@@ -1429,6 +1429,9 @@ class Runner:
                 self.status.set("abort_reason", "closed with --force")
                 self.status.set("waiting_for_user", False)
                 self.status.set_phase("aborted")
+                # While the tabs closed the run was not over yet: a wrapper of it that waited for its turn may have
+                # taken the queue the first stop freed. The phase now turns away every later one.
+                stopped = self._stop_queue_holder() or stopped
                 self._remove_scratch()
         self.status.set("closed_at", now_iso())
         self.status.save()
