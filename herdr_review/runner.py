@@ -327,6 +327,11 @@ class Runner:
             self.herdr.tab_rename(o["tab"], f"rv-{self.run_id}: orch{suffix}")
 
     def _set_state(self, name: str, state: str, reason: str | None = None, last_screen: str | None = None, *, generation: int | None = None) -> bool:
+        if state in TERMINAL_STATES:
+            # An agent out of the run waits for nothing: its reason, not its last background work, tells why.
+            a = self.status.agent(name)
+            for key in BUSY_FIELDS:
+                a.pop(key, None)
         accepted = self.status.set_agent_state(name, state, reason=reason, last_screen=last_screen, generation=generation)
         if not accepted:
             self._observe(name)

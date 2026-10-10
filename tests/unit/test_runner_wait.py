@@ -368,6 +368,24 @@ class BackgroundWorkTest(RunnerBase):
         self.r.wait(agent="hrtest-claude-opus")
         self.assertEqual(self.r._summary("hrtest-claude-opus")["background"], "running its command: go test ./...")
 
+    def test_a_failed_agent_keeps_no_background_work(self):
+        self.busy("hrtest-claude-opus")
+        self.herdr.agent_status["hrtest-claude-opus"] = ["done"]
+        self.r.wait(agent="hrtest-claude-opus")
+        self.r.fail("hrtest-claude-opus", "the user took it off")
+        a = self.r.status.agent("hrtest-claude-opus")
+        self.assertEqual((a["state"], a["reason"], a.get("background")), ("failed", "the user took it off", None))
+        self.assertIsNone(self.r._summary("hrtest-claude-opus")["background"])
+
+    def test_an_exited_agent_keeps_no_background_work(self):
+        self.busy("hrtest-grok")                                       # its wrapper outlives it
+        self.herdr.agent_status["hrtest-grok"] = ["done"]
+        self.r.wait(agent="hrtest-grok")
+        self.herdr.agent_status["hrtest-grok"] = ["gone"]
+        out = self.r.wait(agent="hrtest-grok")
+        self.assertEqual((out["agents"]["hrtest-grok"]["state"], out["agents"]["hrtest-grok"]["background"]), ("gone", None))
+        self.assertEqual(out["agents"]["hrtest-grok"]["reason"], "agent exited")
+
 
 if __name__ == "__main__":
     unittest.main()

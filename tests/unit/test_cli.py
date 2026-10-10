@@ -79,6 +79,17 @@ class CliParsingTest(unittest.TestCase):
             self.assertTrue(next(l for l in lines if l.startswith("hrtest-grok")).endswith("фон: grok: 1 command still running"))
             self.assertTrue(next(l for l in lines if l.startswith("hrtest-codex")).endswith("its reason"))
 
+    def test_status_shows_the_reason_of_an_agent_that_is_not_working(self):
+        with tempfile.TemporaryDirectory() as d:
+            st = RunStatus.create(Path(d), run_id="hrtest", repo=d, layout="tabs")
+            st.add_agent("hrtest-grok", role="reviewer", profile="grok", kind="grok", state="failed",
+                         reason="the user took it off", background="grok: 1 command still running")
+            out = io.StringIO()
+            with redirect_stdout(out):
+                main(["status", "--run", d])
+            row = next(l for l in out.getvalue().splitlines() if l.startswith("hrtest-grok"))
+            self.assertTrue(row.endswith("the user took it off"), row)
+
     def test_status_says_the_working_tree_changed_not_who_changed_it(self):
         with tempfile.TemporaryDirectory() as d:
             st = RunStatus.create(Path(d), run_id="hrtest", repo=d, layout="tabs")
