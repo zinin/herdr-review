@@ -163,15 +163,17 @@ def wrapper_entry(run_dir: Path, pid: int) -> Path:
 
 def pid_started(pid: int) -> int | str | None:
     """When <pid> started: with the pid it names one process, since the kernel reuses pids. Clock ticks since boot
-    from /proc/<pid>/stat (field 22) on Linux, the start time `ps -o lstart=` prints elsewhere. None when <pid> runs
-    no more, or nothing answers."""
+    from /proc/<pid>/stat (field 22) on Linux, the start time `ps -o lstart=` prints elsewhere, in the C locale and
+    UTC: the wrapper records it in its agent's environment and the runner compares it in its own, whose TZ and
+    locale may differ. None when <pid> runs no more, or nothing answers."""
     if Path("/proc/self/stat").exists():
         try:
             return int(Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19])
         except (OSError, IndexError, ValueError):
             return None
     try:
-        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=10).stdout
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=10,
+                             env={**os.environ, "LC_ALL": "C", "TZ": "UTC0"}).stdout
     except (OSError, subprocess.SubprocessError):
         return None
     return out.strip() or None

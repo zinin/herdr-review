@@ -329,11 +329,15 @@ class Runner:
             self.herdr.tab_rename(o["tab"], f"rv-{self.run_id}: orch{suffix}")
 
     def _set_state(self, name: str, state: str, reason: str | None = None, last_screen: str | None = None, *, generation: int | None = None) -> bool:
+        a = self.status.agent(name)
         if state in TERMINAL_STATES:
             # An agent out of the run waits for nothing: its reason, not its last background work, tells why.
-            a = self.status.agent(name)
             for key in BUSY_FIELDS:
                 a.pop(key, None)
+        elif state != "working":
+            # `background` names what keeps an agent working: any other state has none. When that work was last seen,
+            # and the stretch of grok's status line, stay for the next look.
+            a["background"] = None
         accepted = self.status.set_agent_state(name, state, reason=reason, last_screen=last_screen, generation=generation)
         if not accepted:
             self._observe(name)
@@ -803,7 +807,7 @@ class Runner:
         a = self.status.agent(name)
         current = a["state"]
         new = "blocked-start" if (current == "blocked-start" and live == "blocked") else live
-        before = {k: a.get(k) for k in BUSY_FIELDS}
+        busy_before = {k: a.get(k) for k in BUSY_FIELDS}
         background = self._background_work(name) if live in QUIET_STATUSES else None
         if live not in QUIET_STATUSES and a.get("screen_busy_since") is not None:
             # herdr sees the agent at work again: a stretch of grok's status line alone, which SCREEN_BUSY_LIMIT_SEC
@@ -813,10 +817,15 @@ class Runner:
             new = "working"
             background = self.herdr.mask(background)
         a["background"] = background
-        if background != before["background"]:
-            self.log(f"{name}: herdr reports {live}, kept working: {background}" if background is not None
-                     else f"{name}: its background work is over")
-        if any(a.get(k) != v for k, v in before.items()):
+        if background != busy_before["background"]:
+            if background is not None:
+                self.log(f"{name}: herdr reports {live}, kept working: {background}")
+            elif live in QUIET_STATUSES:
+                self.log(f"{name}: its background work is over")
+            else:
+                # herdr shows the agent at work or blocked: the runner stops looking, but the command may still run.
+                self.log(f"{name}: herdr reports {live}; its background work is no longer tracked")
+        if any(a.get(k) != v for k, v in busy_before.items()):
             self.status.mark_agent(name, generation=generation)
             if new == current:
                 self.status.save()
@@ -838,11 +847,15 @@ class Runner:
                 return f"running its command: {w.get('command')}"
             return f"waiting for its turn in the build queue: {w.get('command')}"
         line = None
+        unread = False
         if a.get("kind") == "grok":
             screen = self.herdr.agent_read(name, source="visible", lines=SCREEN_LINES)
+            unread = screen is None
             line = grok_background(screen) if screen is not None else None
         if line is None:
-            a.update(screen_busy_since=None, screen_busy_logged=False)
+            # A screen herdr could not read tells nothing of the line: its stretch neither ends nor starts again.
+            if not unread:
+                a.update(screen_busy_since=None, screen_busy_logged=False)
         else:
             since = a.get("screen_busy_since")
             if since is None:

@@ -345,7 +345,7 @@ class BackgroundWorkTest(RunnerBase):
         out = self.r.wait(agent="hrtest-claude-opus")
         self.assertEqual(out["agents"]["hrtest-claude-opus"]["state"], "working")
         self.assertIsNone(out["agents"]["hrtest-claude-opus"]["background"])
-        self.assertIn("hrtest-claude-opus: its background work is over", self.log())
+        self.assertIn("hrtest-claude-opus: herdr reports working; its background work is no longer tracked", self.log())
 
     def test_the_fixer_stays_working_while_its_tests_run(self):
         self.r.start_fixer()
@@ -371,6 +371,26 @@ class BackgroundWorkTest(RunnerBase):
         self.herdr.reads["hrtest-grok"] = [None]
         out = self.r.wait(agent="hrtest-grok")
         self.assertEqual((out["reason"], out["agents"]["hrtest-grok"]["state"]), ("state_change", "done"))
+
+    def test_an_unreadable_grok_screen_neither_ends_nor_starts_a_stretch(self):
+        self.herdr.agent_status["hrtest-grok"] = ["done"]
+        self.herdr.screens["hrtest-grok"] = GROK_WAIT_SCREEN
+        self.r.wait(agent="hrtest-grok")                               # the line is seen at 1000.0: a stretch starts
+        self.herdr.reads["hrtest-grok"] = [None]
+        self.r.wait(agent="hrtest-grok")                               # one read fails, then the line again
+        self.assertEqual(self.r.status.agent("hrtest-grok")["screen_busy_since"], 1000.0)
+        out = self.r.wait(agent="hrtest-grok")
+        while out["reason"] == "checkin":                              # on past the 30-minute limit
+            out = self.r.wait(agent="hrtest-grok")
+        self.assertEqual(out["agents"]["hrtest-grok"]["state"], "done")
+        self.herdr.reads["hrtest-grok"] = [None]
+        self.r.wait(agent="hrtest-grok")                               # a read fails between two sightings
+        self.r.wait(agent="hrtest-grok")                               # the line again
+        self.clock.t += SCREEN_BUSY_LIMIT_SEC + 5
+        out = self.r.wait(agent="hrtest-grok")                         # and 30 minutes later
+        self.assertEqual(out["agents"]["hrtest-grok"]["state"], "done")
+        self.assertEqual(self.r.status.agent("hrtest-grok")["screen_busy_since"], 1000.0)
+        self.assertEqual(self.log().count('hrtest-grok: grok has shown "1 command still running" for 30 minutes'), 1)
 
     def test_a_live_wrapper_is_named_before_the_grok_line_and_stops_its_clock(self):   # Review Focus 5
         self.busy("hrtest-grok", command="go test -race ./...")
@@ -405,6 +425,34 @@ class BackgroundWorkTest(RunnerBase):
         out = self.r.wait(agent="hrtest-grok")
         self.assertEqual((out["agents"]["hrtest-grok"]["state"], out["agents"]["hrtest-grok"]["background"]), ("gone", None))
         self.assertEqual(out["agents"]["hrtest-grok"]["reason"], "agent exited")
+
+    def test_an_unexpected_herdr_status_leaves_no_background_work(self):
+        self.busy("hrtest-claude-opus")
+        self.herdr.agent_status["hrtest-claude-opus"] = ["done"]
+        self.r.wait(agent="hrtest-claude-opus")                        # kept working: running its command
+        self.herdr.agent_status["hrtest-claude-opus"] = ["launch_pending"]
+        out = self.r.wait(agent="hrtest-claude-opus")
+        a = out["agents"]["hrtest-claude-opus"]
+        self.assertEqual((a["state"], a["background"]), ("unknown", None))
+
+    def test_a_prompt_that_meets_a_dialog_leaves_no_background_work(self):
+        self.busy("hrtest-claude-opus")
+        self.herdr.agent_status["hrtest-claude-opus"] = ["done"]
+        self.r.wait(agent="hrtest-claude-opus")
+        self.herdr.prompt_errors["hrtest-claude-opus"] = ("agent_blocked", "a permission dialog is open")
+        out = self.r.prompt("hrtest-claude-opus")
+        self.assertEqual((out["state"], out["background"]), ("blocked", None))
+
+    def test_background_work_of_an_agent_herdr_reports_blocked_is_no_longer_tracked(self):
+        self.busy("hrtest-claude-opus")
+        self.herdr.agent_status["hrtest-claude-opus"] = ["done"]
+        self.r.wait(agent="hrtest-claude-opus")
+        self.herdr.agent_status["hrtest-claude-opus"] = ["blocked"]    # its command may still run
+        out = self.r.wait(agent="hrtest-claude-opus")
+        a = out["agents"]["hrtest-claude-opus"]
+        self.assertEqual((a["state"], a["background"]), ("blocked", None))
+        self.assertIn("hrtest-claude-opus: herdr reports blocked; its background work is no longer tracked", self.log())
+        self.assertNotIn("hrtest-claude-opus: its background work is over", self.log())
 
 
 if __name__ == "__main__":

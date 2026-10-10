@@ -138,7 +138,9 @@ class PromptTemplatesTest(unittest.TestCase):
         self.assertIn("`working` without `background`, with `screen_changed: false` on two consecutive waits →", text)
         self.assertIn("`N queued, Enter to send now` there means a prompt waits in grok's queue. grok delivers that prompt"
                       " when the agent's turn ends; Enter would send it at once and cut the turn short. Never press Enter"
-                      " or any other key in such a tab.", text)
+                      " or any other key in such a tab — unless `run wait` reports the agent `blocked`: a dialog is"
+                      " answered whatever runs in the background, with the dialog's own keys, as the `blocked` rules"
+                      " above say.", text)
         self.assertIn("A grok agent may only hold the prompt in its queue while it waits for its own background work",
                       text)
         self.assertIn("Stop when the fixer is `idle` or `done`; while its `background` is set, the runner keeps it"

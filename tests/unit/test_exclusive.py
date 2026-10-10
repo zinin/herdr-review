@@ -877,7 +877,8 @@ class WrapperRegistryTest(ExclusiveBase):
 
     @staticmethod
     def ps_started(pid: int) -> str:
-        return subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=10).stdout.strip()
+        return subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, timeout=10,
+                              env={**os.environ, "LC_ALL": "C", "TZ": "UTC0"}).stdout.strip()
 
     def test_without_proc_a_wrapper_is_known_by_the_start_time_ps_prints(self):
         gone = subprocess.Popen(["true"])
@@ -898,3 +899,19 @@ class WrapperRegistryTest(ExclusiveBase):
             found = live_wrappers(self.run_dir, alive=lambda pid: True)
         self.assertEqual([e["agent"] for e in found], ["a"])
         self.assertFalse((registry / "reused.json").exists())
+
+    def test_without_proc_the_start_time_does_not_depend_on_the_time_zone(self):
+        registry = self.run_dir / "wrappers"
+        registry.mkdir()
+        me = os.getpid()
+        with self.no_proc():
+            with mock.patch.dict(os.environ, {"TZ": "Asia/Tokyo"}):        # the wrapper, in its agent's environment
+                tokyo = pid_started(me)
+            (registry / "tokyo.json").write_text(json.dumps({"pid": me, "pid_started": tokyo, "agent": "a", "started_at": "1"}))
+            with mock.patch.dict(os.environ, {"TZ": "UTC"}):               # the runner, in its own
+                utc = pid_started(me)
+                found = live_wrappers(self.run_dir, alive=lambda pid: True)
+        self.assertTrue(tokyo)
+        self.assertEqual(tokyo, utc)
+        self.assertEqual([e["agent"] for e in found], ["a"])
+        self.assertTrue((registry / "tokyo.json").exists())

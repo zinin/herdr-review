@@ -84,6 +84,16 @@ class RunnerStopsItsQueueHolderTest(RunnerBase):
         self.assertEqual(self.runner(run_dir).close(force=True)["exclusive_stopped"], "hrtest-fixer: sleep 30")
         self.assertEqual(p.wait(timeout=30), 143)
 
+    def test_close_of_a_finished_run_stops_a_command_that_outlived_finish(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("codex",))
+        r = self.runner(run_dir)
+        r.start_reviewers()
+        r.start_fixer()
+        p = self.holding(run_dir, "hrtest-fixer")                       # taken while the run was in progress
+        r.status.set_phase("finished")                                  # as when it outlived run finish's stop
+        self.assertEqual(self.runner(run_dir).close()["exclusive_stopped"], "hrtest-fixer: sleep 30")
+        self.assertEqual(p.wait(timeout=30), 143)
+
     def test_close_force_stops_a_wrapper_that_took_the_queue_while_the_tabs_closed(self):
         run_dir = make_run(self.root, self.repo, reviewers=("codex",))
         self.runner(run_dir).start_reviewers()
