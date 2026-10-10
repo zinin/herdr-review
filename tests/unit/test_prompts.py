@@ -448,10 +448,10 @@ class PromptTemplatesTest(unittest.TestCase):
                 self.assertIn("No server, container or watcher may outlive the call.", text)
                 self.assertIn("Never run the command without it.", text)
                 self.assertIn("give the call a timeout that covers the command and up to 60 s of waiting for the turn", text)
-                self.assertIn("You may start the wrapper in the background and go on working while it runs. Before you"
-                              " write your result and reply DONE, wait for every command you started, the wrapper's"
-                              " included, and read its output. Never end your turn while one of your commands still"
-                              " runs.", text)
+                self.assertIn("You may start the wrapper with your shell tool's own background mode, if it has one —"
+                              " never with a shell `&` — and go on working while it runs. Before you write your result"
+                              " and reply DONE, wait for every command you started, the wrapper's included, and read"
+                              " its output. Never end your turn while one of your commands still runs.", text)
                 self.assertNotIn("{", text)
         self.assertIn("## Heavy Commands", reviewer)
         self.assertIn("running the project's own tests — through the wrapper that Heavy Commands below describes — are fine", reviewer)
