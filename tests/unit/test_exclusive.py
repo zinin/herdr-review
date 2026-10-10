@@ -466,6 +466,19 @@ class TurnTest(ExclusiveBase):
         self.assertIn("hrtest-codex belongs to a review that is over (finished); nothing was run", err)
         self.assertIn(" exclusive: hrtest-codex refused: the review is over (finished)\n", (self.run_dir / "runner.log").read_text())
 
+    def test_a_review_that_ends_as_the_wrapper_takes_its_turn_runs_nothing(self):
+        # run finish saves the phase, then stops a command of the run by the holder file: landing after the wrapper's
+        # look at the run but before that file, it would find no holder of its run to stop.
+        marker = self.root / "ran"
+        self.mark("working")
+        p = subprocess.run([sys.executable, "-c", FINISH_AT_HOLDER, "touch", str(marker)], cwd=PACKAGE_ROOT,
+                           env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 1, p.stderr)
+        self.assertFalse(marker.exists())
+        self.assertIn("hrtest-codex belongs to a review that is over (finished); nothing was run", p.stderr)
+        self.assertEqual(queue_state(self.runs), {"held": False})
+        self.assertIsNone(read_holder(self.runs))
+
     def test_an_agent_still_in_its_run_or_an_unreadable_status_runs_the_command(self):
         writes = {
             "working": lambda: self.mark("working"),
@@ -498,6 +511,18 @@ GRACEFUL_HARNESS = (     # only a stop signal ends the command, which has 5 s to
     "import os, sys\n"
     "from herdr_review import exclusive\n"
     "sys.exit(exclusive.run(sys.argv[1:], timeout_sec=60, grace_sec=5, poll_sec=0.05, environ=os.environ))\n"
+)
+FINISH_AT_HOLDER = (     # run finish saves the phase just as the wrapper writes its holder file
+    "import json, os, sys\n"
+    "from pathlib import Path\n"
+    "from herdr_review import exclusive\n"
+    "write_holder = exclusive.write_holder\n"
+    "def finish_then_write(runs_dir, holder):\n"
+    "    status = Path(os.environ['HERDR_REVIEW_RUN']) / 'status.json'\n"
+    "    status.write_text(json.dumps({**json.loads(status.read_text()), 'phase': 'finished'}))\n"
+    "    write_holder(runs_dir, holder)\n"
+    "exclusive.write_holder = finish_then_write\n"
+    "sys.exit(exclusive.run(sys.argv[1:], environ=os.environ))\n"
 )
 OUTSIDER = (             # leaves the process group, then records a SIGINT and exits: argv count, ready, pidfile
     "import os, signal, sys, time\n"

@@ -653,11 +653,6 @@ def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, timeout_sec: 
             _say(f"busy — {text}; nothing was run. Do other work and run the same command again later.")
             _log(where, f"{who} busy after {format_duration(turn.waited or 0)}: {text}")
             return EXIT_BUSY
-        why = _taken_off(where, agent)               # taken off, gone or over while it waited for its turn
-        if why:
-            return _refuse(where, who, why)
-        if entry_path is not None:
-            _write_entry(where, entry_path, {**entry, "phase": "running", "running_since": now_iso()}, who)
         pid = os.getpid()
         try:
             write_holder(where.runs_dir, {
@@ -668,6 +663,14 @@ def run(command: list[str], *, wait_sec: float = DEFAULT_WAIT_SEC, timeout_sec: 
         except OSError as e:
             raise ExclusiveError(f"cannot write {where.runs_dir / HOLDER_NAME}: {e}") from e
         try:
+            # Taken off, gone or over while it waited for its turn. Looked at once the holder file names this wrapper:
+            # the runner saves the agent's state or the run's phase before it stops the holder the file names, so it
+            # finds this wrapper there, or this look finds what it saved.
+            why = _taken_off(where, agent)
+            if why:
+                return _refuse(where, who, why)
+            if entry_path is not None:
+                _write_entry(where, entry_path, {**entry, "phase": "running", "running_since": now_iso()}, who)
             if turn.waited is not None:
                 _say(f"your turn after {format_duration(turn.waited)}")
             _log(where, f'{who} running "{shown}" after {format_duration(turn.waited or 0)} of waiting')
