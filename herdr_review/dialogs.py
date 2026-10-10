@@ -39,11 +39,15 @@ CODEX_SESSION = re.compile(r"\bOpenAI Codex\s*\(v\d")
 # Grok: the status line above its input while background work runs and the agent looks idle — between turns, or
 # while a turn waits in get_command_or_subagent_output: "◉ 1 command still running · send a message to interrupt",
 # "○ 1 command still running · 1 queued, Enter to send now", "◎ 1 command · 2 monitors · 1 loop · 1 subagent still
-# running", "◎ waiting · send a message to interrupt". The glyph in front changes. Only the bottom of the screen is
-# searched, where grok draws the line: the transcript above it may quote "… still running in the background".
+# running", "◎ waiting · send a message to interrupt". The circle in front changes with the state; only a line that
+# starts with one counts, at the bottom of the screen, where grok draws the line: the transcript just above it may
+# hold the same words, the agent's own or a tool's ("… still running in the background"). A narrow pane wraps the
+# line over at most GROK_STATUS_WRAP more lines.
 GROK_STATUS_LINES = 20
-GROK_BACKGROUND = re.compile(r"\b\d+ (?:command|monitor|loop|subagent)s?(?:\s*·\s*\d+ (?:command|monitor|loop|subagent)s?)*\s+still running\b")
-GROK_WAITING = re.compile(r"\bwaiting\s*·\s*send a message to interrupt\b")
+GROK_STATUS_WRAP = 3
+GROK_STATUS_GLYPHS = "○◌◍◎●◉◐◑◒◓◔◕◯"
+GROK_BACKGROUND = re.compile(r"\d+ (?:command|monitor|loop|subagent)s?(?:\s*·\s*\d+ (?:command|monitor|loop|subagent)s?)*\s+still running\b")
+GROK_WAITING = re.compile(r"waiting\s*·\s*send a message to interrupt\b")
 MAX_DIALOGS = 3          # Claude Code shows the trust dialog first and the MCP dialog after it
 WAIT_MS = 30000
 SCREEN_LINES = 60
@@ -101,9 +105,16 @@ def codex_session_ready(screen: str) -> bool:
 def grok_background(screen: str) -> str | None:
     """The background work grok's status line names at the bottom of <screen>, in the line's own words (`1 command
     still running`, `waiting · send a message to interrupt`); None when the line is not there."""
-    bottom = _flat("\n".join(screen.splitlines()[-GROK_STATUS_LINES:]))
-    found = GROK_BACKGROUND.search(bottom) or GROK_WAITING.search(bottom)
-    return found.group(0) if found else None
+    lines = [ANSI_ESCAPE.sub("", line) for line in screen.splitlines()[-GROK_STATUS_LINES:]]
+    for i, line in enumerate(lines):
+        start = line.lstrip()
+        if not start or start[0] not in GROK_STATUS_GLYPHS:
+            continue
+        text = _flat(" ".join([start[1:], *lines[i + 1:i + 1 + GROK_STATUS_WRAP]])).lstrip()
+        found = GROK_BACKGROUND.match(text) or GROK_WAITING.match(text)
+        if found:
+            return found.group(0)
+    return None
 
 
 def recognize(screen: str) -> tuple[str, tuple[str, ...] | None] | None:

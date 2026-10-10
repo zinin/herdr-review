@@ -376,6 +376,15 @@ class GrokBackgroundTest(unittest.TestCase):
         screen = "    ◉ 1 command still running\n" + "     ◆ Ran a command\n" * 25 + GROK_INPUT
         self.assertIsNone(grok_background(screen))
 
+    def test_the_agents_own_words_are_not_the_status_line(self):
+        # The transcript's last lines sit within the bottom 20 too; only a line that starts with the status glyph counts.
+        for said in ("     1 command still running, so I wait for it.\n",
+                     "     Status: 2 commands still running\n",
+                     "     ◆ Ran check that 1 command still running\n",
+                     "     waiting · send a message to interrupt\n"):
+            with self.subTest(said=said):
+                self.assertIsNone(grok_background("     ◆ Thought for 2.4s\n" + said + "\n" + GROK_INPUT))
+
 
 if __name__ == "__main__":
     unittest.main()
