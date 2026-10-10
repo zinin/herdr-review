@@ -61,6 +61,8 @@ OBSERVE_ATTEMPTS = 3
 # grok's status line alone, without a wrapper of the build queue, for at most this long in a row.
 BUSY_GRACE_SEC = 30
 SCREEN_BUSY_LIMIT_SEC = 1800
+# herdr's statuses that do not show an agent at work: under them the runner looks for its background work.
+QUIET_STATUSES = ("idle", "done", "unknown")
 BUSY_FIELDS = ("background", "busy_seen_at", "screen_busy_since", "screen_busy_logged")
 # close --force reads status.json again after every round of closes, for the tabs a live orchestrator opened
 # meanwhile; past this many rounds, a tab that still appears is left open for another close --force.
@@ -800,8 +802,8 @@ class Runner:
         current = a["state"]
         new = "blocked-start" if (current == "blocked-start" and live == "blocked") else live
         before = {k: a.get(k) for k in BUSY_FIELDS}
-        background = self._background_work(name) if live in ("idle", "done") else None
-        if live not in ("idle", "done") and a.get("screen_busy_since") is not None:
+        background = self._background_work(name) if live in QUIET_STATUSES else None
+        if live not in QUIET_STATUSES and a.get("screen_busy_since") is not None:
             # herdr sees the agent at work again: a stretch of grok's status line alone, which SCREEN_BUSY_LIMIT_SEC
             # bounds, is over; the line's next sighting starts a new one.
             a.update(screen_busy_since=None, screen_busy_logged=False)
@@ -821,7 +823,7 @@ class Runner:
         return True
 
     def _background_work(self, name: str) -> str | None:
-        """What <name> still waits for while herdr reports it idle or done, or None: its command in the build queue
+        """What <name> still waits for while herdr reports it idle, done or unknown, or None: its command in the build queue
         (the run's wrapper registry); for grok, its background task or subagent (the status line above its input);
         or work that ended less than BUSY_GRACE_SEC ago. Records in the agent's entry when it last saw such work."""
         a = self.status.agent(name)
@@ -1134,10 +1136,10 @@ class Runner:
                 if a["state"] == "failed":
                     failed[n] = a.get("reason") or "failed"
                     continue
-            if a["state"] in ("idle", "done") and not a.get("codex_update_pending"):
-                # A fresh look before anything is decided: herdr may report an agent idle or done while it waits for
-                # its own background work, when even a valid file may be a draft, and the state the last `wait`
-                # stored may be old. An agent that left the run meanwhile goes the way of `failed` and `gone` below.
+            if a["state"] in QUIET_STATUSES and not a.get("codex_update_pending"):
+                # A fresh look before anything is decided: herdr may report an agent idle, done or unknown while it
+                # waits for its own background work, when even a valid file may be a draft, and the state the last
+                # `wait` stored may be old. An agent that left the run meanwhile goes the way of `failed` and `gone`.
                 if not self._observe(n):
                     pending.append(n)
                     continue

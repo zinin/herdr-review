@@ -5,11 +5,11 @@ All notable changes to herdr-review will be documented here.
 ## [Unreleased]
 
 ### Fixed
-- A reviewer or the fixer that herdr reports idle or done while it waits for its own background work stays `working`:
-  its command in the build queue, for every agent kind, and for grok any background task or subagent that grok's
-  status line shows above its input (trusted alone for 30 minutes at most). `collect` looks at an idle or done
-  reviewer again before it re-prompts or fails it, so a reviewer waiting for its own tests is neither re-prompted nor
-  failed.
+- A reviewer or the fixer that herdr reports idle, done or unknown while it waits for its own background work stays
+  `working`: its command in the build queue, for every agent kind, and for grok any background task or subagent that
+  grok's status line shows above its input (trusted alone for 30 minutes at most). `collect` looks at such a reviewer
+  again before it takes its review, re-prompts it or fails it, so a reviewer waiting for its own tests is neither
+  collected on a draft, nor re-prompted, nor failed.
 - The wrapper runs nothing for an agent whose CLI exited (`gone`), nor once its review is over (`finished`,
   `aborted`), like for an agent `run fail` took off: a background wrapper still waiting for its turn no longer starts
   a build after the review, in a `scratch/` already removed.

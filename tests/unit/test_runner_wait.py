@@ -332,6 +332,13 @@ class BackgroundWorkTest(RunnerBase):
         self.assertEqual(out["agents"]["hrtest-claude-opus"]["state"], "blocked")
         self.assertIsNone(out["agents"]["hrtest-claude-opus"]["background"])
 
+    def test_unknown_with_a_live_wrapper_stays_working(self):
+        self.busy("hrtest-claude-opus")
+        self.herdr.agent_status["hrtest-claude-opus"] = ["unknown"]    # herdr cannot tell what the agent does
+        out = self.r.wait(agent="hrtest-claude-opus")
+        self.assertEqual(out["agents"]["hrtest-claude-opus"]["state"], "working")
+        self.assertEqual(out["agents"]["hrtest-claude-opus"]["background"], "running its command: go test ./...")
+
     def test_background_is_cleared_once_herdr_sees_the_agent_work(self):
         self.busy("hrtest-claude-opus")
         self.herdr.agent_status["hrtest-claude-opus"] = ["done", "working"]

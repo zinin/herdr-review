@@ -118,6 +118,7 @@ class CollectTest(RunnerBase):
 
     def test_unknown_state_without_file_stays_pending(self):
         self.settle("hrtest-codex", state="unknown")
+        self.herdr.agent_status["hrtest-codex"] = ["unknown"]          # collect looks again: herdr still cannot tell
         out = self.r.collect()
         self.assertIn("hrtest-codex", out["pending"])
         self.assertEqual([c for c in self.herdr.calls_named("agent_prompt") if c[1] == "hrtest-codex"][1:], [])
@@ -611,6 +612,22 @@ class CollectBackgroundTest(RunnerBase):
         self.assertIn(self.n, out["pending"])
         self.assertNotIn(self.n, out["collected"])
         self.assertEqual(self.r.status.agent(self.n)["state"], "working")
+
+    def test_an_unknown_reviewer_with_a_valid_draft_and_a_live_wrapper_is_not_collected_yet(self):
+        (self.run_dir / "reviews" / "claude-opus.md").write_text(GOOD_REVIEW)
+        self.r.status.set_agent_state(self.n, "unknown")               # what the last wait stored
+        self.herdr.agent_status[self.n] = ["unknown"]
+        self.busy()
+        out = self.r.collect()
+        self.assertIn(self.n, out["pending"])
+        self.assertNotIn(self.n, out["collected"])
+        self.assertEqual(self.r.status.agent(self.n)["state"], "working")
+
+    def test_an_unknown_reviewer_with_a_valid_review_and_nothing_running_is_collected(self):
+        (self.run_dir / "reviews" / "claude-opus.md").write_text(GOOD_REVIEW)
+        self.r.status.set_agent_state(self.n, "unknown")
+        self.herdr.agent_status[self.n] = ["unknown"]
+        self.assertIn(self.n, self.r.collect()["collected"])
 
     def test_a_reviewer_that_exited_meanwhile_with_a_valid_review_is_collected(self):
         (self.run_dir / "reviews" / "claude-opus.md").write_text(GOOD_REVIEW)
