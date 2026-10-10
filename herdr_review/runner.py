@@ -1171,6 +1171,9 @@ class Runner:
                     continue
                 a = self.status.agent(n)
                 generation = self._codex_generation(n)
+                if a["state"] in TERMINAL_STATES:            # it left the run meanwhile, without a valid review
+                    failed[n] = a.get("reason") or a["state"]
+                    continue
                 if a["state"] not in ("idle", "done"):
                     pending.append(n)
                     continue

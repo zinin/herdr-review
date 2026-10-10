@@ -595,6 +595,14 @@ class CollectBackgroundTest(RunnerBase):
         self.assertEqual(out["failed"], {})
         self.assertEqual(self.r.status.agent(self.n)["state"], "idle")
 
+    def test_a_reviewer_that_exited_meanwhile_is_reported_failed_at_once(self):
+        self.r.status.set_agent_state(self.n, "idle")                  # what the last wait stored
+        self.herdr.agent_status[self.n] = ["gone"]                     # it exited since, without a review
+        out = self.r.collect()
+        self.assertEqual(out["failed"], {self.n: "agent exited"})
+        self.assertNotIn(self.n, out["pending"])
+        self.assertEqual(self.r.status.agent(self.n)["state"], "gone")
+
 
 if __name__ == "__main__":
     unittest.main()
