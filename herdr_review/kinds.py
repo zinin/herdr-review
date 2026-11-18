@@ -87,8 +87,9 @@ def _without_runs_dir(args: list[str], runs_dir: Path) -> tuple[list[str], list[
 
 def _startup(kind: str, args: list[str], runs_dir: Path | str) -> tuple[list[str], list[str]]:
     if kind == "claude" and not _has_option(args, "--settings"):
-        kept, gone = _without_runs_dir(args, Path(runs_dir).resolve())
-        return ["--settings", claude_session_settings(runs_dir), *kept], gone
+        runs = Path(runs_dir).expanduser().resolve()
+        kept, gone = _without_runs_dir(args, runs)
+        return ["--settings", claude_session_settings(runs), *kept], gone
     if kind == "opencode" and not _has_option(args, "--standalone", "--server"):
         return ["--standalone", *args], []
     return list(args), []

@@ -30,7 +30,10 @@ ADD_DIR_REFUSAL = (
 REFUSALS = {"claude-mcp": MCP_REFUSAL, "claude-add-dir": ADD_DIR_REFUSAL}     # the dialogs the runner never answers
 # After a successful start nobody has seen a screen herdr could not read: a prompt typed there could answer
 # that dialog, so none is sent.
-MCP_UNCHECKED = "herdr could not read the screen to check for Claude Code's MCP approval dialog; no prompt was sent"
+MCP_UNCHECKED = (
+    "herdr could not read the screen to check for Claude Code's MCP approval dialog or its dialog for a directory "
+    "passed with --add-dir; no prompt was sent"
+)
 # Claude Code: "❯ No, exit" / "Yes, I trust this folder" — the cursor starts on "No, exit".
 CLAUDE_CURSOR = "❯"
 CLAUDE_TRUST = re.compile(r"yes,\s*i trust", re.IGNORECASE)

@@ -5,6 +5,7 @@ import hashlib
 import json
 import random
 import re
+import shlex
 import shutil
 import string
 import time
@@ -320,7 +321,7 @@ def launch(
     for prof in dict.fromkeys(selected):
         gone = left_out_add_dirs(cfg.profiles[prof].kind, cfg.profiles[prof].args, runs_dir)
         if gone:
-            log(f"profile {prof}: --add-dir {' '.join(gone)} left out: its agents' session --settings grant {runs_dir}")
+            log(f"profile {prof}: --add-dir {shlex.join(gone)} left out: its agents' session --settings grant {runs_dir}")
     refs = list(dict.fromkeys(ref for prof in selected for ref in cfg.profiles[prof].env_refs))
     for name in refs:
         if name in environ:

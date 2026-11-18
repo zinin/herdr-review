@@ -200,6 +200,7 @@ Then `"{RUNNER}" run finish --commits <hash1>,<hash2> --run "{RUN_DIR}"` with th
 | Guessing an agent's state | `run wait`, `run collect`, `herdr agent read`. |
 | Confirming a dialog you do not understand | `run fail` that agent with the reason. |
 | Answering Claude Code's MCP approval dialog, even with Esc | `run fail` that agent with the reason. |
+| Answering Claude Code's dialog for a directory passed with `--add-dir` ("Adding a new directory" / "Yes, add it") | `run fail` that agent with the reason. |
 | Selecting `Always allow` in OpenCode's permission dialog | `enter` on `Allow once`, or `esc` to refuse. |
 | Sending the fixer a finding about the user's uncommitted file outside the change | DISMISSED: «вне изменения». |
 | Confirming a reviewer's write into the repository or outside its scratch directory and result file | Refuse; point it at `{RUN_DIR}/scratch/<profile>/`. |

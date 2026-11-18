@@ -234,6 +234,8 @@ class PromptTemplatesTest(unittest.TestCase):
             "/run/reviews/<profile>.md", "except your review file", "everything else its task file asks for",
             'cursor is on "Quit"', "--name-only", "the user went on editing their own files",
             "In scope `worktree` the fixer commits nothing", "применено, не закоммичено: ревью незакоммиченной работы — закоммитьте сами",
+            '("Adding a new directory:" over "No, exit" / "Yes, add it") → never answer it',
+            'run fail <name> --reason "add-dir trust dialog"', "Answering Claude Code's dialog for a directory passed with `--add-dir`",
         ):
             self.assertIn(phrase, text)
         self.assertNotIn("--stat", text)

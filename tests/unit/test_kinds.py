@@ -51,6 +51,17 @@ class StartupArgsTest(unittest.TestCase):
             settings, rest = self.claude(["--add-dir", f"{tmp}/link/runs"], runs_dir=runs.resolve())
             self.assertEqual(rest, [])
 
+    def test_a_runs_directory_given_with_a_tilde_is_granted_as_an_absolute_path(self):
+        with mock.patch.dict(os.environ, {"HOME": "/home/u"}):
+            self.assertEqual(self.claude(["--add-dir", "~/.local/state/herdr-review/runs"],
+                                         runs_dir="~/.local/state/herdr-review/runs"), (SESSION_SETTINGS, []))
+
+    def test_a_relative_add_dir_or_one_of_an_unknown_user_stays(self):
+        # a relative value counts from the agent's own directory: never taken for the runs directory
+        self.assertEqual(self.claude(["--add-dir", "runs"], runs_dir=Path.cwd() / "runs")[1], ["--add-dir", "runs"])
+        # an unknown ~user does not break the start
+        self.assertEqual(self.claude(["--add-dir", "~hr-no-such-user/runs"])[1], ["--add-dir", "~hr-no-such-user/runs"])
+
     def test_left_out_add_dirs_names_what_startup_args_leaves_out(self):
         args = ["--add-dir", "/srv/data", RUNS, "--add-dir=" + RUNS + "/x", "--model", "opus"]
         self.assertEqual(left_out_add_dirs("claude", args, Path(RUNS)), [RUNS, RUNS + "/x"])
