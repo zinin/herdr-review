@@ -7,20 +7,25 @@
 #               becomes a dialog in the agent's tab, and the orchestrator answers it;
 #   yolo mode — every action is approved in advance.
 # Auto mode is active below; swap the comments per profile where the review runs on a throwaway
-# VM or container. The agents write into settings.runs_dir, outside the repository: `--add-dir`
-# (claude, codex) declares that directory writable — the codex sandbox refuses the write without
-# it, claude only asks its classifier more often. Both CLIs expand the `~`. grok has no such flag
-# and needs none. gemini has no auto mode: `--approval-mode auto_edit` still asks about every
-# shell command, so its profile stays yolo. The auto mode flags need Claude Code >= 2.1.111 (auto
-# mode is also gated by the subscription plan) and Codex >= 0.147.0; an older CLI rejects the flag
-# and that agent leaves the run as failed.
+# VM or container. The agents write into settings.runs_dir, outside the repository: codex's
+# `--add-dir` declares that directory writable, and the codex sandbox refuses the write without it;
+# codex expands the `~`. claude needs no such flag: herdr-review grants it the runs directory in its
+# session settings (below). Claude Code >= 2.1.326 stops at startup to ask about a directory passed
+# with --add-dir, so herdr-review leaves out a claude profile's --add-dir for the runs directory.
+# grok has no such flag and needs none. gemini has no auto mode: `--approval-mode auto_edit` still
+# asks about every shell command, so its profile stays yolo. The auto mode flags need Claude Code
+# >= 2.1.111 (auto mode is also gated by the subscription plan) and Codex >= 0.147.0; an older CLI
+# rejects the flag and that agent leaves the run as failed.
 #
 # Every profile of kind claude starts with the session-only --settings
-# '{"enableAllProjectMcpServers": true, "attribution": {"commit": ""}}'. With the first key Claude
-# Code loads the project's .mcp.json servers without its approval dialog, whose every answer would
-# be saved into the repository's .claude/settings.local.json; the second, attribution.commit set to
-# "", keeps Claude Code's trailer out of the fix commits. A profile that passes its own --settings
-# gets nothing added and must carry those keys in its settings file itself.
+# '{"enableAllProjectMcpServers": true, "attribution": {"commit": ""},
+# "permissions": {"additionalDirectories": ["<runs_dir>"]}}'. With the first key Claude Code loads
+# the project's .mcp.json servers without its approval dialog, whose every answer would be saved
+# into the repository's .claude/settings.local.json; the second, attribution.commit set to "", keeps
+# Claude Code's trailer out of the fix commits; the third grants settings.runs_dir without the
+# dialog Claude Code shows at startup for a directory passed with --add-dir. A profile that passes
+# its own --settings gets nothing added, keeps its --add-dir, and must carry those keys in its
+# settings file itself.
 #
 # Every profile of kind opencode (OpenCode 2) starts with --standalone, a private OpenCode server
 # that gets the agent's environment, with OPENCODE_CONFIG naming the run's session config, which
@@ -36,11 +41,11 @@
 profiles:                        # one mechanism for every engine: herdr kind + CLI args + env
   claude-opus:
     kind: claude                 # herdr agent kind; the executable must be in PATH
-    args: [--model, opus, --permission-mode, auto, --add-dir, "~/.local/state/herdr-review/runs"]
+    args: [--model, opus, --permission-mode, auto]
     # args: [--model, opus, --dangerously-skip-permissions]
   claude-fable:
     kind: claude
-    args: [--model, fable, --permission-mode, auto, --add-dir, "~/.local/state/herdr-review/runs"]
+    args: [--model, fable, --permission-mode, auto]
     # args: [--model, fable, --dangerously-skip-permissions]
   codex:
     kind: codex
@@ -65,7 +70,7 @@ profiles:                        # one mechanism for every engine: herdr kind + 
   #     ANTHROPIC_BASE_URL: https://api.z.ai/api/anthropic
   #     ANTHROPIC_AUTH_TOKEN: "${ZAI_TOKEN}"   # ${VAR} expands from the launcher's environment
   #   args: [--model, glm-5, --dangerously-skip-permissions]
-  #   # args: [--model, glm-5, --permission-mode, auto, --add-dir, "~/.local/state/herdr-review/runs"]
+  #   # args: [--model, glm-5, --permission-mode, auto]
   #   #                          # the classifier is a model call too: untested behind another provider
 
 presets:
@@ -82,4 +87,4 @@ settings:
   checkin_sec: 300               # how often `run wait` returns control to the orchestrator
   # runs_dir also holds the machine's build queue (exclusive.lock, exclusive.json): every review that uses this
   # runs_dir, and your own `herdr-review exclusive` calls, run their heavy commands there one at a time.
-  runs_dir: ~/.local/state/herdr-review/runs   # keep the --add-dir values above in step with it; keep it outside the repository, or the run's own files count as drift
+  runs_dir: ~/.local/state/herdr-review/runs   # keep codex's --add-dir above in step with it; keep it outside the repository, or the run's own files count as drift

@@ -1,27 +1,74 @@
 import json
+import os
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from herdr_review.kinds import CLAUDE_SESSION_SETTINGS, OPENCODE_CONFIG_NAME, opencode_config, startup_args, startup_env
+from herdr_review.kinds import OPENCODE_CONFIG_NAME, left_out_add_dirs, opencode_config, startup_args, startup_env
+
+RUNS = "/home/u/.local/state/herdr-review/runs"
+SESSION_SETTINGS = {"enableAllProjectMcpServers": True, "attribution": {"commit": ""}, "permissions": {"additionalDirectories": [RUNS]}}
 
 
 class StartupArgsTest(unittest.TestCase):
+    def claude(self, args, runs_dir=RUNS):
+        """startup_args for a claude profile: its session settings, parsed, and the args after them."""
+        out = startup_args("claude", args, Path(runs_dir))
+        self.assertEqual(out[0], "--settings")
+        return json.loads(out[1]), out[2:]
+
     def test_claude_starts_with_the_session_settings(self):
         args = ["--model", "opus"]
-        self.assertEqual(startup_args("claude", args), ["--settings", CLAUDE_SESSION_SETTINGS, "--model", "opus"])
+        self.assertEqual(self.claude(args), (SESSION_SETTINGS, ["--model", "opus"]))
         self.assertEqual(args, ["--model", "opus"])          # the profile's own list stays as it was
-        self.assertEqual(json.loads(CLAUDE_SESSION_SETTINGS), {"enableAllProjectMcpServers": True, "attribution": {"commit": ""}})
+
+    def test_the_runs_directory_needs_no_add_dir_of_the_profile(self):
+        # Claude Code asks at startup whether to trust a directory passed with --add-dir; the session settings grant
+        # the runs directory without that dialog, so the flag that names it, or a directory inside it, goes.
+        with mock.patch.dict(os.environ, {"HOME": "/home/u"}):
+            for args, rest in (
+                (["--model", "opus", "--add-dir", "~/.local/state/herdr-review/runs"], ["--model", "opus"]),
+                (["--add-dir", RUNS, "--model", "opus"], ["--model", "opus"]),
+                (["--add-dir=" + RUNS, "--model", "opus"], ["--model", "opus"]),
+                (["--add-dir", RUNS + "/"], []),
+                (["--add-dir", RUNS + "/app-0a1b2c/20261118-120856-hriq9i"], []),
+                # --add-dir takes several directories: only the runs directory leaves the list
+                (["--add-dir", "/srv/data", RUNS, "--model", "opus"], ["--add-dir", "/srv/data", "--model", "opus"]),
+                (["--add-dir", "/srv/data"], ["--add-dir", "/srv/data"]),
+                (["--add-dir=/srv/data"], ["--add-dir=/srv/data"]),
+                (["--add-dir", "/home/u/.local/state"], ["--add-dir", "/home/u/.local/state"]),       # a parent grants more
+                (["--add-dir", RUNS + "-old"], ["--add-dir", RUNS + "-old"]),                         # a sibling, not inside
+            ):
+                with self.subTest(args=args):
+                    self.assertEqual(self.claude(args), (SESSION_SETTINGS, rest))
+
+    def test_an_add_dir_through_a_symlink_to_the_runs_directory_goes_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp, "state", "runs")
+            runs.mkdir(parents=True)
+            Path(tmp, "link").symlink_to(Path(tmp, "state"))
+            settings, rest = self.claude(["--add-dir", f"{tmp}/link/runs"], runs_dir=runs.resolve())
+            self.assertEqual(rest, [])
+
+    def test_left_out_add_dirs_names_what_startup_args_leaves_out(self):
+        args = ["--add-dir", "/srv/data", RUNS, "--add-dir=" + RUNS + "/x", "--model", "opus"]
+        self.assertEqual(left_out_add_dirs("claude", args, Path(RUNS)), [RUNS, RUNS + "/x"])
+        self.assertEqual(left_out_add_dirs("claude", ["--model", "opus"], Path(RUNS)), [])
+        self.assertEqual(left_out_add_dirs("claude", ["--settings", "/x.json", "--add-dir", RUNS], Path(RUNS)), [])
+        self.assertEqual(left_out_add_dirs("codex", ["--add-dir", RUNS], Path(RUNS)), [])
 
     def test_a_profile_with_its_own_settings_is_left_alone(self):
-        for args in (["--settings", "/x.json"], ["--model", "opus", "--settings=/x.json"]):
+        # its settings file replaces the session settings, so its --add-dir is the only grant it has
+        for args in (["--settings", "/x.json"], ["--model", "opus", "--settings=/x.json"], ["--settings", "/x.json", "--add-dir", RUNS]):
             with self.subTest(args=args):
-                self.assertEqual(startup_args("claude", args), args)
+                self.assertEqual(startup_args("claude", args, Path(RUNS)), args)
 
     def test_opencode_starts_with_a_private_server(self):
         args = ["--auto"]
-        self.assertEqual(startup_args("opencode", args), ["--standalone", "--auto"])
+        self.assertEqual(startup_args("opencode", args, Path(RUNS)), ["--standalone", "--auto"])
         self.assertEqual(args, ["--auto"])
-        self.assertEqual(startup_args("opencode", []), ["--standalone"])
+        self.assertEqual(startup_args("opencode", [], Path(RUNS)), ["--standalone"])
 
     def test_an_opencode_profile_that_chose_its_server_is_left_alone(self):
         for args in (
@@ -31,14 +78,16 @@ class StartupArgsTest(unittest.TestCase):
             ["--auto", "--server=http://127.0.0.1:4096"],
         ):
             with self.subTest(args=args):
-                self.assertEqual(startup_args("opencode", args), args)
+                self.assertEqual(startup_args("opencode", args, Path(RUNS)), args)
 
     def test_other_kinds_are_left_alone(self):
-        self.assertEqual(startup_args("codex", ["-m", "gpt-5.5"]), ["-m", "gpt-5.5"])
-        self.assertEqual(startup_args("grok", []), [])
-        self.assertEqual(startup_args("codex", ["--server=x"]), ["--server=x"])
+        self.assertEqual(startup_args("codex", ["-m", "gpt-5.5"], Path(RUNS)), ["-m", "gpt-5.5"])
+        self.assertEqual(startup_args("grok", [], Path(RUNS)), [])
+        self.assertEqual(startup_args("codex", ["--server=x"], Path(RUNS)), ["--server=x"])
+        # the codex sandbox needs its --add-dir for the runs directory
+        self.assertEqual(startup_args("codex", ["--add-dir", RUNS], Path(RUNS)), ["--add-dir", RUNS])
         # OpenCode's flags mean nothing to claude: it still gets its settings
-        self.assertEqual(startup_args("claude", ["--standalone"]), ["--settings", CLAUDE_SESSION_SETTINGS, "--standalone"])
+        self.assertEqual(self.claude(["--standalone"]), (SESSION_SETTINGS, ["--standalone"]))
 
 
 class StartupEnvTest(unittest.TestCase):

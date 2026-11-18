@@ -1,4 +1,4 @@
-"""Agent screens the runner reads without an LLM: the startup dialogs it answers, the one it never answers,
+"""Agent screens the runner reads without an LLM: the startup dialogs it answers, the ones it never answers,
 Codex's startup update and grok's background work."""
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 
 # Claude Code asks at startup to approve the servers of a project's .mcp.json, and saves every answer —
-# Esc included — into .claude/settings.local.json of that repository. kinds.CLAUDE_SESSION_SETTINGS, given
+# Esc included — into .claude/settings.local.json of that repository. kinds.claude_session_settings, given
 # on the command line, makes the dialog unnecessary.
 MCP_DIALOG = re.compile(r"new MCP servers? found in this project", re.IGNORECASE)
 MCP_REFUSAL = (
@@ -15,6 +15,19 @@ MCP_REFUSAL = (
     "repository. Usually the profile passes its own --settings, which replaces the session-only one: "
     'add "enableAllProjectMcpServers": true there.'
 )
+# Claude Code 2.1.326+ asks at startup about each directory given with --add-dir that it has not trusted before:
+# "Adding a new directory: <path>" over "❯ No, exit" / "Yes, add it". A yes loads the directory's skills, commands
+# and agents and its repository's git settings into the session: the user's call, not the runner's. Claude Code
+# also takes no key typed ahead of the dialog: its options arm 500 ms after it opens, the cursor shows only then.
+# The session settings of kinds.claude_session_settings grant the runs directory without the dialog.
+ADD_DIR_DIALOG = re.compile(r"adding a new directory:.*\byes,\s*add it\b", re.IGNORECASE)
+ADD_DIR_REFUSAL = (
+    "Claude Code asks whether to trust a directory passed with --add-dir; herdr-review never answers that dialog. "
+    "For settings.runs_dir drop the flag: herdr-review grants that directory in the --settings it gives a claude "
+    'agent, and a profile with its own --settings grants it there with "permissions": {"additionalDirectories": '
+    '["<runs_dir>"]}. For another directory start `claude` in it once and accept the trust prompt.'
+)
+REFUSALS = {"claude-mcp": MCP_REFUSAL, "claude-add-dir": ADD_DIR_REFUSAL}     # the dialogs the runner never answers
 # After a successful start nobody has seen a screen herdr could not read: a prompt typed there could answer
 # that dialog, so none is sent.
 MCP_UNCHECKED = "herdr could not read the screen to check for Claude Code's MCP approval dialog; no prompt was sent"
@@ -122,13 +135,15 @@ def grok_background(screen: str) -> str | None:
 
 def recognize(screen: str) -> tuple[str, tuple[str, ...] | None] | None:
     """(dialog, keys) for a known startup dialog, None for any other screen. The keys are None for the
-    dialog the runner never answers and for a known dialog whose cursor layout it does not know.
+    dialogs the runner never answers (REFUSALS) and for a known dialog whose cursor layout it does not know.
 
     The phrases are searched in the flattened screen, so a phrase a narrow pane wraps is still found; the
     cursor is read from the raw lines, and a cursor line the wrap left without its option's words gets no key."""
     flat = _flat(screen)
     if MCP_DIALOG.search(flat):
         return "claude-mcp", None
+    if ADD_DIR_DIALOG.search(flat):
+        return "claude-add-dir", None
     if CLAUDE_TRUST.search(flat):
         return "claude-trust", _cursor_keys(screen, CLAUDE_CURSOR, CLAUDE_TRUST, CLAUDE_NO, "down")
     if CODEX_TRUST.search(flat):
@@ -144,9 +159,9 @@ def _screen(herdr, name: str) -> str | None:
 
 
 def mcp_check(herdr, name: str) -> DialogOutcome:
-    """Look for Claude Code's MCP approval dialog on <name>'s screen once `agent start` succeeded: resolved
-    when the screen was read without it, refused with MCP_REFUSAL when it is there. A failed read is tried
-    once more; when that one fails too, nothing was checked: neither resolved nor refused.
+    """Look for a dialog the runner never answers (REFUSALS) on <name>'s screen once `agent start` succeeded:
+    resolved when the screen was read without one, refused with its reason when one is there. A failed read is
+    tried once more; when that one fails too, nothing was checked: neither resolved nor refused.
 
     herdr 0.9.0 takes that dialog with several servers for an idle agent, so `agent start` succeeds
     while it is up. Codex's startup update screen is reported too. No dialog is answered here: herdr
@@ -157,8 +172,8 @@ def mcp_check(herdr, name: str) -> DialogOutcome:
     if screen is None:
         return DialogOutcome(resolved=False)
     found = recognize(screen)
-    if found is not None and found[0] == "claude-mcp":
-        return DialogOutcome(resolved=False, refusal=MCP_REFUSAL)
+    if found is not None and found[0] in REFUSALS:
+        return DialogOutcome(resolved=False, refusal=REFUSALS[found[0]])
     return DialogOutcome(resolved=True, codex_update=codex_update_started(screen),
                          codex_updating=codex_update_running(screen), codex_ready=codex_session_ready(screen))
 
@@ -186,7 +201,8 @@ def _settle(herdr, name: str) -> tuple[tuple[str, tuple[str, ...] | None] | None
 
 
 def resolve_startup_dialog(herdr, name: str) -> DialogOutcome:
-    """Answer the trust dialogs of Claude Code, Codex and Grok; refuse Claude Code's MCP approval dialog.
+    """Answer the trust dialogs of Claude Code, Codex and Grok; refuse Claude Code's MCP approval dialog and its
+    dialog for a directory given with --add-dir.
 
     Each dialog is answered at most once: seen again on any later look, it is stale text or stuck, and a
     second key could pick "No, exit" or "Quit" or land in a live input. The agent is resolved only when
@@ -197,8 +213,8 @@ def resolve_startup_dialog(herdr, name: str) -> DialogOutcome:
     found = recognize(screen)
     while found is not None:
         dialog, keys = found
-        if dialog == "claude-mcp":
-            return DialogOutcome(resolved=False, refusal=MCP_REFUSAL)
+        if dialog in REFUSALS:
+            return DialogOutcome(resolved=False, refusal=REFUSALS[dialog])
         if dialog in answered or len(answered) == MAX_DIALOGS or not keys:
             return DialogOutcome(resolved=False)
         if not herdr.agent_send_keys(name, *keys).ok:
