@@ -1,10 +1,70 @@
 import unittest
 
-from herdr_review.dialogs import MCP_REFUSAL, DialogOutcome, codex_session_ready, codex_update_complete, codex_update_running, codex_update_started, grok_background, mcp_check, recognize, resolve_startup_dialog
+from herdr_review.dialogs import ADD_DIR_REFUSAL, MCP_REFUSAL, DialogOutcome, codex_session_ready, codex_update_complete, codex_update_running, codex_update_started, grok_background, mcp_check, recognize, resolve_startup_dialog
 from tests.unit.fakeherdr import FakeHerdr
 
 CLAUDE_TRUST_ON_NO = "Quick safety check … ❯ No, exit\n  Yes, I trust this folder\nEnter to confirm · Esc to cancel\n"
 CLAUDE_TRUST_ON_YES = "Quick safety check … ❯ Yes, I trust this folder\n  No, exit\n"
+# Claude Code 2.1.327 in run hriq9i: a directory given with --add-dir that it has not trusted before.
+CLAUDE_ADD_DIR = (
+    "───────────────────────────────────────────────────────────────────────────────────────────────────────────\n"
+    " Adding a new directory:\n"
+    "\n"
+    " /home/zinin/.local/state/herdr-review/runs\n"
+    "\n"
+    " This session hasn't worked here before. Is this a directory you created or one you trust?\n"
+    "\n"
+    " Claude Code'll be able to read, edit, and execute files here. Its skills, commands, and agents load and\n"
+    " can run commands, and so can the git settings of its repository. Your answer holds for this session.\n"
+    " Starting Claude Code in this directory and trusting it there lasts, and covers its whole repository or\n"
+    " everything below it.\n"
+    "\n"
+    " Security guide\n"
+    "\n"
+    " ❯ No, exit\n"
+    "   Yes, add it\n"
+    "\n"
+    " Enter to confirm · Esc to cancel\n"
+)
+CLAUDE_ADD_DIR_UNARMED = CLAUDE_ADD_DIR.replace(" ❯ No, exit", "   No, exit")     # its first 500 ms: no cursor yet
+CLAUDE_ADD_DIR_NARROW = (                                                           # a narrow pane wraps the phrases
+    "──────────────────\n"
+    " Adding a new\n"
+    " directory:\n"
+    "\n"
+    " /home/u/.local/st\n"
+    " ate/herdr-review/\n"
+    " runs\n"
+    "\n"
+    " This session\n"
+    " hasn't worked here\n"
+    " before. Is this a\n"
+    " directory you\n"
+    " created or one\n"
+    " you trust?\n"
+    "\n"
+    " ❯ No, exit\n"
+    "   Yes, add it\n"
+)
+# Claude Code 2.1.327 in a pane under 30 rows that the dialog overflows: the title scrolled out of sight, the path
+# repeated under the options.
+CLAUDE_ADD_DIR_CUT_TOP = (
+    " Starting Claude Code in this directory and trusting it there lasts, and covers its whole repository or\n"
+    " everything below it.\n"
+    " Security guide\n"
+    " ❯ No, exit\n"
+    "   Yes, add it\n"
+    " Enter to confirm · Esc to cancel\n"
+    " Adding: /home/zinin/.local/state/herdr-review/runs\n"
+)
+# Full-screen, the same pane clips the bottom instead: a warning above the dialog, its options out of sight.
+CLAUDE_ADD_DIR_CUT_BOTTOM = (
+    " Esc to exit · To add it, first make the window taller\n"
+    "───────────────────────────────────────────────────────────────────────────────────────────────────────────\n"
+    " Adding a new directory:\n"
+    " /home/zinin/.local/state/herdr-review/runs\n"
+    " This session hasn't worked here before. Is this a directory you created or one you trust?\n"
+)
 MCP_ONE = (
     "New MCP server found in this project: dummy\n"
     "  Use this MCP server\n  Use this and all future MCP servers in this project\n"
@@ -296,6 +356,25 @@ class StartupDialogTest(unittest.TestCase):
         self.assertEqual(resolve_startup_dialog(h, "hr1-orch"), DialogOutcome(resolved=False))   # blocked-start, as for any unknown layout
         self.assertEqual(h.calls_named("agent_send_keys"), [])
 
+    def test_the_dialog_for_a_new_directory_is_refused_without_a_key(self):
+        for label, screen in (
+            ("wide", CLAUDE_ADD_DIR), ("unarmed", CLAUDE_ADD_DIR_UNARMED), ("narrow", CLAUDE_ADD_DIR_NARROW),
+            ("cut top", CLAUDE_ADD_DIR_CUT_TOP), ("cut bottom", CLAUDE_ADD_DIR_CUT_BOTTOM),
+        ):
+            with self.subTest(screen=label):
+                h = FakeHerdr()
+                h.screens["hr1-orch"] = screen
+                self.assertEqual(resolve_startup_dialog(h, "hr1-orch"), DialogOutcome(resolved=False, refusal=ADD_DIR_REFUSAL))
+                self.assertEqual(h.calls_named("agent_send_keys"), [])
+
+    def test_the_dialog_for_a_new_directory_after_the_trust_dialog_is_refused(self):
+        h = FakeHerdr()
+        h.wait_ok = False                                   # an agent held by a dialog never turns idle
+        h.screens["hr1-rv"] = CLAUDE_TRUST_ON_NO            # Claude Code asks about the repository first
+        h.screens_after_wait["hr1-rv"] = [CLAUDE_ADD_DIR]
+        self.assertEqual(resolve_startup_dialog(h, "hr1-rv"), DialogOutcome(resolved=False, refusal=ADD_DIR_REFUSAL))
+        self.assertEqual(h.calls_named("agent_send_keys"), [("agent_send_keys", "hr1-rv", ("down", "enter"))])
+
 
 class MCPCheckTest(unittest.TestCase):
     def test_the_screen_after_a_start_is_read_once_more_and_never_passed_unread(self):
@@ -319,6 +398,14 @@ class MCPCheckTest(unittest.TestCase):
         h.screens["hr1-rv"] = MCP_MANY_NARROW
         self.assertEqual(mcp_check(h, "hr1-rv"), DialogOutcome(resolved=False, refusal=MCP_REFUSAL))
 
+    def test_the_dialog_for_a_new_directory_after_a_start_is_refused(self):
+        for label, screen in (("wide", CLAUDE_ADD_DIR), ("cut top", CLAUDE_ADD_DIR_CUT_TOP), ("cut bottom", CLAUDE_ADD_DIR_CUT_BOTTOM)):
+            with self.subTest(screen=label):
+                h = FakeHerdr()
+                h.screens["hr1-rv"] = screen
+                self.assertEqual(mcp_check(h, "hr1-rv"), DialogOutcome(resolved=False, refusal=ADD_DIR_REFUSAL))
+                self.assertEqual(h.calls_named("agent_send_keys"), [])
+
 
 class RecognizeTest(unittest.TestCase):
     def test_known_dialogs(self):
@@ -334,6 +421,15 @@ class RecognizeTest(unittest.TestCase):
         self.assertEqual(recognize(MCP_MANY_NARROW), ("claude-mcp", None))
         self.assertEqual(recognize(GROK_TRUST_NARROW), ("grok-trust", ("y",)))
         self.assertEqual(recognize(CLAUDE_TRUST_NARROW_ON_YES), ("claude-trust", None))   # the cursor is read from the raw lines
+
+    def test_the_dialog_for_a_new_directory_is_not_the_trust_dialog(self):
+        # "… or one you trust?" is no "Yes, I trust this folder": the runner never answers it
+        for label, screen in (
+            ("wide", CLAUDE_ADD_DIR), ("unarmed", CLAUDE_ADD_DIR_UNARMED), ("narrow", CLAUDE_ADD_DIR_NARROW),
+            ("cut top", CLAUDE_ADD_DIR_CUT_TOP), ("cut bottom", CLAUDE_ADD_DIR_CUT_BOTTOM),
+        ):
+            with self.subTest(screen=label):
+                self.assertEqual(recognize(screen), ("claude-add-dir", None))
 
     def test_a_cursor_glyph_on_an_unrelated_line_above_the_options(self):
         self.assertEqual(recognize("› Ask Codex to do anything\n" + CODEX_TRUST_ON_QUIT), ("codex-trust", ("up", "enter")))

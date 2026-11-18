@@ -8,12 +8,12 @@ from pathlib import Path
 from unittest import mock
 
 from herdr_review.config import parse_config
-from herdr_review.dialogs import MCP_REFUSAL, MCP_UNCHECKED
-from herdr_review.kinds import CLAUDE_SESSION_SETTINGS, opencode_config
+from herdr_review.dialogs import ADD_DIR_REFUSAL, MCP_REFUSAL, MCP_UNCHECKED
+from herdr_review.kinds import opencode_config
 from herdr_review.herdr import Herdr
 from herdr_review.launch import LaunchError, LaunchOptions, _unfinished_runs, launch, new_run_id, project_slug, resolve_selection
 from tests.unit.fakeherdr import FakeHerdr
-from tests.unit.test_dialogs import CLAUDE_IDLE, MCP_MANY, MCP_ONE
+from tests.unit.test_dialogs import CLAUDE_ADD_DIR, CLAUDE_IDLE, MCP_MANY, MCP_ONE
 from tests.unit.test_gitutil import write_bytes_name
 
 RAW = {
@@ -27,6 +27,12 @@ RAW = {
 }
 ENV = {"HERDR_ENV": "1", "HERDR_WORKSPACE_ID": "w1"}
 MIMO_CONFIG = '{"model": "xiaomi-token-plan-sgp/mimo-v2.6-pro"}'
+
+
+def session_settings(runs_dir) -> str:
+    """The --settings value of a claude agent whose runs directory is <runs_dir>."""
+    return ('{"enableAllProjectMcpServers": true, "attribution": {"commit": ""}, '
+            '"permissions": {"additionalDirectories": ["' + str(runs_dir) + '"]}}')
 
 
 def git(repo, *args):
@@ -122,7 +128,7 @@ class LaunchTest(unittest.TestCase):
         self.assertEqual(tab_call[3], "rv-hrtest: orch")
         self.assertEqual(tab_call[4]["HERDR_REVIEW_RUN"], str(run_dir))
         self.assertEqual(tab_call[4]["ANTHROPIC_AUTH_TOKEN"], "s3cret")
-        self.assertEqual(self.herdr.calls_named("agent_start")[0], ("agent_start", "hrtest-orch", "claude", "w1:p2", ["--settings", CLAUDE_SESSION_SETTINGS, "--model", "opus"]))
+        self.assertEqual(self.herdr.calls_named("agent_start")[0], ("agent_start", "hrtest-orch", "claude", "w1:p2", ["--settings", session_settings((self.root / "runs").resolve()), "--model", "opus"]))
         prompt_call = self.herdr.calls_named("agent_prompt")[0]
         self.assertEqual(prompt_call[2], f"Read {run_dir / 'orchestrator.md'} and follow it exactly. Do not stop until the run is finished.")
         self.assertEqual(prompt_call[3:], ("working", 60000))
@@ -503,12 +509,39 @@ class LaunchTest(unittest.TestCase):
         env = self.herdr.calls_named("tab_create")[0][4]
         self.assertEqual((env["GIT_OPTIONAL_LOCKS"], env["HERDR_REVIEW_AGENT"]), ("0", "hrtest-orch"))
 
-    def test_claude_profiles_start_with_the_session_mcp_setting(self):
+    def test_claude_profiles_start_with_the_session_settings(self):
         res = self.do_launch()
         run_json = json.loads((Path(res["run_dir"]) / "run.json").read_text())
-        self.assertEqual(run_json["reviewers"][0]["args"], ["--settings", CLAUDE_SESSION_SETTINGS, "--model", "opus"])
+        settings = session_settings((self.root / "runs").resolve())
+        self.assertEqual(run_json["reviewers"][0]["args"], ["--settings", settings, "--model", "opus"])
         self.assertEqual(run_json["reviewers"][1]["args"], ["-m", "gpt-5.5"])            # codex: untouched
-        self.assertEqual(run_json["orchestrator"]["args"][:2], ["--settings", CLAUDE_SESSION_SETTINGS])
+        self.assertEqual(run_json["orchestrator"]["args"][:2], ["--settings", settings])
+
+    def test_a_claude_profile_starts_without_its_add_dir_for_the_runs_directory(self):
+        # Claude Code would stop the agent at its dialog for a new directory; the session settings grant it instead
+        runs = self.root / "runs"
+        self.cfg.profiles["claude-opus"].args = ["--model", "opus", "--add-dir", str(runs)]
+        self.cfg.profiles["codex"].args = ["-m", "gpt-5.5", "--add-dir", str(runs)]
+        res = self.do_launch()
+        run_dir = Path(res["run_dir"])
+        run_json = json.loads((run_dir / "run.json").read_text())
+        expected = ["--settings", session_settings(runs.resolve()), "--model", "opus"]
+        self.assertEqual(run_json["orchestrator"]["args"], expected)
+        self.assertEqual(run_json["reviewers"][0]["args"], expected)
+        self.assertEqual(run_json["reviewers"][1]["args"], ["-m", "gpt-5.5", "--add-dir", str(runs)])   # the codex sandbox needs it
+        self.assertEqual(self.herdr.calls_named("agent_start")[0][4], expected)
+        log = (run_dir / "runner.log").read_text()
+        self.assertEqual(log.count(f"profile claude-opus: --add-dir {runs} left out"), 1)              # one line per profile
+        self.assertNotIn("profile codex:", log)
+
+    def test_a_relative_add_dir_counts_from_the_repository_root_not_the_launch_directory(self):
+        self.cfg.profiles["claude-opus"].args = ["--model", "opus", "--add-dir", os.path.relpath(self.root / "runs", self.repo)]
+        sub = self.repo / "sub"
+        sub.mkdir()
+        res = launch(LaunchOptions(), self.cfg, self.herdr, ENV, sub, self.runner, which=which_ok, run_id="hrtest")
+        run_json = json.loads((Path(res["run_dir"]) / "run.json").read_text())
+        expected = ["--settings", session_settings((self.root / "runs").resolve()), "--model", "opus"]
+        self.assertEqual(run_json["orchestrator"]["args"], expected)
 
     def test_a_profile_with_its_own_settings_is_left_alone(self):
         self.cfg.profiles["claude-opus"].args = ["--model", "opus", "--settings=/home/me/claude.json"]
@@ -525,6 +558,21 @@ class LaunchTest(unittest.TestCase):
         self.assertIn("enableAllProjectMcpServers", message)
         self.assertIn("Tab w1:t2 is left open", message)
         self.assertEqual(self.herdr.calls_named("agent_send_keys"), [])
+        run_dir = next((self.root / "runs").glob("*/*-hrtest"))
+        self.assertEqual(json.loads((run_dir / "status.json").read_text())["phase"], "aborted")
+
+    def test_the_dialog_for_a_new_directory_at_the_orchestrator_aborts_the_launch_with_the_reason(self):
+        self.cfg.profiles["claude-opus"].args = ["--model", "opus", "--add-dir", "/srv/data"]
+        self.herdr.start_errors["hrtest-orch"] = ("agent_not_ready", "blocked during startup")
+        self.herdr.screens["hrtest-orch"] = CLAUDE_ADD_DIR
+        with self.assertRaises(LaunchError) as ctx:
+            self.do_launch()
+        message = str(ctx.exception)
+        self.assertIn(f"orchestrator 'claude-opus' failed to start: {ADD_DIR_REFUSAL}", message)
+        self.assertIn('"additionalDirectories"', message)                  # what to put into a profile's own settings
+        self.assertIn("Tab w1:t2 is left open", message)
+        self.assertEqual(self.herdr.calls_named("agent_send_keys"), [])
+        self.assertEqual(self.herdr.calls_named("agent_prompt"), [])
         run_dir = next((self.root / "runs").glob("*/*-hrtest"))
         self.assertEqual(json.loads((run_dir / "status.json").read_text())["phase"], "aborted")
 

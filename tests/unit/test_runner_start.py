@@ -8,12 +8,12 @@ from unittest import mock
 
 from herdr_review import PROMPTS_DIR
 from herdr_review.config import parse_config
-from herdr_review.dialogs import MCP_REFUSAL, MCP_UNCHECKED
+from herdr_review.dialogs import ADD_DIR_REFUSAL, MCP_REFUSAL, MCP_UNCHECKED
 from herdr_review.herdr import HerdrResult
 from herdr_review.runner import Runner, RunnerError, check_review_file
 from herdr_review.status import RunStatus
 from tests.unit.fakeherdr import FakeHerdr
-from tests.unit.test_dialogs import CLAUDE_IDLE, MCP_MANY, MCP_MANY_NARROW, MCP_ONE
+from tests.unit.test_dialogs import CLAUDE_ADD_DIR, CLAUDE_IDLE, MCP_MANY, MCP_MANY_NARROW, MCP_ONE
 
 MIMO_CONFIG = '{"model": "xiaomi-token-plan-sgp/mimo-v2.6-pro"}'
 RAW = {
@@ -253,6 +253,20 @@ class StartReviewersTest(RunnerBase):
         self.assertEqual(self.herdr.calls_named("agent_prompt"), [])
         status = json.loads((run_dir / "status.json").read_text())
         self.assertIn("MCP servers found", status["agents"]["hrtest-claude-opus"]["last_screen"])
+        self.assertIn(("tab_rename", "w1:t2", "rv-hrtest: claude-opus ✗"), self.herdr.calls)
+
+    def test_the_dialog_for_a_new_directory_fails_the_reviewer_with_the_reason(self):
+        run_dir = make_run(self.root, self.repo, reviewers=("claude-opus",))
+        self.herdr.start_errors["hrtest-claude-opus"] = ("agent_not_ready", "blocked during startup")
+        self.herdr.screens["hrtest-claude-opus"] = CLAUDE_ADD_DIR
+        self.herdr.pane_screens["w1:p2"] = CLAUDE_ADD_DIR
+        out = self.runner(run_dir).start_reviewers()
+        a = out["agents"]["hrtest-claude-opus"]
+        self.assertEqual((a["state"], a["reason"]), ("failed", ADD_DIR_REFUSAL))
+        self.assertEqual(self.herdr.calls_named("agent_send_keys"), [])
+        self.assertEqual(self.herdr.calls_named("agent_prompt"), [])
+        status = json.loads((run_dir / "status.json").read_text())
+        self.assertIn("Adding a new directory", status["agents"]["hrtest-claude-opus"]["last_screen"])
         self.assertIn(("tab_rename", "w1:t2", "rv-hrtest: claude-opus ✗"), self.herdr.calls)
 
     def test_an_mcp_dialog_herdr_calls_idle_fails_the_reviewer_without_a_key(self):

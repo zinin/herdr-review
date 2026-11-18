@@ -2,6 +2,23 @@
 
 All notable changes to herdr-review will be documented here.
 
+## [0.6.1] - 2026-11-18
+
+### Fixed
+- A claude agent starts again under Claude Code 2.1.326 and later. That release asks at startup whether to trust a
+  directory passed with `--add-dir` that it has not trusted before, and the example config's claude profiles passed
+  one for the runs directory: every claude agent stopped at that dialog, and a launch failed with `agent_not_ready`.
+  herdr-review now grants the runs directory in the session `--settings` it gives every claude agent
+  (`permissions.additionalDirectories`), which Claude Code takes without the dialog, and leaves a claude profile's
+  `--add-dir` for the runs directory, or for a directory inside it, out of the agent's command line; `runner.log`
+  names the flag it left out. A profile with its own `--settings` keeps its arguments as they are.
+- The runner recognizes that dialog and never answers it, as it never answers the MCP approval dialog: a yes trusts
+  the directory, which only the user may decide. An agent stopped at it leaves the run with a reason that says what
+  to change in its profile.
+
+### Changed
+- The example config's claude profiles pass no `--add-dir`; codex keeps its own.
+
 ## [0.6.0] - 2026-10-10
 
 ### Fixed

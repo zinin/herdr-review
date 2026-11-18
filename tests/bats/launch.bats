@@ -14,7 +14,8 @@ teardown() { teardown_env; }
   grep -q '"phase": "reviewing"' "$RUN/status.json"
   grep -q "tab create --workspace w1 --cwd $REPO --label rv-.*: orch --env HERDR_REVIEW_RUN=$RUN --env GIT_OPTIONAL_LOCKS=0 --env XDG_CONFIG_HOME=$XDG_CONFIG_HOME --env SECRET_TOKEN=s3cret-value --env HERDR_REVIEW_AGENT=hr.*-orch --no-focus" "$FAKE_HERDR_LOG"
   grep -q 'agent start hr.*-orch --kind claude --pane w1:p2' "$FAKE_HERDR_LOG"
-  grep -qF -- '--timeout 300000 -- --settings {"enableAllProjectMcpServers": true, "attribution": {"commit": ""}} --model opus' "$FAKE_HERDR_LOG"
+  RUNS="$(cd "$TMP/runs" && pwd -P)"
+  grep -qF -- "--timeout 300000 -- --settings {\"enableAllProjectMcpServers\": true, \"attribution\": {\"commit\": \"\"}, \"permissions\": {\"additionalDirectories\": [\"$RUNS\"]}} --model opus" "$FAKE_HERDR_LOG"
   grep -q "agent prompt hr.*-orch Read $RUN/orchestrator.md and follow it exactly. Do not stop until the run is finished. --wait --until working --timeout 60000" "$FAKE_HERDR_LOG"
   grep -q 'SECRET_TOKEN=\*\*\*' "$RUN/runner.log"
   [ "$(grep -c 's3cret-value' "$RUN/runner.log")" -eq 0 ]
@@ -118,6 +119,35 @@ teardown() { teardown_env; }
   run "$HR" launch
   [ "$status" -eq 1 ]
   [[ "$output" == *"failed to start: Claude Code asks to approve"* ]]
+  [[ "$output" == *"Tab w1:t2 is left open"* ]]
+  [ "$(grep -c 'agent send-keys' "$FAKE_HERDR_LOG")" -eq 0 ]
+  [ "$(grep -c 'agent prompt' "$FAKE_HERDR_LOG")" -eq 0 ]
+}
+
+@test "launch: a claude profile's --add-dir for the runs directory is left out" {
+  cat > "$XDG_CONFIG_HOME/herdr-review/config.yaml" <<EOF
+profiles:
+  claude-opus: {kind: claude, args: [--model, opus, --add-dir, "$TMP/runs"]}
+  codex: {kind: codex, args: [-m, gpt-5.5, --add-dir, "$TMP/runs"]}
+presets:
+  default: {reviewers: [claude-opus, codex], orchestrator: claude-opus, fixer: claude-opus}
+settings: {runs_dir: $TMP/runs, checkin_sec: 1}
+EOF
+  chmod 600 "$XDG_CONFIG_HOME/herdr-review/config.yaml"
+  run "$HR" launch --json
+  [ "$status" -eq 0 ]
+  RUN="$(run_dir_of)"; RUNS="$(cd "$TMP/runs" && pwd -P)"
+  grep -qF -- "--timeout 300000 -- --settings {\"enableAllProjectMcpServers\": true, \"attribution\": {\"commit\": \"\"}, \"permissions\": {\"additionalDirectories\": [\"$RUNS\"]}} --model opus" "$FAKE_HERDR_LOG"
+  [ "$(grep 'agent start' "$FAKE_HERDR_LOG" | grep -c -- '--add-dir')" -eq 0 ]
+  grep -qF "profile claude-opus: --add-dir $TMP/runs left out" "$RUN/runner.log"
+  json_has "$(cat "$RUN/run.json")" "d['reviewers'][1]['args']==['-m', 'gpt-5.5', '--add-dir', '$TMP/runs']"
+}
+
+@test "launch: Claude Code's dialog for a new directory is never answered" {
+  echo '{"agent_start": {"*-orch": {"code": "agent_not_ready", "message": "blocked"}}, "screens": {"*-orch": " Adding a new directory:\n\n /srv/data\n\n ❯ No, exit\n   Yes, add it\n"}}' > "$FAKE_HERDR_SCENARIO"
+  run "$HR" launch
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"failed to start: Claude Code asks whether to trust a directory passed with --add-dir"* ]]
   [[ "$output" == *"Tab w1:t2 is left open"* ]]
   [ "$(grep -c 'agent send-keys' "$FAKE_HERDR_LOG")" -eq 0 ]
   [ "$(grep -c 'agent prompt' "$FAKE_HERDR_LOG")" -eq 0 ]
