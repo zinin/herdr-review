@@ -8,13 +8,14 @@ from unittest import mock
 from herdr_review.kinds import OPENCODE_CONFIG_NAME, left_out_add_dirs, opencode_config, startup_args, startup_env
 
 RUNS = "/home/u/.local/state/herdr-review/runs"
+REPO = "/home/u/src/app"
 SESSION_SETTINGS = {"enableAllProjectMcpServers": True, "attribution": {"commit": ""}, "permissions": {"additionalDirectories": [RUNS]}}
 
 
 class StartupArgsTest(unittest.TestCase):
-    def claude(self, args, runs_dir=RUNS):
+    def claude(self, args, runs_dir=RUNS, agent_dir=REPO):
         """startup_args for a claude profile: its session settings, parsed, and the args after them."""
-        out = startup_args("claude", args, Path(runs_dir))
+        out = startup_args("claude", args, Path(runs_dir), Path(agent_dir))
         self.assertEqual(out[0], "--settings")
         return json.loads(out[1]), out[2:]
 
@@ -56,30 +57,38 @@ class StartupArgsTest(unittest.TestCase):
             self.assertEqual(self.claude(["--add-dir", "~/.local/state/herdr-review/runs"],
                                          runs_dir="~/.local/state/herdr-review/runs"), (SESSION_SETTINGS, []))
 
-    def test_a_relative_add_dir_or_one_of_an_unknown_user_stays(self):
-        # a relative value counts from the agent's own directory: never taken for the runs directory
-        self.assertEqual(self.claude(["--add-dir", "runs"], runs_dir=Path.cwd() / "runs")[1], ["--add-dir", "runs"])
+    def test_a_relative_add_dir_counts_from_the_agents_directory(self):
+        # Claude Code counts a relative value from the directory the agent starts in
+        for args, rest in (
+            (["--add-dir", "../review-runs"], []),
+            (["--add-dir", "../review-runs/x"], []),
+            (["--add-dir", "../other"], ["--add-dir", "../other"]),
+            (["--add-dir", "review-runs"], ["--add-dir", "review-runs"]),        # it names /home/u/src/app/review-runs
+        ):
+            with self.subTest(args=args):
+                settings, after = self.claude(args, runs_dir="/home/u/src/review-runs", agent_dir="/home/u/src/app")
+                self.assertEqual(after, rest)
         # an unknown ~user does not break the start
         self.assertEqual(self.claude(["--add-dir", "~hr-no-such-user/runs"])[1], ["--add-dir", "~hr-no-such-user/runs"])
 
     def test_left_out_add_dirs_names_what_startup_args_leaves_out(self):
         args = ["--add-dir", "/srv/data", RUNS, "--add-dir=" + RUNS + "/x", "--model", "opus"]
-        self.assertEqual(left_out_add_dirs("claude", args, Path(RUNS)), [RUNS, RUNS + "/x"])
-        self.assertEqual(left_out_add_dirs("claude", ["--model", "opus"], Path(RUNS)), [])
-        self.assertEqual(left_out_add_dirs("claude", ["--settings", "/x.json", "--add-dir", RUNS], Path(RUNS)), [])
-        self.assertEqual(left_out_add_dirs("codex", ["--add-dir", RUNS], Path(RUNS)), [])
+        self.assertEqual(left_out_add_dirs("claude", args, Path(RUNS), Path(REPO)), [RUNS, RUNS + "/x"])
+        self.assertEqual(left_out_add_dirs("claude", ["--model", "opus"], Path(RUNS), Path(REPO)), [])
+        self.assertEqual(left_out_add_dirs("claude", ["--settings", "/x.json", "--add-dir", RUNS], Path(RUNS), Path(REPO)), [])
+        self.assertEqual(left_out_add_dirs("codex", ["--add-dir", RUNS], Path(RUNS), Path(REPO)), [])
 
     def test_a_profile_with_its_own_settings_is_left_alone(self):
         # its settings file replaces the session settings, so its --add-dir is the only grant it has
         for args in (["--settings", "/x.json"], ["--model", "opus", "--settings=/x.json"], ["--settings", "/x.json", "--add-dir", RUNS]):
             with self.subTest(args=args):
-                self.assertEqual(startup_args("claude", args, Path(RUNS)), args)
+                self.assertEqual(startup_args("claude", args, Path(RUNS), Path(REPO)), args)
 
     def test_opencode_starts_with_a_private_server(self):
         args = ["--auto"]
-        self.assertEqual(startup_args("opencode", args, Path(RUNS)), ["--standalone", "--auto"])
+        self.assertEqual(startup_args("opencode", args, Path(RUNS), Path(REPO)), ["--standalone", "--auto"])
         self.assertEqual(args, ["--auto"])
-        self.assertEqual(startup_args("opencode", [], Path(RUNS)), ["--standalone"])
+        self.assertEqual(startup_args("opencode", [], Path(RUNS), Path(REPO)), ["--standalone"])
 
     def test_an_opencode_profile_that_chose_its_server_is_left_alone(self):
         for args in (
@@ -89,14 +98,14 @@ class StartupArgsTest(unittest.TestCase):
             ["--auto", "--server=http://127.0.0.1:4096"],
         ):
             with self.subTest(args=args):
-                self.assertEqual(startup_args("opencode", args, Path(RUNS)), args)
+                self.assertEqual(startup_args("opencode", args, Path(RUNS), Path(REPO)), args)
 
     def test_other_kinds_are_left_alone(self):
-        self.assertEqual(startup_args("codex", ["-m", "gpt-5.5"], Path(RUNS)), ["-m", "gpt-5.5"])
-        self.assertEqual(startup_args("grok", [], Path(RUNS)), [])
-        self.assertEqual(startup_args("codex", ["--server=x"], Path(RUNS)), ["--server=x"])
+        self.assertEqual(startup_args("codex", ["-m", "gpt-5.5"], Path(RUNS), Path(REPO)), ["-m", "gpt-5.5"])
+        self.assertEqual(startup_args("grok", [], Path(RUNS), Path(REPO)), [])
+        self.assertEqual(startup_args("codex", ["--server=x"], Path(RUNS), Path(REPO)), ["--server=x"])
         # the codex sandbox needs its --add-dir for the runs directory
-        self.assertEqual(startup_args("codex", ["--add-dir", RUNS], Path(RUNS)), ["--add-dir", RUNS])
+        self.assertEqual(startup_args("codex", ["--add-dir", RUNS], Path(RUNS), Path(REPO)), ["--add-dir", RUNS])
         # OpenCode's flags mean nothing to claude: it still gets its settings
         self.assertEqual(self.claude(["--standalone"]), (SESSION_SETTINGS, ["--standalone"]))
 

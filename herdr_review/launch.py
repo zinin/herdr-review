@@ -132,9 +132,9 @@ def _unfinished_runs(project_dir: Path) -> list[str]:
     return found
 
 
-def _profile_spec(cfg: Config, profile: str, name: str, runs_dir: Path) -> dict:
+def _profile_spec(cfg: Config, profile: str, name: str, runs_dir: Path, agent_dir: Path) -> dict:
     p = cfg.profiles[profile]
-    return {"name": name, "profile": profile, "kind": p.kind, "args": startup_args(p.kind, p.args, runs_dir), "env_keys": sorted(p.env)}
+    return {"name": name, "profile": profile, "kind": p.kind, "args": startup_args(p.kind, p.args, runs_dir, agent_dir), "env_keys": sorted(p.env)}
 
 
 def launch(
@@ -212,9 +212,9 @@ def launch(
         listing.write_text("".join(f"{line}\n" for line in uncommitted), encoding="utf-8")
         if scope == "worktree":
             untracked_listing.write_text("".join(f"{untracked_line(f)}\n" for f in untracked), encoding="utf-8")
-        reviewers_spec = [_profile_spec(cfg, p, f"{run_id}-{p}", runs_dir) for p in usable]
-        orch = _profile_spec(cfg, orch_profile, f"{run_id}-orch", runs_dir)
-        fixer = _profile_spec(cfg, fixer_profile, f"{run_id}-fixer", runs_dir)
+        reviewers_spec = [_profile_spec(cfg, p, f"{run_id}-{p}", runs_dir, repo) for p in usable]
+        orch = _profile_spec(cfg, orch_profile, f"{run_id}-orch", runs_dir, repo)
+        fixer = _profile_spec(cfg, fixer_profile, f"{run_id}-fixer", runs_dir, repo)
         description = (opts.description or "").strip() or "(not provided)"
         plan_ref = plan_reference(opts.plan, repo, cwd, run_dir)
         branch = gitutil.current_branch(repo)
@@ -319,7 +319,7 @@ def launch(
             env_all[key] = environ[key]
     selected = [*usable, orch_profile, fixer_profile]
     for prof in dict.fromkeys(selected):
-        gone = left_out_add_dirs(cfg.profiles[prof].kind, cfg.profiles[prof].args, runs_dir)
+        gone = left_out_add_dirs(cfg.profiles[prof].kind, cfg.profiles[prof].args, runs_dir, repo)
         if gone:
             log(f"profile {prof}: --add-dir {shlex.join(gone)} left out: its agents' session --settings grant {runs_dir}")
     refs = list(dict.fromkeys(ref for prof in selected for ref in cfg.profiles[prof].env_refs))

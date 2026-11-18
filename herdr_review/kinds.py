@@ -40,20 +40,17 @@ def _has_option(args: list[str], *names: str) -> bool:
     return any(a == n or a.startswith(n + "=") for a in args for n in names)
 
 
-def _inside(value: str, runs_dir: Path) -> bool:
+def _inside(value: str, runs_dir: Path, agent_dir: Path | str) -> bool:
     """Whether the --add-dir value <value> names <runs_dir> or a directory inside it. Claude Code expands the `~`
-    itself; a relative value counts from the agent's own directory and is never taken for the runs directory."""
+    itself and counts a relative value from its own directory, <agent_dir>."""
     try:
-        path = Path(value).expanduser()
-        if not path.is_absolute():
-            return False
-        path = path.resolve()
+        path = (Path(agent_dir) / Path(value).expanduser()).resolve()
     except (OSError, RuntimeError):     # an unknown ~user, a symlink loop
         return False
     return path == runs_dir or runs_dir in path.parents
 
 
-def _without_runs_dir(args: list[str], runs_dir: Path) -> tuple[list[str], list[str]]:
+def _without_runs_dir(args: list[str], runs_dir: Path, agent_dir: Path | str) -> tuple[list[str], list[str]]:
     """(<args> without the --add-dir values that name <runs_dir> or lie inside it, those values). A --add-dir left
     with none of its values goes too."""
     kept: list[str] = []
@@ -63,7 +60,7 @@ def _without_runs_dir(args: list[str], runs_dir: Path) -> tuple[list[str], list[
         arg = args[i]
         if arg.startswith(ADD_DIR + "="):
             value = arg[len(ADD_DIR) + 1:]
-            if _inside(value, runs_dir):
+            if _inside(value, runs_dir, agent_dir):
                 gone.append(value)
             else:
                 kept.append(arg)
@@ -77,36 +74,37 @@ def _without_runs_dir(args: list[str], runs_dir: Path) -> tuple[list[str], list[
         while end < len(args) and not args[end].startswith("-"):
             end += 1
         values = args[i + 1:end]
-        stay = [v for v in values if not _inside(v, runs_dir)]
-        gone += [v for v in values if _inside(v, runs_dir)]
+        stay = [v for v in values if not _inside(v, runs_dir, agent_dir)]
+        gone += [v for v in values if _inside(v, runs_dir, agent_dir)]
         if stay or not values:
             kept += [arg, *stay]
         i = end
     return kept, gone
 
 
-def _startup(kind: str, args: list[str], runs_dir: Path | str) -> tuple[list[str], list[str]]:
+def _startup(kind: str, args: list[str], runs_dir: Path | str, agent_dir: Path | str) -> tuple[list[str], list[str]]:
     if kind == "claude" and not _has_option(args, "--settings"):
         runs = Path(runs_dir).expanduser().resolve()
-        kept, gone = _without_runs_dir(args, runs)
+        kept, gone = _without_runs_dir(args, runs, agent_dir)
         return ["--settings", claude_session_settings(runs), *kept], gone
     if kind == "opencode" and not _has_option(args, "--standalone", "--server"):
         return ["--standalone", *args], []
     return list(args), []
 
 
-def startup_args(kind: str, args: list[str], runs_dir: Path | str) -> list[str]:
+def startup_args(kind: str, args: list[str], runs_dir: Path | str, agent_dir: Path | str) -> list[str]:
     """The args an agent of <kind> starts with. A claude agent gets the session-only settings, which grant it
     <runs_dir>, unless its profile passes a --settings of its own: the last --settings wins, so one of the two would
     be lost. Its profile's --add-dir for <runs_dir>, or for a directory inside it, is left out: the settings grant
-    that directory already, and the flag would stop the agent at Claude Code's dialog for a new directory. An
-    opencode agent gets a private server unless its profile chose one itself: --standalone, or --server."""
-    return _startup(kind, args, runs_dir)[0]
+    that directory already, and the flag would stop the agent at Claude Code's dialog for a new directory. A
+    relative --add-dir counts from <agent_dir>, the directory the agent starts in. An opencode agent gets a private
+    server unless its profile chose one itself: --standalone, or --server."""
+    return _startup(kind, args, runs_dir, agent_dir)[0]
 
 
-def left_out_add_dirs(kind: str, args: list[str], runs_dir: Path | str) -> list[str]:
+def left_out_add_dirs(kind: str, args: list[str], runs_dir: Path | str, agent_dir: Path | str) -> list[str]:
     """The --add-dir values of <args> that startup_args leaves out."""
-    return _startup(kind, args, runs_dir)[1]
+    return _startup(kind, args, runs_dir, agent_dir)[1]
 
 
 def startup_env(kind: str, run_dir: Path | str) -> dict[str, str]:

@@ -534,6 +534,15 @@ class LaunchTest(unittest.TestCase):
         self.assertEqual(log.count(f"profile claude-opus: --add-dir {runs} left out"), 1)              # one line per profile
         self.assertNotIn("profile codex:", log)
 
+    def test_a_relative_add_dir_counts_from_the_repository_root_not_the_launch_directory(self):
+        self.cfg.profiles["claude-opus"].args = ["--model", "opus", "--add-dir", os.path.relpath(self.root / "runs", self.repo)]
+        sub = self.repo / "sub"
+        sub.mkdir()
+        res = launch(LaunchOptions(), self.cfg, self.herdr, ENV, sub, self.runner, which=which_ok, run_id="hrtest")
+        run_json = json.loads((Path(res["run_dir"]) / "run.json").read_text())
+        expected = ["--settings", session_settings((self.root / "runs").resolve()), "--model", "opus"]
+        self.assertEqual(run_json["orchestrator"]["args"], expected)
+
     def test_a_profile_with_its_own_settings_is_left_alone(self):
         self.cfg.profiles["claude-opus"].args = ["--model", "opus", "--settings=/home/me/claude.json"]
         res = self.do_launch()
