@@ -2,7 +2,7 @@
 
 All notable changes to herdr-review will be documented here.
 
-## [Unreleased]
+## [0.6.1] - 2026-11-18
 
 ### Fixed
 - A claude agent starts again under Claude Code 2.1.326 and later. That release asks at startup whether to trust a
