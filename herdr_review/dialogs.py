@@ -19,8 +19,11 @@ MCP_REFUSAL = (
 # "Adding a new directory: <path>" over "❯ No, exit" / "Yes, add it". A yes loads the directory's skills, commands
 # and agents and its repository's git settings into the session: the user's call, not the runner's. Claude Code
 # also takes no key typed ahead of the dialog: its options arm 500 ms after it opens, the cursor shows only then.
+# A pane under 30 rows that the dialog overflows shows it cut off: its title out of sight above "❯ No, exit" /
+# "Yes, add it" and " Adding: <path>" under them, or, full-screen, "To add it, first make the window taller" over a
+# title whose options are clipped; so either phrase alone identifies it.
 # The session settings of kinds.claude_session_settings grant the runs directory without the dialog.
-ADD_DIR_DIALOG = re.compile(r"adding a new directory:.*\byes,\s*add it\b", re.IGNORECASE)
+ADD_DIR_DIALOG = re.compile(r"adding a new directory:|\byes,\s*add it\b", re.IGNORECASE)
 ADD_DIR_REFUSAL = (
     "Claude Code asks whether to trust a directory passed with --add-dir; herdr-review never answers that dialog. "
     "For settings.runs_dir drop the flag: herdr-review grants that directory in the --settings it gives a claude "

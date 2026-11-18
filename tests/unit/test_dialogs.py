@@ -46,6 +46,25 @@ CLAUDE_ADD_DIR_NARROW = (                                                       
     " ❯ No, exit\n"
     "   Yes, add it\n"
 )
+# Claude Code 2.1.327 in a pane under 30 rows that the dialog overflows: the title scrolled out of sight, the path
+# repeated under the options.
+CLAUDE_ADD_DIR_CUT_TOP = (
+    " Starting Claude Code in this directory and trusting it there lasts, and covers its whole repository or\n"
+    " everything below it.\n"
+    " Security guide\n"
+    " ❯ No, exit\n"
+    "   Yes, add it\n"
+    " Enter to confirm · Esc to cancel\n"
+    " Adding: /home/zinin/.local/state/herdr-review/runs\n"
+)
+# Full-screen, the same pane clips the bottom instead: a warning above the dialog, its options out of sight.
+CLAUDE_ADD_DIR_CUT_BOTTOM = (
+    " Esc to exit · To add it, first make the window taller\n"
+    "───────────────────────────────────────────────────────────────────────────────────────────────────────────\n"
+    " Adding a new directory:\n"
+    " /home/zinin/.local/state/herdr-review/runs\n"
+    " This session hasn't worked here before. Is this a directory you created or one you trust?\n"
+)
 MCP_ONE = (
     "New MCP server found in this project: dummy\n"
     "  Use this MCP server\n  Use this and all future MCP servers in this project\n"
@@ -338,7 +357,10 @@ class StartupDialogTest(unittest.TestCase):
         self.assertEqual(h.calls_named("agent_send_keys"), [])
 
     def test_the_dialog_for_a_new_directory_is_refused_without_a_key(self):
-        for label, screen in (("wide", CLAUDE_ADD_DIR), ("unarmed", CLAUDE_ADD_DIR_UNARMED), ("narrow", CLAUDE_ADD_DIR_NARROW)):
+        for label, screen in (
+            ("wide", CLAUDE_ADD_DIR), ("unarmed", CLAUDE_ADD_DIR_UNARMED), ("narrow", CLAUDE_ADD_DIR_NARROW),
+            ("cut top", CLAUDE_ADD_DIR_CUT_TOP), ("cut bottom", CLAUDE_ADD_DIR_CUT_BOTTOM),
+        ):
             with self.subTest(screen=label):
                 h = FakeHerdr()
                 h.screens["hr1-orch"] = screen
@@ -377,10 +399,12 @@ class MCPCheckTest(unittest.TestCase):
         self.assertEqual(mcp_check(h, "hr1-rv"), DialogOutcome(resolved=False, refusal=MCP_REFUSAL))
 
     def test_the_dialog_for_a_new_directory_after_a_start_is_refused(self):
-        h = FakeHerdr()
-        h.screens["hr1-rv"] = CLAUDE_ADD_DIR
-        self.assertEqual(mcp_check(h, "hr1-rv"), DialogOutcome(resolved=False, refusal=ADD_DIR_REFUSAL))
-        self.assertEqual(h.calls_named("agent_send_keys"), [])
+        for label, screen in (("wide", CLAUDE_ADD_DIR), ("cut top", CLAUDE_ADD_DIR_CUT_TOP), ("cut bottom", CLAUDE_ADD_DIR_CUT_BOTTOM)):
+            with self.subTest(screen=label):
+                h = FakeHerdr()
+                h.screens["hr1-rv"] = screen
+                self.assertEqual(mcp_check(h, "hr1-rv"), DialogOutcome(resolved=False, refusal=ADD_DIR_REFUSAL))
+                self.assertEqual(h.calls_named("agent_send_keys"), [])
 
 
 class RecognizeTest(unittest.TestCase):
@@ -400,7 +424,10 @@ class RecognizeTest(unittest.TestCase):
 
     def test_the_dialog_for_a_new_directory_is_not_the_trust_dialog(self):
         # "… or one you trust?" is no "Yes, I trust this folder": the runner never answers it
-        for label, screen in (("wide", CLAUDE_ADD_DIR), ("unarmed", CLAUDE_ADD_DIR_UNARMED), ("narrow", CLAUDE_ADD_DIR_NARROW)):
+        for label, screen in (
+            ("wide", CLAUDE_ADD_DIR), ("unarmed", CLAUDE_ADD_DIR_UNARMED), ("narrow", CLAUDE_ADD_DIR_NARROW),
+            ("cut top", CLAUDE_ADD_DIR_CUT_TOP), ("cut bottom", CLAUDE_ADD_DIR_CUT_BOTTOM),
+        ):
             with self.subTest(screen=label):
                 self.assertEqual(recognize(screen), ("claude-add-dir", None))
 
